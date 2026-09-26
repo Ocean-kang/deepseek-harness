@@ -1,0 +1,15 @@
+# Source mode uses the supported dsh ESM source launcher and memory/tsconfig.json.
+- insert:
+    - id: memory-l0
+      name: ../src/index.ts
+      config:
+        projectId: !!js process.env.DSH_MEMORY_PROJECT
+        databasePath: data/l0.sqlite
+        queueCapacity: 1024
+        batchSize: 128
+        pageSize: 128
+        busyTimeoutMs: 5000
+        journalMode: wal
+
+- id: headless-runner
+  inject: [headlessStartup, memory]

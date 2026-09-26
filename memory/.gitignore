@@ -1,0 +1,7 @@
+/.artifacts/
+/.cache/
+/.tmp/
+/data/
+/home/
+/lib/
+/node_modules/

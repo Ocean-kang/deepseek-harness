@@ -1,0 +1,9 @@
+- insert:
+    - id: memory-l0
+      name: ../lib/index.mjs
+      config:
+        projectId: !!js process.env.DSH_MEMORY_PROJECT
+        databasePath: data/l0.sqlite
+
+- id: headless-runner
+  inject: [headlessStartup, memory]

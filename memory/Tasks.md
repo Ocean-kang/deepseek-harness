@@ -2,7 +2,7 @@
 
 ## 摘要
 
-本文将分层记忆插件划分为四次 Codex 实现任务，依次交付 L0 原始记忆、L1 任务记忆、L2/L3 长期记忆和记忆检索与注入。每次任务包含本层能力的实现、测试和说明，以验收标准判断完成；详细数据与接口设计见 [PROJECT.md](PROJECT.md)。所有任务均未完成，`MemoryService` 等名称是待实现设计，不是已有 DSH API。
+本文将分层记忆插件划分为四次 Codex 实现任务，依次交付 L0 原始记忆、L1 任务记忆、L2/L3 长期记忆和记忆检索与注入。每次任务包含本层能力的实现、测试和说明，以验收标准判断完成；详细数据与接口设计见 [PROJECT.md](PROJECT.md)。所有任务均未完成；Task 1 已有目录内实现和下述验证记录，`MemoryService` 为记忆插件服务，不是 DSH 核心 API。其他层能力仍为待实现设计。
 
 ## 目录
 
@@ -51,6 +51,41 @@
 - 执行一个任务后数据库事件与 Session 对应；注入写入失败时进度停在最后一次成功提交处。
 - 重启并载入 Session 后补齐事件且无重复；来源丢失时明确报错，卸载后没有残留写入。
 - 重开数据库仍可有序读取完整的已记录事件。L0 不复制附件或 spill 文件实体，不承诺恢复已经失效的引用，也不自动扫描全部磁盘历史或清理旧数据。
+
+### 实现与验证记录（2026-09-26）
+
+状态：目录内实现及下列检查已完成，完整验收仍受阻，保留 Task 1 未勾选。Task 2–4 未执行；未推送或修改目录外源码、配置与依赖。
+
+产出：[插件入口](src/index.ts)、[L0 接口](src/types.ts)、[配置解析](src/config.ts)、[SQLite Provider](src/sqlite.ts)、[采集器](src/collector.ts)、[源码 profile patch](profiles/headless.patch.yml)、[构建 profile patch](profiles/headless-built.patch.yml)、[使用说明](README.zh.md)。默认队列容量 1024、事务及补采页大小 128、锁等待 5000ms、WAL/FULL；配置均在执行前解析。内存队列不持久化，SQLite 记录连续提交位置，原日志负责补采。
+
+执行检查前点入 `scripts/environment.ps1`，工作目录、Harness home、临时目录与缓存均设在 memory 内。后续检查发现环境已具有依赖和构建产物，本次未安装或构建目录外依赖。`tsconfig.json` 引用 vendor 项目已有声明，保持 memory 源码和测试的严格设置；未通过降低严格级别处理 vendor 编译选项差异。
+
+| 实际命令（工作目录 memory/） | 结果 |
+|---|---|
+| `node scripts/check-local.mjs` | 14 个 TypeScript 文件语法解析、默认配置及 6 个非法输入检查通过；不代表类型检查。 |
+| `node ../node_modules/typescript/bin/tsc -p tsconfig.json --noEmit` | 通过。 |
+| `node scripts/test.mjs` | 4 个测试文件通过，19 个测试通过，1 个需要实际 profile 数据的测试默认跳过。 |
+| `node scripts/test.mjs profile-copy`，设置 `DSH_MEMORY_VERIFY_COPY=1` | 对实际源码及构建 profile 生成的 L0 副本核对通过：1 个测试通过。 |
+| 同一 `profile-copy` 命令，另设 `DSH_MEMORY_VERIFY_DB=data/recovery.sqlite` | 重启补采副本与当前原日志逐事件一致：1 个测试通过。 |
+| `node ../node_modules/tsdown/dist/run.mjs --config tsdown.config.ts --config-loader native` | 通过，仅生成 memory/lib/index.mjs。 |
+| `node ../scripts/run-oxlint.ts --config ../.oxlintrc.json src tests` | 退出码 0。 |
+| `node scripts/check-docs.mjs` | 四份文档的链接及 README 双语结构检查通过；不替代 doc-sync 和配对记录。 |
+| `node ../scripts/verify-translation-pairing.ts --write memory/README.md`，随后运行同一命令去掉 `--write` | 用户授权 Git 提交后生成配对记录；1 对文档一致性检查通过。首次沙箱拒绝 Git 对象写入，提升后成功。 |
+| `node ../scripts/gen-third-party-notices.ts --check` | 根目录第三方声明与生成结果一致；此命令只读，未重写该文件。 |
+
+实际运行了 `node --import tsx/esm ../apps/cli/src/bin.ts --profile headless --patch ./profiles/headless.patch.yml 'Reply with OK without using tools.'`。首次被宿主 `uv_os_get_passwd` 调用阻断；按仓库沙箱规则提升宿主执行后，插件加载、采集并退出。该任务因 `MISSING_CREDENTIAL` 退出码为 1，L0 保存该 Session 的 19 条完整事件；没有宣称模型调用成功。
+
+构建 profile 首次因目录外插件未纳入 profile 依赖解析而加载失败。运行 `node scripts/link-profile.mjs` 后，本地链接与目标均位于 memory 内；随后运行 `node ../apps/cli/lib/bin.js --profile headless --patch ./profiles/headless-built.patch.yml 'Reply with OK without using tools.'`，插件成功加载并采集第二个失败任务。两个首次运行合计保存 37 条事件，使用真实 JSONL Provider 解码原日志的核对测试通过。单独使用 Node 的单帧 Zstd 解压比较曾失败，因为只读到首帧 header；最终验证使用仓库 JSONL Provider，不把物理解压片段当作逻辑日志。
+
+又以构建 profile、原 Session ID 和 `--patch ./tests/fixtures/recovery.patch.yml` 在新进程恢复该 Session。新的 recovery.sqlite 从原日志补采，随后任务仍因缺少凭据失败；最终 29 条事件与原日志完整一致。SQLite 数据和失败启动诊断分别位于 memory/data/、memory/home/，均被目录内 .gitignore 忽略。
+
+测试涵盖真实 SQLite 事务回滚、重复与冲突、项目隔离、schema 拒绝、损坏前缀、取消、分页和缺失范围；Promise 屏障控制队列溢出与关闭等待；真实 Cordis/JSONL 测试覆盖卸载重载、fork 继承历史及根级清理期间的队列溢出。品牌 ID 的负向类型用例随严格类型检查执行。
+
+仍未完成或受阻的项目：
+
+- 没有 `DEEPSEEK_API_KEY`，也没有仓库根 .env；真实模型成功任务尚未验证，不能将缺少凭据的失败路径等同于真实模型验收。
+- 必须新增的 keyless Session 录制回放归属 `snapshots/session/`，该路径在授权写入范围外。未写目录内替代快照；完整 Task 1 验收因此受阻。
+- 未运行完整 `pnpm run doc-sync`、仓库级 build/hygiene 或平台矩阵。目录内验证不替代这些检查；本次不修改其配置使 memory 自动纳入工作区。
 
 ## Task 2：实现 L1 任务记忆
 

@@ -1,0 +1,14 @@
+{
+  "name": "@deepseek-ai/dsh-memory-l0",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "lib/index.mjs",
+  "exports": { ".": "./lib/index.mjs" },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "*",
+    "@deepseek-ai/schemastery": "*",
+    "@deepseek-ai/dsh-session": "*",
+    "@deepseek-ai/dsh-session-persistence": "*"
+  }
+}
