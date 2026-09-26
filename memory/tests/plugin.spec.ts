@@ -12,7 +12,7 @@ it('captures real persisted events, unloads, and recovers missed events on reloa
   try {
     await ctx.plugin(SessionStore)
     await ctx.plugin(JsonlSessionPersistence, { root: `${item.root}/sessions`, compression: 'none' })
-    const session = ctx.sessions.create(SessionId('real-source'))
+    const session = ctx.sessions.create(SessionId('real-source'), { meta: { cwd: item.root } })
     const writer = await ctx.sessionPersistence.create(session.header)
     const options = { projectId: item.spec.projectId, databasePath: item.spec.databasePath }
     const first = await ctx.plugin(MemoryPlugin, options)

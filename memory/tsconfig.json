@@ -8,6 +8,8 @@
   "include": ["src/**/*.ts", "tests/**/*.ts"],
   "references": [
     { "path": "../vendor/cordis" },
+    { "path": "../vendor/loader" },
+    { "path": "../vendor/include" },
     { "path": "../vendor/cosmokit" },
     { "path": "../vendor/schemastery" }
   ]

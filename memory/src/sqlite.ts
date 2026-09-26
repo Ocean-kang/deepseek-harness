@@ -4,7 +4,7 @@ import { dirname } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { isDeepStrictEqual } from 'node:util'
 import { SessionLogOffset, SESSION_FORMAT_VERSION } from '@deepseek-ai/dsh-session'
-import type { SessionEvent, SessionHeader } from '@deepseek-ai/dsh-session'
+import type { SessionEvent, SessionHeader, SessionId } from '@deepseek-ai/dsh-session'
 import { assertContiguous, materializeAppendBatch, materializeCreateHeader, validateStoredEvents } from '@deepseek-ai/dsh-session-persistence'
 import { memoryPath } from './config.ts'
 import type { Spec } from './config.ts'
@@ -24,6 +24,13 @@ function parseJson(value: string): unknown {
   } catch (error) {
     throw new MemoryError('corrupt', 'invalid JSON in memory database', error)
   }
+}
+
+function parseProject(value: unknown): ProjectId {
+  if (typeof value !== 'string' || value.trim() === '' || value !== value.trim()) {
+    throw new MemoryError('corrupt', 'invalid stored project identifier')
+  }
+  return value as ProjectId
 }
 
 /** Read and validate database-owned JSON before passing it to Session validation. */
@@ -56,6 +63,26 @@ export class SqliteMemory implements RawMemory {
   readonly l1: L1Store
 
   private constructor(private readonly db: DatabaseSync) { this.l1 = new L1Store(db, () => this.assertOpen()) }
+
+  /**
+   * Read immutable ownership before adopting a Session.
+   * @param sessionId - canonical Session identity.
+   * @returns stored project, or undefined for a Session not yet copied.
+   */
+  getSessionProject(sessionId: SessionId): ProjectId | undefined {
+    this.assertOpen()
+    const row = this.db.prepare('SELECT project FROM sessions WHERE id = ?').get(sessionId)
+    return row === undefined ? undefined : parseProject(row.project)
+  }
+
+  /**
+   * Enumerate owners for startup L1 recovery, including unloaded Sessions.
+   * @returns distinct stored projects in identifier order.
+   */
+  listProjects(): ProjectId[] {
+    this.assertOpen()
+    return this.db.prepare('SELECT DISTINCT project FROM sessions ORDER BY project').all().map(row => parseProject(row.project))
+  }
 
   /**
    * Open a database without overwriting another database's schema.

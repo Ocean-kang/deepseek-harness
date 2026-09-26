@@ -3,6 +3,7 @@ import { Service } from '@deepseek-ai/cordis'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import type {} from '@deepseek-ai/dsh-session-persistence'
+import type {} from '@deepseek-ai/dsh-workspace'
 import { resolveConfig } from './config.ts'
 import type { Config as ConfigInput } from './config.ts'
 import { SqliteMemory } from './sqlite.ts'
@@ -34,7 +35,7 @@ export const Config: z<Config> = z.object({
 })
 /** Plugin identity. */
 export const name = 'memory-l0'
-/** Canonical storage is required for overflow and restart recovery. */
+/** Canonical storage is required; Workspace lookup uses optional ctx.get access. */
 export const inject = ['sessions', 'sessionPersistence']
 
 declare module '@deepseek-ai/cordis' {
@@ -52,7 +53,7 @@ export class MemoryService extends Service implements RawMemory {
    * @param l1 - resolved extraction configuration, if task scanning is enabled.
    * @param scan - nonthrowing notification after L0 commits.
    */
-  constructor(ctx: Context, private readonly provider: SqliteMemory, private readonly l1: L1Spec | undefined, private readonly scan: () => void) {
+  constructor(ctx: Context, private readonly provider: SqliteMemory, private readonly l1: L1Spec | undefined, private readonly scan: (project: ProjectId) => void) {
     super(ctx, 'memory')
   }
 
@@ -63,7 +64,7 @@ export class MemoryService extends Service implements RawMemory {
    */
   async appendRaw(request: AppendRawRequest): Promise<AppendRawResult> {
     const result = await this.provider.appendRaw(request)
-    this.scan()
+    this.scan(request.projectId)
     return result
   }
 
@@ -130,13 +131,25 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   const spec = await resolveConfig(config)
   const provider = await SqliteMemory.open(spec)
   const report = (error: MemoryError) => ctx.logger.warn(`[memory/${error.code}] ${error.message}`)
-  const scan = () => {
+  const scan = (project: ProjectId) => {
     if (spec.l1 === undefined) return
-    try { provider.scanTurns(spec.projectId, spec.l1, spec.pageSize) } catch (error) {
+    try { provider.scanTurns(project, spec.l1, spec.pageSize) } catch (error) {
       report(new MemoryError('source', 'L1 scan failed; its last committed checkpoint is retained', error))
     }
   }
-  const collector = new RawCollector(provider, ctx.sessionPersistence, spec, report, scan)
+  const collector = new RawCollector(provider, ctx.sessionPersistence, spec, report, scan, async session => {
+    const stored = provider.getSessionProject(session.id)
+    if (stored !== undefined) return stored
+    const registry = ctx.get('workspaceRegistry')
+    if (registry === undefined || session.header.cwd === undefined) return spec.projectId
+    try {
+      const workspace = await registry.resolveByPath(session.header.cwd)
+      return workspace === undefined ? spec.projectId : String(workspace.id) as ProjectId
+    } catch (error) {
+      if (error instanceof Error && 'code' in error && (error.code === 'ENOENT' || error.code === 'ENOTDIR')) return spec.projectId
+      throw new MemoryError('source', `Session ${session.id}: Workspace lookup failed`, error)
+    }
+  })
   const listeners: Array<() => void> = []
   const dispose = async () => {
     for (const dispose of listeners) dispose()
@@ -155,7 +168,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     const existing = ctx.sessions.list()
     for (const session of existing) collector.adopt(session)
     await Promise.all(existing.map(session => collector.flush(session)))
-    scan()
+    if (spec.l1 !== undefined) for (const project of provider.listProjects()) scan(project)
     if (spec.l1 !== undefined) report(new MemoryError('integration', 'L1 tasks are persisted, but automatic extraction is unavailable until its Session request event is registered; no model requests will be dispatched'))
     new MemoryService(ctx, provider, spec.l1, scan)
   } catch (error) {

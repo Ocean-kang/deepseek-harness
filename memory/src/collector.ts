@@ -5,9 +5,10 @@ import { materializeAppendBatch } from '@deepseek-ai/dsh-session-persistence'
 import type { SessionHandle, SessionPersistence } from '@deepseek-ai/dsh-session-persistence'
 import type { Spec } from './config.ts'
 import { MemoryError } from './types.ts'
-import type { RawMemory } from './types.ts'
+import type { ProjectId, RawMemory } from './types.ts'
 
 interface Capture {
+  projectId?: ProjectId
   readonly session: Session
   readonly buffered: Map<number, SessionEvent>
   target: number
@@ -30,16 +31,18 @@ export class RawCollector {
   /**
    * @param memory - durable transaction provider; remains open until close resolves.
    * @param source - canonical Session storage with an independent flush barrier.
-   * @param spec - resolved limits and project identity.
+   * @param spec - resolved limits and fallback project identity.
    * @param report - body-free operational diagnostics; must not throw.
    * @param committed - notification after a complete L0 target commits; must not throw.
+   * @param resolveProject - resolve existing ownership or a new Session's project; failures remain retryable.
    */
   constructor(
     private readonly memory: RawMemory,
     private readonly source: Pick<SessionPersistence, 'flush' | 'open'>,
     private readonly spec: Spec,
     private readonly report: (error: MemoryError) => void,
-    private readonly committed: () => void = () => {},
+    private readonly committed: (project: ProjectId) => void = () => {},
+    private readonly resolveProject: (session: Session) => Promise<ProjectId> = async () => spec.projectId,
   ) {}
 
   /**
@@ -173,11 +176,13 @@ export class RawCollector {
   }
 
   private async synchronize(state: Capture, target: number): Promise<void> {
+    const projectId = state.projectId ?? await this.resolveProject(state.session)
     const request = {
-      projectId: this.spec.projectId, header: state.session.header,
+      projectId, header: state.session.header,
       inheritedEventCount: state.session.inheritedEventCount,
     }
     let position = (await this.memory.appendRaw({ ...request, events: [] })).committedTo
+    state.projectId = projectId
     if (position > state.session.seq) throw new MemoryError('conflict', `Session ${state.session.id}: source ends before the committed prefix`)
     for (const [seq, event] of state.buffered) {
       if (seq < position) await this.memory.appendRaw({ ...request, events: [event] })
@@ -221,7 +226,7 @@ export class RawCollector {
         this.discard(state, position)
       }
       state.backpressure = false
-      this.committed()
+      this.committed(projectId)
     } finally {
       await handle?.close()
     }

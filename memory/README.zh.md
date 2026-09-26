@@ -40,7 +40,7 @@ node --import tsx/esm ../apps/cli/src/bin.ts --profile headless --patch ./profil
 
 | 字段 | 默认值 | 含义 |
 |---|---|---|
-| `projectId` | 必填 | 稳定项目标识；patch 读取 `DSH_MEMORY_PROJECT`。 |
+| `projectId` | 必填 | 备用项目标识；patch 读取 `DSH_MEMORY_PROJECT`。 |
 | `databasePath` | 必填 | `memory/` 内的 SQLite 文件；示例使用 `data/l0.sqlite`。 |
 | `queueCapacity` | 1024 | 全部 Session 实时事件缓冲数量上限。 |
 | `batchSize` | 128 | 每次采集事务的事件数量上限。 |
@@ -48,6 +48,8 @@ node --import tsx/esm ../apps/cli/src/bin.ts --profile headless --patch ./profil
 | `busyTimeoutMs` | 5000 | SQLite 锁等待时间；零表示不等待。 |
 | `journalMode` | `wal` | 可选 `wal`、`delete`、`truncate` 或 `persist`；同步模式为 FULL。 |
 | `l1` | 不配置 | 可选提炼配置；目前只启用持久化任务发现。 |
+
+自动采集保留 Session 已存储的项目归属。对于新 Session，插件通过可选的 Workspace 注册表解析 `SessionHeader.cwd`，使用 `workspace.id`。缺少注册表、cwd、目录或匹配的 Workspace 时使用 `projectId`；其他查询失败会拒绝采集，可在显式刷新时重试。归属在首次 L0 提交时固定，包括备用项目归属。创建、删除或重命名 Workspace 不迁移已有记忆。
 
 可选的 `l1` 对象要求明确填写 `provider` 和 `model`。其余字段统一解析后随任务保存：
 
@@ -75,7 +77,7 @@ node --import tsx/esm ../apps/cli/src/bin.ts --profile headless --patch ./profil
 
 [SQLite Provider](src/sqlite.ts) 使用独立数据库标识和 schema 版本 2，通过事务升级 schema 1，不重写 L0 事件。事件主键为 `(session_id, seq)`。Session 元数据和下一个未提交位置与事件行在同一事务中更新。未知较新版本及其他数据库标识被拒绝。
 
-[L1 存储](src/l1-store.ts) 扫描已提交的 L0 分页，将任务创建与扫描游标、未闭合 turn 状态一起提交。它跳过完全继承的 turn，保留在 fork 继承前缀之后结束的 turn。任务键包含项目、Session 区间、层级及已保存的提炼设置。配置变化影响新发现的 turn；显式重新提炼为已有逻辑记忆创建新操作。候选检查点先于记忆版本与任务完成状态的原子提交。操作查询用于处理提交结果不确定的情况，预期版本检查拒绝并发覆盖。历史版本仍可读取，并标记为已替代。
+[L1 存储](src/l1-store.ts) 扫描已提交的 L0 分页，将任务创建与扫描游标、未闭合 turn 状态一起提交。启动时扫描所有已存储项目，包括未载入的 Session；采集和直接追加成功后扫描实际写入的项目。它跳过完全继承的 turn，保留在 fork 继承前缀之后结束的 turn。任务键包含项目、Session 区间、层级及已保存的提炼设置。配置变化影响新发现的 turn；显式重新提炼为已有逻辑记忆创建新操作。候选检查点先于记忆版本与任务完成状态的原子提交。操作查询用于处理提交结果不确定的情况，预期版本检查拒绝并发覆盖。历史版本仍可读取，并标记为已替代。
 
 [提炼器](src/l1-extractor.ts) 要求先等待来源 Session 完整记录辅助请求，再调用现有 LLM 服务。目前没有生产日志记录器；单元测试使用记录器夹具、真实 LLM 服务及进程内 adapter。每个非空结果引用输入事件，并保留程序填写的 turn 结束原因。过长事件按 Unicode 码点边界分段提炼，再在请求和调用预算内合并。不能缩小的合并明确失败。非法 JSON、外来来源、不完整输出，以及把非正常结束的 turn 写成成功方案的结果均被拒绝。
 

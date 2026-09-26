@@ -10,8 +10,12 @@
     "@deepseek-ai/schemastery": "*",
     "@deepseek-ai/dsh-session": "*",
     "@deepseek-ai/dsh-session-persistence": "*",
+    "@deepseek-ai/dsh-workspace": "*",
     "@deepseek-ai/dsh-llm": "*",
     "@deepseek-ai/dsh-timeout": "*",
     "@deepseek-ai/dsh-util-values": "*"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-workspace": { "optional": true }
   }
 }

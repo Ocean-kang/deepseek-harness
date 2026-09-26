@@ -2,7 +2,7 @@
 import type { Branded } from '@deepseek-ai/dsh-brand'
 import type { SessionEvent, SessionHeader, SessionId, SessionLogOffset } from '@deepseek-ai/dsh-session'
 
-/** Explicit stable project identity; independent of filesystem location. */
+/** Stable Workspace identifier or configured fallback, fixed at first L0 commit. */
 export type ProjectId = Branded<'MemoryProjectId'>
 
 /** Half-open interval of Session event positions. */

@@ -39,7 +39,7 @@ Configuration is resolved before opening SQLite. Relative database paths resolve
 
 | Field | Default | Meaning |
 |---|---|---|
-| `projectId` | Required | Stable project identifier; the patch reads `DSH_MEMORY_PROJECT`. |
+| `projectId` | Required | Fallback project identifier; the patch reads `DSH_MEMORY_PROJECT`. |
 | `databasePath` | Required | SQLite file inside `memory/`; the example uses `data/l0.sqlite`. |
 | `queueCapacity` | 1024 | Global maximum buffered live event count. |
 | `batchSize` | 128 | Maximum events per capture transaction. |
@@ -47,6 +47,8 @@ Configuration is resolved before opening SQLite. Relative database paths resolve
 | `busyTimeoutMs` | 5000 | SQLite lock wait; zero disables waiting. |
 | `journalMode` | `wal` | `wal`, `delete`, `truncate`, or `persist`; synchronous mode is FULL. |
 | `l1` | Absent | Optional extraction configuration; currently enables durable task discovery only. |
+
+Automatic capture preserves a Session's stored project. For a new Session, it resolves `SessionHeader.cwd` through the optional Workspace registry and uses `workspace.id`. Missing registry, cwd, directory, or matching Workspace uses `projectId`; other lookup failures reject capture and remain retryable at an explicit flush. Ownership is fixed at the first L0 commit, including fallback ownership. Existing memory is not migrated when a Workspace is created, deleted, or renamed.
 
 The optional `l1` object requires explicit `provider` and `model` values. Its remaining fields are resolved once and saved on each task:
 
@@ -73,7 +75,7 @@ With `l1` configured, the plugin reports `memory/integration` and leaves tasks p
 
 The [SQLite provider](src/sqlite.ts) owns a separate database identity and schema version 2. It upgrades schema 1 transactionally without rewriting L0 events. Events use a `(session_id, seq)` primary key. Session metadata and the next uncommitted position advance in the same transaction as event rows. Unknown newer versions and other database identities are refused.
 
-The [L1 store](src/l1-store.ts) scans committed L0 pages and commits task creation with its scan cursor and open-turn state. It skips fully inherited turns and retains turns ending beyond a fork's inherited prefix. Task keys include project, Session interval, layer and saved extraction settings. Configuration changes affect newly discovered turns; explicit re-extraction creates a new operation for an existing logical memory. Candidate checkpoints precede atomic memory-version and task-completion commits. Operation lookup resolves uncertain commits, and expected revisions reject concurrent replacement. Historical versions remain readable as superseded records.
+The [L1 store](src/l1-store.ts) scans committed L0 pages and commits task creation with its scan cursor and open-turn state. Startup scans every stored project, including unloaded Sessions; successful capture and direct appends scan their actual project. It skips fully inherited turns and retains turns ending beyond a fork's inherited prefix. Task keys include project, Session interval, layer and saved extraction settings. Configuration changes affect newly discovered turns; explicit re-extraction creates a new operation for an existing logical memory. Candidate checkpoints precede atomic memory-version and task-completion commits. Operation lookup resolves uncertain commits, and expected revisions reject concurrent replacement. Historical versions remain readable as superseded records.
 
 The [extractor](src/l1-extractor.ts) requires an awaited recorder of the exact auxiliary request in the source Session before calling the existing LLM service. Its current production recorder is unavailable; unit tests use a recorder fixture and the real LLM service with an in-process adapter. Every nonempty result cites supplied events and retains the program-owned turn end reason. Oversized events are split at Unicode code-point boundaries, summarized and merged within the request and call budgets. Nonshrinking merges fail explicitly. Invalid JSON, foreign sources, incomplete output and successful solutions attributed to non-completed turns are rejected.
 

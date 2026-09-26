@@ -13,6 +13,7 @@ export const MEMORY_ROOT = fileURLToPath(new URL('../', import.meta.url))
 /** User configuration; defaults are applied only by resolveConfig. */
 export interface Config {
   l1?: L1Config | undefined
+  /** Required fallback for Sessions without a matching Workspace. */
   projectId: string
   databasePath: string
   queueCapacity?: number
