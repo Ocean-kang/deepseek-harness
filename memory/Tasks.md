@@ -2,7 +2,7 @@
 
 ## 摘要
 
-本文将分层记忆插件划分为四次 Codex 实现任务，依次交付 L0 原始记忆、L1 任务记忆、L2/L3 长期记忆和记忆检索与注入。每次任务包含本层能力的实现、测试和说明，以验收标准判断完成；详细数据与接口设计见 [PROJECT.md](PROJECT.md)。所有任务均未完成；Task 1 已有目录内实现和下述验证记录，`MemoryService` 为记忆插件服务，不是 DSH 核心 API。其他层能力仍为待实现设计。
+本文将分层记忆插件划分为四次 Codex 实现任务，依次交付 L0 原始记忆、L1 任务记忆、L2/L3 长期记忆和记忆检索与注入。每次任务包含本层能力的实现、测试和说明，以验收标准判断完成；详细数据与接口设计见 [PROJECT.md](PROJECT.md)。所有任务均未完成；Task 1 和 Task 2 已有目录内实现和下述验证记录，Task 2 的自动模型提炼仍受日志集成限制。`MemoryService` 为记忆插件服务，不是 DSH 核心 API。其他层能力仍为待实现设计。
 
 ## 目录
 
@@ -54,7 +54,7 @@
 
 ### 实现与验证记录（2026-09-26）
 
-状态：目录内实现及下列检查已完成，完整验收仍受阻，保留 Task 1 未勾选。Task 2–4 未执行；未推送或修改目录外源码、配置与依赖。
+状态：目录内实现及下列检查已完成，完整验收仍受阻，保留 Task 1 未勾选。当次执行未涉及 Task 2–4，未推送或修改目录外源码、配置与依赖。
 
 产出：[插件入口](src/index.ts)、[L0 接口](src/types.ts)、[配置解析](src/config.ts)、[SQLite Provider](src/sqlite.ts)、[采集器](src/collector.ts)、[源码 profile patch](profiles/headless.patch.yml)、[构建 profile patch](profiles/headless-built.patch.yml)、[使用说明](README.zh.md)。默认队列容量 1024、事务及补采页大小 128、锁等待 5000ms、WAL/FULL；配置均在执行前解析。内存队列不持久化，SQLite 记录连续提交位置，原日志负责补采。
 
@@ -116,6 +116,41 @@ Task 1 已完成，能够读取完整且已提交的 turn 事件范围。实现�
 - 有效输出生成候选；无效 JSON、伪造来源、超时和取消不产生有效 L1；无真实凭据时记录模型验证未完成。
 - 重复结束通知只提交一次；模型成功但落盘失败后可恢复，取消不写半成品，重试耗尽可观察且可重跑。
 - 一个有内容的 turn 产生带真实来源的 L1；重启和重试不会重复提交，也不会把失败经历记录为成功。
+
+### 实现与验证记录（2026-09-26，目录内部分）
+
+状态：用户后续指示直接实施 Task 2，保留仅写入 `memory/` 的限制。目录内存储、任务发现、提炼和恢复组件已实现；生产插件只接通任务发现和查询，自动模型提炼受 Session 请求日志登记限制，Task 1 和 Task 2 均保留未勾选。未执行 Task 3/4，未提交或推送。
+
+产出：[L1 类型](src/l1-types.ts)、[配置解析](src/l1-config.ts)、[持久化任务与版本](src/l1-store.ts)、[提炼器](src/l1-extractor.ts)、[输出校验](src/l1-validation.ts)、[任务处理器](src/l1-worker.ts)。[SQLite Provider](src/sqlite.ts) 将 schema 1 事务升级到 schema 2，保留原 L0；插件在 L0 成功提交后扫描任务，并通过 MemoryService 提供版本读取、任务分页、状态查询及显式重跑。部署默认值和使用限制见 [README](README.zh.md)。
+
+扫描位置、未闭合 turn 和任务创建原子提交。任务区分项目、Session、完整来源区间和提炼配置；配置变化不自动重提炼已扫描 turn。完全继承的 turn 不重复创建任务，跨继承边界结束的 turn 保留完整来源。候选先持久化，再事务提交记忆和完成状态；Operation ID 用于重试去重及查询不确定提交，预期版本拒绝并发覆盖。失败、取消、重试时间、尝试次数、模型调用计数和租约均可恢复；模型调用预算跨重试累计，显式重提炼才获得新预算。
+
+独立提炼器使用真实 LLM 服务，测试 adapter 不访问外部模型。它要求调用方先完成来源 Session 的请求记录；测试中的记录器夹具只验证调用顺序和输入一致性，不构成生产 Session 日志验收。测试覆盖成功结束、失败、中止、阻塞、token 上限、中断、fork、空 turn、伪造来源、非法 JSON、非最终输出、Unicode 分段合并、超时、取消及预算耗尽。Worker 通过 Promise 屏障和可控时钟测试取消等待、定时退避、耗尽后重跑、候选恢复、提交结果不确定及数据库重开。
+
+所有命令在点入 `scripts/environment.ps1` 后执行，缓存、构建产物、数据库和运行日志均位于 `memory/`；复用已有依赖，没有运行根目录安装或构建。
+
+| 实际命令（工作目录 memory/） | 结果 |
+|---|---|
+| `node ../node_modules/typescript/bin/tsc -p tsconfig.json --noEmit` | 通过，含 L1 品牌 ID 负向类型用例。 |
+| `node scripts/test.mjs` | 7 个测试文件、65 个测试通过；需要 profile 数据的 1 个测试默认跳过。 |
+| `node ../scripts/run-oxlint.ts --config ../.oxlintrc.json src tests` | 退出码 0。 |
+| `node ../node_modules/tsdown/dist/run.mjs --config tsdown.config.ts --config-loader native` | 通过，输出 memory/lib/index.mjs。 |
+| `node scripts/check-local.mjs` | 24 个 TypeScript 文件语法检查和原有配置检查通过，不替代类型检查。 |
+| `node scripts/check-docs.mjs` | 四份文档链接及 README 双语结构检查通过。 |
+| `node ../scripts/verify-translation-pairing.ts --write memory/README.md`，随后去掉 `--write` 检查 | 更新目录内配对记录，1 对文档一致性检查通过；当前工具仅写该 sidecar，不写 Git 对象。 |
+| `node scripts/link-profile.mjs` | memory 内 profile 链接检查通过，没有安装依赖。 |
+| `node ../apps/cli/lib/bin.js --profile headless --patch ./profiles/headless-built.patch.yml --patch ./tests/fixtures/l1-scan.patch.yml 'Reply with OK without using tools.'` | 插件加载并退出，主任务因 `MISSING_CREDENTIAL` 返回 1；不是模型成功验收。 |
+| `node --import tsx/esm ../apps/cli/src/bin.ts --profile headless --patch ./profiles/headless.patch.yml --patch ./tests/fixtures/l1-scan.patch.yml 'Reply with OK without using tools.'` | 首次遇到宿主 `uv_os_get_passwd` 沙箱错误，原样提升重试后插件加载并退出，主任务仍因 `MISSING_CREDENTIAL` 返回 1。 |
+| `node scripts/test.mjs profile-copy`，设置 `DSH_MEMORY_VERIFY_COPY=1` 和 `DSH_MEMORY_VERIFY_DB=data/l1-smoke.sqlite` | 1 个测试通过；两次 profile 的 37 条 L0 事件与真实 JSONL 日志逐事件相同。 |
+
+只读检查确认 smoke 数据库为 schema 2，包含两个 `pending` L1 任务，`attempts` 和 `calls` 均为零，没有 L1 记忆记录；这验证受限组合没有暗中绕过日志发起提炼。初轮检查发现测试 stream 缺少必要 block-end 字段，以及可选嵌套配置被默认构造的问题，均修正后通过相关检查。
+
+仍未完成或受阻的项目：
+
+- 自动调用所需的辅助请求事件尚未声明或写入 Session。当前 `Session.append()` 没有供插件设置 `ignorable` 的参数，存储重读会拒绝未登记的必需事件；不能伪装成已有标题事件或只写 SQLite。需要扩大到持久化声明发现配置、`packages/core/session/src/known-event-types.ts`、`docs/persistence-catalog.md`、`docs/persistence-schema.json` 和 `docs/persistence-changes/` 的授权范围，按正式生成与兼容性登记流程接入；实际生成文件清单还需随事件定义核对。
+- 必需的 `snapshots/session/` 录制回放仍在目录外；新增 Session 事件还需核对 TypeScript/Python SDK 预期输出。没有创建目录内替代 Session 快照，也没有接通缺少日志记录的生产 worker。
+- 环境没有真实模型凭据；真实模型成功 L1、主任务成功路径，以及辅助请求在 Session 中的完整回放未验证。
+- 未运行完整 `doc-sync`、工作区 build/hygiene 或平台矩阵，未修改外部配置来纳入 memory；目录内检查不替代这些验收。
 
 ## Task 3：实现 L2/L3 长期记忆
 

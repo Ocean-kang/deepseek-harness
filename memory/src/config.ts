@@ -4,12 +4,15 @@ import { dirname, isAbsolute, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { ProjectId } from './types.ts'
 import { MemoryError } from './types.ts'
+import { resolveL1Config } from './l1-config.ts'
+import type { L1Config, L1Spec } from './l1-types.ts'
 
 /** This plugin's permitted write root, preserved in both src/ and lib/. */
 export const MEMORY_ROOT = fileURLToPath(new URL('../', import.meta.url))
 
 /** User configuration; defaults are applied only by resolveConfig. */
 export interface Config {
+  l1?: L1Config | undefined
   projectId: string
   databasePath: string
   queueCapacity?: number
@@ -21,6 +24,7 @@ export interface Config {
 
 /** Validated absolute paths and all deployment values. */
 export interface Spec {
+  readonly l1?: L1Spec
   readonly projectId: ProjectId
   readonly databasePath: string
   readonly queueCapacity: number
@@ -84,6 +88,7 @@ export async function resolveConfig(input: Config): Promise<Spec> {
   const journalMode = input.journalMode ?? 'wal'
   if (!['wal', 'delete', 'truncate', 'persist'].includes(journalMode)) throw new MemoryError('config', 'invalid journalMode')
   return Object.freeze({
+    ...(input.l1 === undefined ? {} : { l1: resolveL1Config(input.l1) }),
     projectId: input.projectId as ProjectId,
     databasePath: await memoryPath(input.databasePath),
     ...numbers,

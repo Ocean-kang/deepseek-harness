@@ -63,7 +63,7 @@ export interface RawMemory {
 }
 
 /** Stable diagnostic categories; messages never include event bodies. */
-export type MemoryErrorCode = 'config' | 'closed' | 'conflict' | 'gap' | 'schema' | 'corrupt' | 'storage' | 'source' | 'backpressure'
+export type MemoryErrorCode = 'config' | 'closed' | 'conflict' | 'gap' | 'schema' | 'corrupt' | 'storage' | 'source' | 'backpressure' | 'model' | 'output' | 'budget' | 'integration'
 
 /** A memory failure with an optional underlying cause for local debugging. */
 export class MemoryError extends Error {

@@ -93,3 +93,31 @@ it('drains a full queue while the root and source provider shut down', async () 
     await item.close()
   }
 })
+
+it('persists L1 tasks after L0 flush and leaves model dispatch visibly unintegrated', async () => {
+  const item = await fixture()
+  const ctx = new Context()
+  try {
+    await ctx.plugin(SessionStore)
+    await ctx.plugin(JsonlSessionPersistence, { root: `${item.root}/sessions`, compression: 'none' })
+    const session = ctx.sessions.create(SessionId('l1-source'))
+    const writer = await ctx.sessionPersistence.create(session.header)
+    const options = { projectId: item.spec.projectId, databasePath: item.spec.databasePath, l1: { provider: 'test', model: 'test' } }
+    const plugin = await ctx.plugin(MemoryPlugin, options)
+    session.append('turn/start', { turn: 1 })
+    await ctx.sessions.flush(session)
+    expect(await ctx.memory.listTasks(item.spec.projectId, '', 10)).toEqual([])
+    session.append('turn/end', { turn: 1, reason: { kind: 'blocked' } })
+    await ctx.sessions.flush(session)
+    expect(await ctx.memory.listTasks(item.spec.projectId, '', 10)).toMatchObject([{ status: 'pending', reason: { kind: 'blocked' } }])
+    await plugin.dispose()
+    const reloaded = await ctx.plugin(MemoryPlugin, options)
+    expect(await ctx.memory.listTasks(item.spec.projectId, '', 10)).toHaveLength(1)
+    expect(session.snapshotEvents().map(event => event.type)).toEqual(['turn/start', 'turn/end'])
+    await reloaded.dispose()
+    await writer.close()
+  } finally {
+    await ctx.fiber.dispose()
+    await item.close()
+  }
+})

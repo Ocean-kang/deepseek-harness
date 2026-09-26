@@ -1,6 +1,31 @@
-# Bilingual-pair consistency record (docs/i18n/README.md): the git blob hash of each
-# side as of the last confirmed-consistent state. Both languages carry equal authority;
-# after editing either side, bring the other along and re-record with:
+# Bilingual-pair consistency record for README.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write memory/README.md
-README.md: fd8214f790c777931e81ec944b60dd9f073eb50c
-README.zh.md: 5253367a444490755fb3282ba7e12ac66a8e765d
+/:
+  en: 1687166ac8962cad
+  zh: a749c8ae6f1f5457
+/l0-and-l1-memory:
+  en: 3168110051c9b27f
+  zh: 0be03c70b25f6f0a
+/l0-and-l1-memory/summary:
+  en: 96633e85918fa77e
+  zh: 26d8e866a7909d3d
+/l0-and-l1-memory/table-of-contents:
+  en: 7200de989da6a3a8
+  zh: 8e84e23d89213c2d
+/l0-and-l1-memory/use-this-plugin:
+  en: fec35303831ca936
+  zh: 041f4b39e4722df7
+/l0-and-l1-memory/understand-the-implementation:
+  en: 4b1d92728314aed4
+  zh: 05db9232db44c4fc
+/l0-and-l1-memory/further-exploration:
+  en: b8531b2f76996ba1
+  zh: 6259814b73192ede
+/l0-and-l1-memory/model-experience:
+  en: 8490d992702a7e66
+  zh: 0d043c8f29a28b11
+/l0-and-l1-memory/known-limitations-and-deferred-work:
+  en: 2f49ffa3b3680e30
+  zh: 3b83828ccd487b15

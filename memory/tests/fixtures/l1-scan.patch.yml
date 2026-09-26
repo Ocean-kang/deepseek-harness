@@ -1,0 +1,8 @@
+# This composition verifies durable L1 task discovery; model dispatch remains blocked.
+- id: memory-l0
+  config:
+    projectId: !!js process.env.DSH_MEMORY_PROJECT
+    databasePath: data/l1-smoke.sqlite
+    l1:
+      provider: deepseek-official
+      model: deepseek-v4-flash

@@ -10,9 +10,12 @@ import { memoryPath } from './config.ts'
 import type { Spec } from './config.ts'
 import { MemoryError } from './types.ts'
 import type { AppendRawRequest, AppendRawResult, RawMemory, ReadRawRequest, ReadRawResult } from './types.ts'
+import type { ProjectId } from './types.ts'
+import type { L1Spec } from './l1-types.ts'
+import { L1_SCHEMA, L1Store } from './l1-store.ts'
 
 /** Physical L0 schema version; future migrations must increase it. */
-export const SCHEMA_VERSION = 1
+export const SCHEMA_VERSION = 2
 const APPLICATION_ID = 0x4453484d
 
 function parseJson(value: string): unknown {
@@ -49,8 +52,10 @@ function decodeEvent(value: unknown, header: SessionHeader, seq: number): Sessio
 /** SQLite implementation of the minimal memory capability. */
 export class SqliteMemory implements RawMemory {
   private closed = false
+  /** L1 operations share this provider's connection and close lifetime. */
+  readonly l1: L1Store
 
-  private constructor(private readonly db: DatabaseSync) {}
+  private constructor(private readonly db: DatabaseSync) { this.l1 = new L1Store(db, () => this.assertOpen()) }
 
   /**
    * Open a database without overwriting another database's schema.
@@ -87,13 +92,20 @@ export class SqliteMemory implements RawMemory {
             body TEXT NOT NULL, PRIMARY KEY(session_id, seq)
           ) STRICT;
           CREATE INDEX sessions_project ON sessions(project, id);
-          PRAGMA application_id = ${APPLICATION_ID}; PRAGMA user_version = ${SCHEMA_VERSION}`)
-        } else if (version !== SCHEMA_VERSION || identity !== APPLICATION_ID) {
+          PRAGMA application_id = ${APPLICATION_ID}; PRAGMA user_version = 1`)
+        } else if ((version !== 1 && version !== SCHEMA_VERSION) || identity !== APPLICATION_ID) {
           throw new MemoryError('schema', 'unrecognized memory database identity or schema version')
         }
         // Prepare exact columns before accepting a stamped but malformed database.
         db.prepare('SELECT id, project, header, inherited_count, committed_to FROM sessions LIMIT 0').all()
         db.prepare('SELECT session_id, seq, body FROM events LIMIT 0').all()
+        if (version === 0 || version === 1) {
+          db.exec(L1_SCHEMA)
+          db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`)
+        }
+        db.prepare('SELECT session_id, cursor, open_turn, open_from FROM l1_scans LIMIT 0').all()
+        db.prepare('SELECT id, project, session_id, from_seq, to_seq, turn, reason, config, memory_id, expected_revision, status, attempts, calls, next_retry_at, failure, candidate, lease_until, owner FROM l1_tasks LIMIT 0').all()
+        db.prepare('SELECT id, revision, project, operation_id, summary, created_at FROM l1_memories LIMIT 0').all()
         db.exec('COMMIT')
       } catch (error) {
         db.exec('ROLLBACK')
@@ -203,6 +215,34 @@ export class SqliteMemory implements RawMemory {
     if (this.closed) return
     this.closed = true
     this.db.close()
+  }
+
+  /**
+   * Discover ended turns exclusively from complete committed L0 pages.
+   * @param project - owning project; other projects are not scanned.
+   * @param config - immutable extraction settings saved on every new task.
+   * @param pageSize - positive maximum decoded events per scan transaction.
+   * @returns number of newly created extraction tasks.
+   */
+  scanTurns(project: ProjectId, config: L1Spec, pageSize: number): number {
+    this.assertOpen()
+    if (!Number.isSafeInteger(pageSize) || pageSize < 1) throw new MemoryError('config', 'L1 scan page size must be positive')
+    let created = 0
+    for (const row of this.db.prepare('SELECT id, header, committed_to FROM sessions WHERE project = ? ORDER BY id').all(project)) {
+      const header = parseHeader(row.header)
+      let position = this.l1.cursor(project, header.id)
+      const end = this.offset(row.committed_to)
+      if (position > end) throw new MemoryError('corrupt', 'L1 scan checkpoint exceeds L0 prefix')
+      while (position < end) {
+        const stop = Math.min(end, position + pageSize)
+        const rows = this.db.prepare('SELECT body FROM events WHERE session_id = ? AND seq >= ? AND seq < ? ORDER BY seq').all(header.id, position, stop)
+        if (rows.length !== stop - position) throw new MemoryError('gap', 'L1 source has missing committed events')
+        const events = rows.map((event, i) => decodeEvent(event.body, header, position + i))
+        created += this.l1.scanPage(project, header.id, config, events)
+        position = stop
+      }
+    }
+    return created
   }
 
   private assertOpen(): void {

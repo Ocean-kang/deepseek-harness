@@ -4,6 +4,7 @@ import { symlink, unlink } from 'node:fs/promises'
 import { join } from 'node:path'
 import { resolveConfig } from '../src/config.ts'
 import { fixture } from './helpers.ts'
+import { resolveL1Config } from '../src/l1-config.ts'
 
 const owned: Array<Awaited<ReturnType<typeof fixture>>> = []
 afterEach(async () => { for (const item of owned.splice(0)) await item.close() })
@@ -25,4 +26,14 @@ it('refuses a directory junction before creating a database', async () => {
   } finally {
     await unlink(link)
   }
+})
+
+it('requires explicit L1 routes and resolves every extraction limit before execution', async () => {
+  const spec = await resolveConfig({ projectId: 'stable', databasePath: 'data/test.sqlite' })
+  expect(spec.l1).toBeUndefined()
+  expect(resolveL1Config({ provider: 'test', model: 'test' })).toEqual({ provider: 'test', model: 'test', promptVersion: 'l1-v1', maxInputBytes: 65536,
+    maxOutputTokens: 2048, timeoutMs: 60000, maxCalls: 32, maxAttempts: 3, retryBaseMs: 1000, retryMaxMs: 30000 })
+  for (const value of ['', '  ', ' trailing ']) expect(() => resolveL1Config({ provider: value, model: 'test' })).toThrow()
+  for (const value of [0, -1, 1.5, Infinity]) expect(() => resolveL1Config({ provider: 'test', model: 'test', timeoutMs: value })).toThrow()
+  expect(() => resolveL1Config({ provider: 'test', model: 'test', retryBaseMs: 100, retryMaxMs: 1 })).toThrow()
 })

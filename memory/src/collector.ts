@@ -32,12 +32,14 @@ export class RawCollector {
    * @param source - canonical Session storage with an independent flush barrier.
    * @param spec - resolved limits and project identity.
    * @param report - body-free operational diagnostics; must not throw.
+   * @param committed - notification after a complete L0 target commits; must not throw.
    */
   constructor(
     private readonly memory: RawMemory,
     private readonly source: Pick<SessionPersistence, 'flush' | 'open'>,
     private readonly spec: Spec,
     private readonly report: (error: MemoryError) => void,
+    private readonly committed: () => void = () => {},
   ) {}
 
   /**
@@ -219,6 +221,7 @@ export class RawCollector {
         this.discard(state, position)
       }
       state.backpressure = false
+      this.committed()
     } finally {
       await handle?.close()
     }
