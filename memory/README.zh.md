@@ -51,6 +51,8 @@ node --import tsx/esm ../apps/cli/src/bin.ts --profile headless --patch ./profil
 
 自动采集保留 Session 已存储的项目归属。对于新 Session，插件通过可选的 Workspace 注册表解析 `SessionHeader.cwd`，使用 `workspace.id`。缺少注册表、cwd、目录或匹配的 Workspace 时使用 `projectId`；其他查询失败会拒绝采集，可在显式刷新时重试。归属在首次 L0 提交时固定，包括备用项目归属。创建、删除或重命名 Workspace 不迁移已有记忆。
 
+Web profile patch 可以从启动工作目录设置必填的备用 `projectId`（从本目录启动时为 `memory`）。对于 cwd 匹配已注册 Workspace 的 Session，该备用值不决定 Memory 项目。验证 Web 归属时，在两个已注册的 Workspace 中分别创建新 Session，刷新 Session，然后将各自已存 header 的 `cwd` 与 Workspace 路径比较，并将 SQLite 中的 `sessions.project` 与对应 Workspace 的稳定 id 比较。两个项目 id 必须不同；已有 Session 即使 cwd 现在匹配 Workspace，仍保留先前存储的项目。
+
 可选的 `l1` 对象要求明确填写 `provider` 和 `model`。其余字段统一解析后随任务保存：
 
 | 字段 | 默认值 | 含义 |

@@ -50,6 +50,8 @@ Configuration is resolved before opening SQLite. Relative database paths resolve
 
 Automatic capture preserves a Session's stored project. For a new Session, it resolves `SessionHeader.cwd` through the optional Workspace registry and uses `workspace.id`. Missing registry, cwd, directory, or matching Workspace uses `projectId`; other lookup failures reject capture and remain retryable at an explicit flush. Ownership is fixed at the first L0 commit, including fallback ownership. Existing memory is not migrated when a Workspace is created, deleted, or renamed.
 
+A Web profile patch may set the required fallback `projectId` from the launch working directory (`memory` when launched from this directory). This value does not select the Memory project for a Session whose cwd matches a registered Workspace. To verify Web ownership, create a new Session in each of two registered Workspaces, flush their Sessions, and compare each stored Session header's `cwd` with its Workspace path and its SQLite `sessions.project` with that Workspace's stable id. The two project ids must differ; an existing Session keeps its previously stored project even when its cwd now matches a Workspace.
+
 The optional `l1` object requires explicit `provider` and `model` values. Its remaining fields are resolved once and saved on each task:
 
 | Field | Default | Meaning |
