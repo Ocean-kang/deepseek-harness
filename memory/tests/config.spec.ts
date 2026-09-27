@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { resolveConfig } from '../src/config.ts'
 import { fixture } from './helpers.ts'
 import { resolveL1Config } from '../src/l1-config.ts'
+import { resolveKnowledgeConfig } from '../src/knowledge-validation.ts'
 
 const owned: Array<Awaited<ReturnType<typeof fixture>>> = []
 afterEach(async () => { for (const item of owned.splice(0)) await item.close() })
@@ -36,4 +37,13 @@ it('requires explicit L1 routes and resolves every extraction limit before execu
   for (const value of ['', '  ', ' trailing ']) expect(() => resolveL1Config({ provider: value, model: 'test' })).toThrow()
   for (const value of [0, -1, 1.5, Infinity]) expect(() => resolveL1Config({ provider: 'test', model: 'test', timeoutMs: value })).toThrow()
   expect(() => resolveL1Config({ provider: 'test', model: 'test', retryBaseMs: 100, retryMaxMs: 1 })).toThrow()
+})
+
+it('resolves knowledge settings at load and rejects invalid scoring', async () => {
+  const config = { provider: 'test', model: 'test', scoreMin: 1, scoreMax: 5, l2Threshold: 3, l3Threshold: 4 }
+  const spec = await resolveConfig({ projectId: 'stable', databasePath: 'data/test.sqlite', knowledge: config })
+  expect(spec.knowledge).toEqual(resolveKnowledgeConfig(config))
+  expect(spec.knowledge?.promptVersion).toBe('knowledge-v1')
+  await expect(resolveConfig({ projectId: 'stable', databasePath: 'data/test.sqlite', knowledge: { ...config, l3Threshold: 2 } })).rejects.toMatchObject({ code: 'config' })
+  await expect(resolveConfig({ projectId: 'stable', databasePath: 'data/test.sqlite', knowledge: { ...config, provider: '' } })).rejects.toMatchObject({ code: 'config' })
 })

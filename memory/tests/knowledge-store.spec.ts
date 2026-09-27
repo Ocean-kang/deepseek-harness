@@ -14,6 +14,23 @@ afterEach(async () => { for (const item of owned.splice(0)) await item.close() }
 async function setup() { const item = await knowledgeFixture(); owned.push(item); return item }
 const other = 'other-project' as ProjectId
 
+it('finds pending and retry work after the current project lease settles', async () => {
+  const item = await setup()
+  const store = item.provider.knowledge
+  const first = store.enqueue(item.project, 'L2', [item.source], item.config)
+  const second = store.enqueue(item.project, 'L2', [item.source], { ...item.config, model: 'second' })
+  expect(store.nextDue(item.project)?.at).toBe(0)
+  expect(store.nextDue(other)).toBeNull()
+  const claimed = store.claim(item.project, first, 'worker', 10)!
+  expect(store.nextDue(item.project)?.at).toBe(claimed.leaseUntil)
+  store.fail(item.project, first, 'worker', 'TRANSIENT', true, 10)
+  expect(store.nextDue(item.project)).toEqual({ operationId: second, at: 0 })
+  store.claim(item.project, second, 'worker', 11)
+  store.prepare(item.project, second, 'worker', [])
+  store.commit(item.project, second, 'worker', 12)
+  expect(store.nextDue(item.project)).toEqual({ operationId: first, at: 1010 })
+})
+
 it('migrates populated schema 2 while retaining exact L0 and L1 records', async () => {
   const item = await setup()
   const raw = await item.provider.readRaw({ projectId: item.project, sessionId: header().id, from: SessionLogOffset(0), to: SessionLogOffset(3), limit: 10 })

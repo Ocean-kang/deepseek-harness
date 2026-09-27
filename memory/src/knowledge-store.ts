@@ -221,6 +221,24 @@ export class KnowledgeStore {
       .map(row => this.getTask(project, textValue(row.id) as OperationId)!)
   }
 
+  /** Find durable work without taking a lease; a current project lease delays all other work.
+   * @param project - owning project.
+   * @returns next operation and earliest eligible time, or null when no work remains.
+   */
+  nextDue(project: ProjectId): { operationId: OperationId; at: number } | null {
+    this.assertOpen()
+    const row = this.db.prepare(`WITH available AS (
+      SELECT id, CASE WHEN json_extract(body, '$.status') IN ('running', 'prepared')
+        THEN json_extract(body, '$.leaseUntil') ELSE json_extract(body, '$.nextRetryAt') END AS due
+      FROM knowledge_tasks WHERE project = ? AND json_extract(body, '$.status') IN ('pending', 'retry', 'running', 'prepared')
+    ), lease AS (
+      SELECT COALESCE(MAX(json_extract(body, '$.leaseUntil')), 0) AS until_at
+      FROM knowledge_tasks WHERE project = ? AND json_extract(body, '$.status') IN ('running', 'prepared')
+    )
+    SELECT id, MAX(due, (SELECT until_at FROM lease)) AS at FROM available ORDER BY at, id LIMIT 1`).get(project, project)
+    return row === undefined ? null : { operationId: textValue(row.id) as OperationId, at: integer(row.at) }
+  }
+
   /** Claim one task with a project-wide lease, including across SQLite connections.
    * @param project - owner.
    * @param operation - task.

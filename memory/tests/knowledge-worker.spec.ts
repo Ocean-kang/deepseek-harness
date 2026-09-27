@@ -57,6 +57,27 @@ it('records the frozen exact request before calling the real LLM service and com
   expect(item.store.listCandidates(item.project, 'L2')).toHaveLength(1)
 })
 
+it('schedules pending work and a durable retry without a manual run', async () => {
+  const item = await setup({ retryBaseMs: 1000, retryMaxMs: 1000 })
+  vi.useFakeTimers()
+  vi.setSystemTime(10)
+  let calls = 0
+  const reports: unknown[] = []
+  const worker = new KnowledgeWorker(item.store, { consolidate: async () => {
+    calls++
+    if (calls === 1) throw new L1ModelError('TRANSIENT', true)
+    return [knowledgeCandidate(item.source)]
+  } })
+  cleanups.push(() => worker.close())
+  worker.watch(item.project, error => { reports.push(error) })
+  await vi.advanceTimersByTimeAsync(1)
+  expect(item.store.getTask(item.project, item.operation)).toMatchObject({ status: 'retry', nextRetryAt: 1011 })
+  await vi.advanceTimersByTimeAsync(1000)
+  expect(item.store.getTask(item.project, item.operation)).toMatchObject({ status: 'done', attempts: 2 })
+  expect(calls).toBe(2)
+  expect(reports).toEqual([])
+})
+
 it.each(['not JSON', '{}', '[{"approved":true}]'])('rejects invalid output %s without publishing knowledge', async text => {
   const item = await setup()
   item.ctx.llm.registerAdapter(['test'], new Adapter(() => response(text)))

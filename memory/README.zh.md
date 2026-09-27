@@ -48,6 +48,7 @@ node --import tsx/esm ../apps/cli/src/bin.ts --profile headless --patch ./profil
 | `busyTimeoutMs` | 5000 | SQLite 锁等待时间；零表示不等待。 |
 | `journalMode` | `wal` | 可选 `wal`、`delete`、`truncate` 或 `persist`；同步模式为 FULL。 |
 | `l1` | 不配置 | 可选提炼配置；目前只启用持久化任务发现。 |
+| `knowledge` | 不配置 | 可选 L2/L3 模型与评分设置；排队任务但不派发模型调用。 |
 
 自动采集保留 Session 已存储的项目归属。对于新 Session，插件通过可选的 Workspace 注册表解析 `SessionHeader.cwd`，使用 `workspace.id`。缺少注册表、cwd、目录或匹配的 Workspace 时使用 `projectId`；其他查询失败会拒绝采集，可在显式刷新时重试。归属在首次 L0 提交时固定，包括备用项目归属。创建、删除或重命名 Workspace 不迁移已有记忆。
 
@@ -76,6 +77,8 @@ Web profile patch 可以从启动工作目录设置必填的备用 `projectId`�
 
 ### 长期知识
 
+配置 `knowledge` 后，插件为每个当前 L1 版本排队一个 L2 任务，并为每个有支持证据的当前 L2 版本排队一个 L3 任务。启动时补排已有版本，本进程提交新版本后继续排队。同一任务幂等；其他进程的提交在重启后发现。生产环境尚未安装模型 worker。
+
 先通过 `resolveKnowledgeConfig` 解析明确的 provider/model 设置，再调用 `ctx.memory.consolidate(project, level, sourceRefs, spec)` 持久化 L2 或 L3 任务；排队不发起模型调用。通过 `getKnowledgeTask` / `listKnowledgeTasks` 检查任务，使用 `retryKnowledgeTask` 重排失败任务。`listCandidates(project, level, after, limit)` 返回有支持证据的当前记录，`invalidateMemory(project, ref, reason, operation)` 使所属项目的当前 L2/L3 失效。精确 `getMemory` 读取保留所属项目的历史；共享结果是带 `shared: true`、标题和正文的独立投影，不包含来源或生成元数据。
 
 | 字段 | 默认值 | 含义 |
@@ -86,11 +89,11 @@ Web profile patch 可以从启动工作目录设置必填的备用 `projectId`�
 
 知识沿用上表的 L1 模型预算默认值。默认评分中，临时信息为 0–1，局部经验为 2，可复用方法为 3，稳定约束为 4，明确决策为 5。重要性不证明真实性：证据另分为 supported、unverified 和 conflict。低分不删除来源；冲突即使低于阈值也保留，避免旧事实继续进入候选。L3 只接受有支持证据的稳定类别。模型输入包含原始证据链；同一事件引用的重复摘要不能提供额外的成功证据。
 
-[知识存储](src/knowledge-store.ts) 持久化具体来源版本、设置、已准备候选、尝试及调用次数和退避时间。同项目租约在不同连接间串行化聚合。版本冲突重新读取当前知识并丢弃过时候选，存储重试保留候选。`KnowledgeWorker.run` 显式执行一次到期尝试，不安装定时器。显式重试重置尝试次数，但保留操作整个生命周期的调用预算；模型设置变化创建不同操作。完整输入超预算时明确失败，不截断。必须先关闭全部 worker，再关闭 Provider。
+[知识存储](src/knowledge-store.ts) 持久化具体来源版本、设置、已准备候选、尝试及调用次数和退避时间。同项目租约在不同连接间串行化聚合。版本冲突重新读取当前知识并丢弃过时候选，存储重试保留候选。`KnowledgeWorker.run` 显式执行一次到期尝试。持有持久化辅助请求记录器的调用方可通过 `watch(project, report)` 启用定时重试，排队后须调用 `notify()`；释放请求 Session 前须等待 `retire(project)` 完成。显式重试重置尝试次数，但保留操作整个生命周期的调用预算；模型设置变化创建不同操作。完整输入超预算时明确失败，不截断。必须先关闭全部 worker，再关闭 Provider。
 
 [知识提炼器](src/knowledge-extractor.ts) 使用真实 LLM 服务，要求先等待 Session 请求记录器完成。生产环境既不安装该记录器，也不安装 worker。目录内测试使用受控 adapter 和记录器夹具，不能替代 Session 事件登记或真实 Provider 验证。
 
-内部 `provider.knowledge.approveShare` 和 `revokeShare` 要求可信验证器核验具体用户回执、项目、MemoryRef、操作和有效期。验证器是 adapter 依赖，不接受用户或模型传入；已加载服务不暴露批准方法或模型工具。当前没有安装生产可信 adapter。批准只适用于当前有支持证据的 L3；替代、失效和撤回在同一事务中删除授权。跨项目读取只暴露获批投影。重试旧批准不能撤销后来的撤回操作。撤回无法清除其他 Session 已记录的内容或此前读取产生的派生内容；未来用户入口必须在批准前说明这一点。
+组合交互式命令注册表后，`/memory-share show <id>@<revision>` 展示当前有支持证据的 L3 版本、撤回限制及五分钟有效的令牌。用户须在同一 Session 执行 `/memory-share approve <token>`；`/memory-share revoke <id>@<revision>` 停止后续共享。处理器先等待 Session 持久化，再以已记录的用户命令作为一次性回执提交指定版本的批准或撤回。未组合交互命令注册表时这些命令不可用。已加载记忆服务不向模型暴露批准方法或工具。替代、失效和撤回在同一事务中删除授权；跨项目读取只暴露获批投影。撤回无法清除其他 Session 已记录的内容或此前读取产生的派生内容。
 
 <a id="semantic-retrieval"></a>
 ### 语义检索

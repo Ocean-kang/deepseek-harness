@@ -8,6 +8,8 @@ import { resolveEmbeddingConfig } from './embedding.ts'
 import type { EmbeddingConfig, EmbeddingSpec } from './embedding.ts'
 import { resolveL1Config } from './l1-config.ts'
 import type { L1Config, L1Spec } from './l1-types.ts'
+import { resolveKnowledgeConfig } from './knowledge-config.ts'
+import type { KnowledgeConfig, KnowledgeSpec } from './knowledge-types.ts'
 
 /** This plugin's permitted write root, preserved in both src/ and lib/. */
 export const MEMORY_ROOT = fileURLToPath(new URL('../', import.meta.url))
@@ -16,6 +18,7 @@ export const MEMORY_ROOT = fileURLToPath(new URL('../', import.meta.url))
 export interface Config {
   embedding?: EmbeddingConfig | undefined
   l1?: L1Config | undefined
+  knowledge?: KnowledgeConfig | undefined
   /** Required fallback for Sessions without a matching Workspace. */
   projectId: string
   databasePath: string
@@ -30,6 +33,7 @@ export interface Config {
 export interface Spec {
   readonly embedding?: EmbeddingSpec
   readonly l1?: L1Spec
+  readonly knowledge?: KnowledgeSpec
   readonly projectId: ProjectId
   readonly databasePath: string
   readonly queueCapacity: number
@@ -95,6 +99,7 @@ export async function resolveConfig(input: Config): Promise<Spec> {
   return Object.freeze({
     ...(input.embedding === undefined ? {} : { embedding: resolveEmbeddingConfig(input.embedding) }),
     ...(input.l1 === undefined ? {} : { l1: resolveL1Config(input.l1) }),
+    ...(input.knowledge === undefined ? {} : { knowledge: resolveKnowledgeConfig(input.knowledge) }),
     projectId: input.projectId as ProjectId,
     databasePath: await memoryPath(input.databasePath),
     ...numbers,

@@ -1,14 +1,16 @@
 /** Real Cordis and JSONL lifecycle, including plugin unload and inherited history. */
-import { expect, it } from 'vitest'
+import { expect, it, vi } from 'vitest'
 import { createServer } from 'node:http'
 import { once } from 'node:events'
 import { randomUUID } from 'node:crypto'
 import { Context } from '@deepseek-ai/cordis'
+import type { Agent } from '@deepseek-ai/dsh-agent'
+import CommandRuntime from '@deepseek-ai/dsh-commands'
 import SessionStore, { Session, SessionId, SessionLogOffset } from '@deepseek-ai/dsh-session'
 import JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
 import * as MemoryPlugin from '../src/index.ts'
 import { fixture } from './helpers.ts'
-import { knowledgeFixture } from './knowledge-fixtures.ts'
+import { knowledgeFixture, knowledgeCandidate, commitKnowledge } from './knowledge-fixtures.ts'
 
 it('captures real persisted events, unloads, and recovers missed events on reload', async () => {
   const item = await fixture()
@@ -141,6 +143,76 @@ it('queues knowledge through the mounted service without exposing approval or in
     expect('approveShare' in ctx.memory).toBe(false)
     expect('revokeShare' in ctx.memory).toBe(false)
     await expect(ctx.memory.consolidate(item.spec.projectId, 'L2', [], MemoryPlugin.resolveKnowledgeConfig({ provider: 'test', model: 'test' }))).rejects.toMatchObject({ code: 'source' })
+  } finally { await ctx.fiber.dispose(); await item.close() }
+})
+
+it('queues existing L1 and L2 versions for consolidation across plugin restarts', async () => {
+  const item = await knowledgeFixture()
+  const ctx = new Context()
+  try {
+    await ctx.plugin(SessionStore)
+    await ctx.plugin(JsonlSessionPersistence, { root: `${item.root}/sessions`, compression: 'none' })
+    const options = { projectId: item.project, databasePath: item.spec.databasePath, knowledge: { provider: 'test', model: 'test' } }
+    const first = await ctx.plugin(MemoryPlugin, options)
+    const l2 = (await ctx.memory.listKnowledgeTasks(item.project))[0]!
+    expect(l2).toMatchObject({ input: { level: 'L2' }, status: 'pending', calls: 0 })
+    await first.dispose()
+    item.provider.knowledge.claim(item.project, l2.operationId, 'fixture', 10)
+    item.provider.knowledge.prepare(item.project, l2.operationId, 'fixture', [knowledgeCandidate(item.source)])
+    const source = item.provider.knowledge.commit(item.project, l2.operationId, 'fixture', 11)[0]!
+    const second = await ctx.plugin(MemoryPlugin, options)
+    const tasks = await ctx.memory.listKnowledgeTasks(item.project)
+    expect(tasks).toHaveLength(2)
+    expect(tasks.find(task => task.input.level === 'L3')).toMatchObject({ input: { sources: [{ id: source.id, revision: source.revision }] }, status: 'pending', calls: 0 })
+    await second.dispose()
+  } finally { await ctx.fiber.dispose(); await item.close() }
+})
+
+it('shares an exact L3 version only after a human command preview and approval', async () => {
+  const item = await knowledgeFixture()
+  const l2 = commitKnowledge(item, 'L2', [item.source], [knowledgeCandidate(item.source)])[0]!
+  const l3 = commitKnowledge(item, 'L3', [l2], [knowledgeCandidate(l2)], 'l3')[0]!
+  const ctx = new Context()
+  try {
+    await ctx.plugin(SessionStore)
+    await ctx.plugin(JsonlSessionPersistence, { root: `${item.root}/sessions`, compression: 'none' })
+    await ctx.plugin(CommandRuntime)
+    const session = ctx.sessions.create(SessionId('share-command'))
+    const writer = await ctx.sessionPersistence.create(session.header)
+    const plugin = await ctx.plugin(MemoryPlugin, { projectId: item.project, databasePath: item.spec.databasePath })
+    const agent = { id: session.id, session } as Agent
+    const execute = async (line: string) => (await ctx.commands.execute(agent, line, [], new AbortController().signal))?.result
+    const ref = `${l3.id}@${l3.revision}`
+    const foreign = 'foreign' as typeof item.project
+    expect(await ctx.memory.getMemory(foreign, l3)).toBeNull()
+    expect(await execute('/memory-share approve unknown')).toMatchObject({ kind: 'error' })
+    const preview = await execute(`/memory-share show ${ref}`)
+    expect(preview).toMatchObject({ kind: 'success' })
+    expect(preview?.text).toContain('cannot erase content already recorded')
+    const token = /\/memory-share approve ([a-f0-9-]+)/u.exec(preview?.text ?? '')?.[1]
+    expect(token).toBeDefined()
+    const newerPreview = await execute(`/memory-share show ${ref}`)
+    const newerToken = /\/memory-share approve ([a-f0-9-]+)/u.exec(newerPreview?.text ?? '')?.[1]
+    expect(newerToken).toBeDefined()
+    expect(await execute(`/memory-share approve ${token}`)).toMatchObject({ kind: 'error' })
+    const flush = vi.spyOn(ctx.sessions, 'flush').mockRejectedValueOnce(new Error('disk full'))
+    try {
+      await expect(ctx.commands.execute(agent, `/memory-share approve ${newerToken}`, [], new AbortController().signal)).rejects.toThrow('disk full')
+    } finally { flush.mockRestore() }
+    expect(await ctx.memory.getMemory(foreign, l3)).toBeNull()
+    const anotherSession = ctx.sessions.create(SessionId('other-share-command'))
+    const anotherWriter = await ctx.sessionPersistence.create(anotherSession.header)
+    const anotherAgent = { id: anotherSession.id, session: anotherSession } as Agent
+    expect((await ctx.commands.execute(anotherAgent, `/memory-share approve ${newerToken}`, [], new AbortController().signal))?.result).toMatchObject({ kind: 'error' })
+    expect(await execute(`/memory-share approve ${newerToken}`)).toMatchObject({ kind: 'success' })
+    expect(await execute(`/memory-share approve ${newerToken}`)).toMatchObject({ kind: 'error' })
+    expect(await ctx.memory.getMemory(foreign, l3)).toMatchObject({ shared: true, id: l3.id, revision: l3.revision })
+    expect(await execute(`/memory-share revoke ${ref}`)).toMatchObject({ kind: 'success' })
+    expect(await ctx.memory.getMemory(foreign, l3)).toBeNull()
+    await plugin.dispose()
+    expect(ctx.commands.find(agent, 'memory-share')).toBeUndefined()
+    await anotherWriter.close()
+    await writer.close()
   } finally { await ctx.fiber.dispose(); await item.close() }
 })
 

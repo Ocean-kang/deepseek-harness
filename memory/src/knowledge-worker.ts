@@ -1,4 +1,4 @@
-/** Explicit consolidation execution; SQLite leases serialize work for each project. */
+/** Durable consolidation execution and opt-in scheduling; SQLite leases serialize each project. */
 import { randomUUID } from 'node:crypto'
 import { MemoryError } from './types.ts'
 import type { ProjectId } from './types.ts'
@@ -12,6 +12,9 @@ export class KnowledgeWorker {
   private readonly owner = randomUUID()
   private readonly controller = new AbortController()
   private readonly active = new Set<Promise<void>>()
+  private readonly watched = new Map<ProjectId, (error: unknown) => void>()
+  private tail: Promise<void> = Promise.resolve()
+  private timer: ReturnType<typeof setTimeout> | undefined
   /** @param store - parent-owned knowledge store.
    * @param extractor - extractor with a mandatory Session recorder.
    * @param now - epoch clock for deterministic recovery tests.
@@ -30,6 +33,59 @@ export class KnowledgeWorker {
     this.active.add(work)
     void work.finally(() => this.active.delete(work)).catch(() => undefined)
     return work
+  }
+
+  /** Schedule durable project work and its later retries.
+   * @param project - project whose auxiliary request Session remains writable.
+   * @param report - nonthrowing observer for scheduler failures.
+   */
+  watch(project: ProjectId, report: (error: unknown) => void): void {
+    if (this.controller.signal.aborted) throw new MemoryError('closed', 'Knowledge worker is closed')
+    this.watched.set(project, report)
+    this.arm()
+  }
+
+  /** Recheck durable tasks after an enqueue or source Session change. */
+  notify(): void { this.arm() }
+
+  /** Stop project scheduling before its request Session is released.
+   * @param project - departing project.
+   * @returns settlement of queued and active worker calls.
+   */
+  async retire(project: ProjectId): Promise<void> {
+    this.watched.delete(project)
+    this.arm()
+    await this.tail
+    await Promise.allSettled([...this.active])
+  }
+
+  private arm(): void {
+    if (this.timer !== undefined) clearTimeout(this.timer)
+    this.timer = undefined
+    if (this.controller.signal.aborted) return
+    const next = [...this.watched.keys()].flatMap(project => {
+      const due = this.store.nextDue(project)
+      return due === null ? [] : [{ project, ...due }]
+    }).sort((a, b) => a.at - b.at)[0]
+    if (next === undefined) return
+    this.timer = setTimeout(() => {
+      this.timer = undefined
+      const report = this.watched.get(next.project)
+      if (report === undefined) return
+      const work = this.tail.then(async () => {
+        const attempted = new Set<OperationId>()
+        for (;;) {
+          if (this.controller.signal.aborted || !this.watched.has(next.project)) return
+          const due = this.store.nextDue(next.project)
+          if (due === null || due.at > this.now() || attempted.has(due.operationId)) return
+          attempted.add(due.operationId)
+          await this.run(next.project, due.operationId, this.controller.signal)
+        }
+      })
+      this.tail = work.catch(() => undefined)
+      void work.then(() => this.arm(), error => { report(error); this.arm() }).catch(report)
+    }, Math.min(2147483647, Math.max(1, next.at - this.now())))
+    this.timer.unref()
   }
 
   private async execute(project: ProjectId, operation: OperationId, signal: AbortSignal): Promise<void> {
@@ -59,6 +115,10 @@ export class KnowledgeWorker {
    */
   async close(): Promise<void> {
     this.controller.abort(new Error('Knowledge worker closed'))
+    if (this.timer !== undefined) clearTimeout(this.timer)
+    this.timer = undefined
+    this.watched.clear()
+    await this.tail
     await Promise.allSettled([...this.active])
   }
 }

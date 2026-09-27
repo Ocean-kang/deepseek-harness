@@ -11,6 +11,7 @@ import { HttpEmbedder } from './embedding.ts'
 import { MemoryRetriever } from './retrieval.ts'
 import type { RetrievalRequest } from './retrieval.ts'
 import { RawCollector } from './collector.ts'
+import { installShareCommand } from './share-command.ts'
 import { MemoryError } from './types.ts'
 import type { AppendRawRequest, AppendRawResult, RawMemory, ReadRawRequest, ReadRawResult } from './types.ts'
 import type { ProjectId } from './types.ts'
@@ -50,6 +51,12 @@ export const Config: z<Config> = z.object({
     provider: z.string().required(), model: z.string().required(),
     maxInputBytes: z.number(), maxOutputTokens: z.number(), timeoutMs: z.number(), maxCalls: z.number(),
     maxAttempts: z.number(), retryBaseMs: z.number(), retryMaxMs: z.number(),
+  }), z.const(undefined)]),
+  knowledge: z.union([z.object({
+    provider: z.string().required(), model: z.string().required(),
+    maxInputBytes: z.number(), maxOutputTokens: z.number(), timeoutMs: z.number(), maxCalls: z.number(),
+    maxAttempts: z.number(), retryBaseMs: z.number(), retryMaxMs: z.number(),
+    scoreMin: z.number(), scoreMax: z.number(), l2Threshold: z.number(), l3Threshold: z.number(),
   }), z.const(undefined)]),
 })
 /** Plugin identity. */
@@ -226,6 +233,24 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   const provider = await SqliteMemory.open(spec)
   const report = (error: MemoryError) => ctx.logger.warn(`[memory/${error.code}] ${error.message}`)
   const retriever = spec.embedding === undefined || embedder === undefined ? undefined : new MemoryRetriever(provider, spec.embedding, embedder, report)
+  const enqueueKnowledge = () => {
+    if (spec.knowledge === undefined) return
+    try {
+      for (const project of provider.listProjects()) {
+        for (const [source, target] of [['L1', 'L2'], ['L2', 'L3']] as const) {
+          let after = ''
+          for (;;) {
+            const records = provider.knowledge.listCandidates(project, source, after, spec.pageSize)
+            for (const record of records) provider.knowledge.enqueue(project, target, [record], spec.knowledge)
+            if (records.length < spec.pageSize) break
+            after = records.at(-1)!.id
+          }
+        }
+      }
+    } catch (error) {
+      report(new MemoryError('storage', 'Knowledge task enqueue failed; pending source versions remain available for retry', error))
+    }
+  }
   const scan = (project: ProjectId) => {
     if (spec.l1 === undefined) return
     try { provider.scanTurns(project, spec.l1, spec.pageSize) } catch (error) {
@@ -261,12 +286,15 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     listeners.push(ctx.on('session/event', (session, event) => collector.capture(session, event)))
     listeners.push(ctx.on('session/flush', session => collector.flush(session)))
     listeners.push(ctx.on('session/disposed', session => collector.retire(session)))
+    if (spec.knowledge !== undefined) listeners.push(provider.onMemoryChange(enqueueKnowledge))
     const existing = ctx.sessions.list()
     for (const session of existing) collector.adopt(session)
     await Promise.all(existing.map(session => collector.flush(session)))
     if (spec.l1 !== undefined) for (const project of provider.listProjects()) scan(project)
+    enqueueKnowledge()
     if (spec.l1 !== undefined) report(new MemoryError('integration', 'L1 tasks are persisted, but automatic extraction is unavailable until its Session request event is registered; no model requests will be dispatched'))
     new MemoryService(ctx, provider, spec.l1, scan, retriever)
+    installShareCommand(ctx, provider)
     retriever?.schedule()
   } catch (error) {
     try {
