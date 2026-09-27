@@ -11,8 +11,15 @@ import { RawCollector } from './collector.ts'
 import { MemoryError } from './types.ts'
 import type { AppendRawRequest, AppendRawResult, RawMemory, ReadRawRequest, ReadRawResult } from './types.ts'
 import type { ProjectId } from './types.ts'
-import type { L1Memory, L1Spec, L1Task, MemoryRef, OperationId } from './l1-types.ts'
+import type { L1Spec, L1Task, MemoryRef, OperationId } from './l1-types.ts'
 
+import type { KnowledgeLevel, KnowledgeSpec, OwnedMemory, SharedMemory } from './knowledge-types.ts'
+
+export type * from './knowledge-types.ts'
+export { resolveKnowledgeConfig } from './knowledge-validation.ts'
+export { KnowledgeExtractor } from './knowledge-extractor.ts'
+export type { KnowledgeRecorder } from './knowledge-extractor.ts'
+export { KnowledgeWorker } from './knowledge-worker.ts'
 export type * from './types.ts'
 export type * from './l1-types.ts'
 export { L1Extractor, L1ModelError } from './l1-extractor.ts'
@@ -78,13 +85,66 @@ export class MemoryService extends Service implements RawMemory {
   }
 
   /**
-   * Read one exact project-owned L1 version.
+   * Read owned history or an approved current L3 projection.
    * @param project - owning project.
    * @param ref - immutable version reference.
-   * @returns memory or null; other projects remain invisible.
+   * @returns visible memory or null; shared records exclude private sources.
    */
-  async getMemory(project: ProjectId, ref: MemoryRef): Promise<L1Memory | null> {
-    return this.provider.l1.getMemory(project, ref)
+  async getMemory(project: ProjectId, ref: MemoryRef): Promise<OwnedMemory | SharedMemory | null> {
+    return this.provider.knowledge.getMemory(project, ref)
+  }
+
+  /** Page active usable memory versions.
+   * @param project - requesting project.
+   * @param level - requested level.
+   * @param after - exclusive identity cursor.
+   * @param limit - positive page size.
+   * @returns visible candidates.
+   */
+  async listCandidates(project: ProjectId, level: 'L1' | KnowledgeLevel, after = '', limit = 100): Promise<Array<OwnedMemory | SharedMemory>> {
+    return this.provider.knowledge.listCandidates(project, level, after, limit)
+  }
+
+  /** Queue an explicit consolidation; automatic model dispatch remains unavailable.
+   * @param project - owner.
+   * @param level - target level.
+   * @param sources - exact previous-level versions.
+   * @param config - resolved settings.
+   * @returns durable operation identity.
+   */
+  async consolidate(project: ProjectId, level: KnowledgeLevel, sources: readonly MemoryRef[], config: KnowledgeSpec): Promise<OperationId> {
+    return this.provider.knowledge.enqueue(project, level, sources, config)
+  }
+
+  /** Read a consolidation task.
+   * @param project - owner.
+   * @param operation - identity.
+   * @returns visible task or null.
+   */
+  async getKnowledgeTask(project: ProjectId, operation: OperationId) { return this.provider.knowledge.getTask(project, operation) }
+
+  /** Page consolidation tasks.
+   * @param project - owner.
+   * @param after - cursor.
+   * @param limit - page size.
+   * @returns task page.
+   */
+  async listKnowledgeTasks(project: ProjectId, after = '', limit = 100) { return this.provider.knowledge.listTasks(project, after, limit) }
+
+  /** Explicitly resume a failed consolidation.
+   * @param project - owner.
+   * @param operation - task identity.
+   */
+  async retryKnowledgeTask(project: ProjectId, operation: OperationId): Promise<void> { this.provider.knowledge.retry(project, operation) }
+
+  /** Invalidate current owned knowledge and revoke its grant.
+   * @param project - owner.
+   * @param ref - expected version.
+   * @param reason - audit reason.
+   * @param operation - idempotent identity.
+   */
+  async invalidateMemory(project: ProjectId, ref: MemoryRef, reason: string, operation: OperationId): Promise<void> {
+    this.provider.knowledge.invalidateMemory(project, ref, reason, operation)
   }
 
   /**

@@ -3,13 +3,13 @@ description: "Configure L0 event copies and durable L1 task discovery, and inspe
 kind: "package-reference"
 ---
 
-# L0 and L1 memory
+# Layered memory
 
 English | [中文](README.zh.md)
 
 ## Summary
 
-Keep complete recorded Session events in project-owned SQLite and optionally discover L1 extraction tasks from completed turn intervals. Read exact memory versions and inspect pending or failed operations. L1 storage, extraction and retry components have local tests; automatic model extraction remains unavailable until its Session request logging is integrated. Execution evidence and outstanding acceptance checks are recorded in [Tasks](Tasks.md).
+Keep complete recorded Session events in project-owned SQLite and optionally discover L1 extraction tasks from completed turn intervals. Read exact memory versions and inspect pending or failed operations. L1 and L2/L3 storage, extraction and retry components have local tests; automatic model extraction remains unavailable until its Session request logging is integrated. Execution evidence and outstanding acceptance checks are recorded in [Tasks](Tasks.md).
 
 ## Table of Contents
 
@@ -70,10 +70,28 @@ With `l1` configured, the plugin reports `memory/integration` and leaves tasks p
 
 ## Understand the implementation
 
+### Long-term knowledge
+
+Resolve explicit provider/model settings with `resolveKnowledgeConfig`, then call `ctx.memory.consolidate(project, level, sourceRefs, spec)` to persist an L2 or L3 task. This queues work without dispatching a model. Inspect it through `getKnowledgeTask` / `listKnowledgeTasks`; `retryKnowledgeTask` requeues failed work. Use `listCandidates(project, level, after, limit)` for supported current records and `invalidateMemory(project, ref, reason, operation)` to invalidate current owned L2/L3. Exact `getMemory` reads preserve owned history; a shared result is a distinct projection with `shared: true`, title and body, without sources or generation metadata.
+
+| Field | Default | Meaning |
+|---|---|---|
+| `scoreMin` / `scoreMax` | 0 / 5 | Inclusive integer range; maximum 100. |
+| `l2Threshold` / `l3Threshold` | 3 / 4 | Ordered thresholds inside the score range. |
+| `promptVersion` | `knowledge-v1` | Fixed implementation version persisted with tasks. |
+
+Knowledge uses the L1 model-budget defaults above. At the default scale, temporary information scores 0–1, local experience 2, reusable methods 3, stable constraints 4, and explicit decisions 5. Importance never establishes truth: evidence is separately supported, unverified, or conflict. Low scores do not delete sources; conflicts remain stored even below the threshold so an obsolete fact does not remain eligible. L3 accepts only supported stable categories. Original ancestry accompanies model input, and repeated summaries of the same event references do not establish additional successful evidence.
+
+The [knowledge store](src/knowledge-store.ts) persists exact source versions, settings, prepared candidates, attempt/call counts and backoff. Same-project leases serialize aggregation across connections. A version conflict refreshes current knowledge and discards the stale candidate; storage retry retains it. `KnowledgeWorker.run` executes one due attempt explicitly; it installs no timer. Explicit retry resets attempts but retains the lifetime call budget; changed model settings create a distinct operation. Complete oversized inputs fail without truncation. Close all workers before closing their provider.
+
+The [knowledge extractor](src/knowledge-extractor.ts) uses the real LLM service and requires an awaited Session-backed request recorder. Production installs neither that recorder nor the worker. Local tests use controlled adapters and recorder fixtures, which do not substitute for a registered Session event or a real-provider validation.
+
+Internal `provider.knowledge.approveShare` and `revokeShare` require a trusted verifier of the exact user receipt, project, MemoryRef, action and expiry. The verifier is an adapter dependency, not user/model input; the mounted service exposes no approval method or model tool. No production trusted adapter is installed. Approval applies only to the current supported L3 version; replacement, invalidation and revocation remove its grant atomically. Cross-project reads expose only the approved projection. Retrying an old approval cannot undo a later revocation. Revocation cannot erase content already recorded in another Session or derived from prior reads; a future user entry must explain this before approval.
+
 <details>
 <summary>Storage, recovery, and lifecycle</summary>
 
-The [SQLite provider](src/sqlite.ts) owns a separate database identity and schema version 2. It upgrades schema 1 transactionally without rewriting L0 events. Events use a `(session_id, seq)` primary key. Session metadata and the next uncommitted position advance in the same transaction as event rows. Unknown newer versions and other database identities are refused.
+The [SQLite provider](src/sqlite.ts) owns a separate database identity and schema version 3. It upgrades schema 1 or 2 transactionally without rewriting L0 events or L1 versions. Events use a `(session_id, seq)` primary key. Session metadata and the next uncommitted position advance in the same transaction as event rows. Unknown newer versions and other database identities are refused.
 
 The [L1 store](src/l1-store.ts) scans committed L0 pages and commits task creation with its scan cursor and open-turn state. Startup scans every stored project, including unloaded Sessions; successful capture and direct appends scan their actual project. It skips fully inherited turns and retains turns ending beyond a fork's inherited prefix. Task keys include project, Session interval, layer and saved extraction settings. Configuration changes affect newly discovered turns; explicit re-extraction creates a new operation for an existing logical memory. Candidate checkpoints precede atomic memory-version and task-completion commits. Operation lookup resolves uncertain commits, and expected revisions reject concurrent replacement. Historical versions remain readable as superseded records.
 
@@ -117,6 +135,6 @@ The mounted plugin introduces no model tool or injected memory, and currently di
 - Queue capacity counts events, not bytes. A single large event and a recovery page can require substantial memory; use smaller batch and page sizes where necessary.
 - Source-wide flush may report another Session writer's failure. Recovery treats that failed checkpoint as an error.
 - SQLite calls are synchronous and can block up to the configured lock timeout. Larger workloads may need an independently designed worker-backed provider.
-- Database growth is unbounded; there is no retention policy, attachment backup, L2/L3, retrieval or index. The extractor loads one complete turn into memory before partitioning requests; the byte budget limits requests, not peak process memory.
+- Database growth is unbounded; there is no retention policy, attachment backup, retrieval or embedding index. The extractor loads one complete turn into memory before partitioning requests; the byte budget limits requests, not peak process memory.
 - Automatic L1 extraction is blocked on a registered auxiliary Session event and the required persistence declarations and recorded-session evidence outside `memory/`. No request is journaled only in SQLite or disguised as an ordinary user turn. Real-provider validation also requires credentials.
 - Source-provider replacement requires another profile lifecycle test. Directory-local tests do not replace required recorded-session snapshots.

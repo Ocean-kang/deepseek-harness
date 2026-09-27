@@ -185,6 +185,33 @@ Task 2 已完成，能够提供带来源和版本的 L1。实现前核实受信�
 - 批准前其他项目不可读，批准后仅可读指定 L3，撤回后新查询不可读；历史 Session 已记录内容不被重写。
 - 知识可评分、去重、合并和更新，来源与版本可追溯；跨项目使用始终受具体版本批准约束。
 
+### Task 3 目录内实施记录（2026-09-27）
+
+已实现目录内知识评分、L1→L2 聚合、L2→L3 提炼、schema 3 存储迁移、不可变版本及候选查询、显式失效、内部共享批准/撤回事务，以及带请求记录前置条件的提炼器和显式 worker。来源沿用现有项目归属并绑定具体版本；共享投影不展开私有来源。真实用户 adapter 与自动模型 worker 均未在生产服务注册。
+
+局部验收通过不等于 Task 3 整体完成，完成复选框保持未勾选。Task 2 的辅助 Session 事件登记、相关持久化声明、仓库级录制快照及 SDK 预期仍为目录外集成依赖。L2/L3 真实 Provider 提炼效果与完整用户批准入口未验证。本次不实现 Task 4、不修改目录外文件、不提交或推送。
+
+本次命令均从 memory/ 运行，先点入 scripts/environment.ps1；缓存、临时数据库及构建产物均位于本目录。
+
+| 验证命令 | 实际结果 |
+|---|---|
+| `node ../node_modules/typescript/bin/tsc -p tsconfig.json --noEmit` | 通过。 |
+| `node ../scripts/run-oxlint.ts --config ../.oxlintrc.json src tests` | 退出码 0。 |
+| `node scripts/test.mjs` | 97 项通过，需显式启用的 profile-copy 测试 1 项跳过；其中 Task3 定向测试 26 项。 |
+| `node ../node_modules/tsdown/dist/run.mjs --config tsdown.config.ts --config-loader native` | 通过，输出 lib/index.mjs。 |
+| `node scripts/check-local.mjs` | 33 个 TypeScript 文件语法及配置检查通过。 |
+| `node scripts/check-docs.mjs` | 四份文档链接及 README 双语结构通过。 |
+| `node ../scripts/verify-translation-pairing.ts --write memory/README.md`，随后去掉 `--write` 检查 | 目录内配对记录更新后，1 对指定文档一致性检查通过。 |
+| `node scripts/test.mjs plugin` | 最后补强的服务排队测试在内，5 项通过；真实 L1 来源的 L2 任务保持 pending，模型调用计数为 0。 |
+| `node scripts/test.mjs knowledge-worker` | 清理路径补强后，11 项通过；失败断言也会释放受控等待并关闭 worker。 |
+| `node scripts/link-profile.mjs` | 检查通过，没有安装依赖。 |
+| `node ../apps/cli/lib/bin.js --profile headless --patch ./.artifacts/task3-profile.patch.yml 'Reply with OK without using tools.'` | 构建版插件通过受支持 profile 加载，返回 OK，退出码 0；使用独立测试数据库。 |
+| `node scripts/test.mjs profile-copy`，设置 `DSH_MEMORY_VERIFY_COPY=1` 和本次独立数据库路径 | 1 项通过；数据库 schema 3，21 条 L0 事件与真实 Session 日志一致，自动生成的长期知识为 0 条。 |
+
+直接使用普通 Node 导入 lib/index.mjs 的检查曾因找不到外部 peer 依赖 @deepseek-ai/cordis 失败；受支持 profile 的产物 smoke 已通过，未增加独立应用入口。未运行根目录 doc-sync、完整构建/hygiene、录制快照或 SDK 验证；这些检查涉及目录外集成，不以目录内检查替代。
+
+测试覆盖真实 SQLite 迁移及迁移回滚、阈值和低分冲突、成功方法证据链、来源隔离、幂等去重与版本替换、提交失败及数据库重开、租约和版本冲突、准确请求先记录后调用、非法输出、超预算、超时、取消、调用预算耗尽与显式重试，以及共享批准、回执拒绝、版本失效和撤回。模型测试通过真实 LLM 服务使用进程内受控 adapter；没有声称完成真实模型效果或 Session 日志录制回放验证。
+
 ## Task 4：实现记忆检索与注入
 
 - [ ] 完成 Task 4。

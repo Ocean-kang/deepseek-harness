@@ -5,6 +5,7 @@ import SessionStore, { Session, SessionId, SessionLogOffset } from '@deepseek-ai
 import JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
 import * as MemoryPlugin from '../src/index.ts'
 import { fixture } from './helpers.ts'
+import { knowledgeFixture } from './knowledge-fixtures.ts'
 
 it('captures real persisted events, unloads, and recovers missed events on reload', async () => {
   const item = await fixture()
@@ -120,4 +121,22 @@ it('persists L1 tasks after L0 flush and leaves model dispatch visibly unintegra
     await ctx.fiber.dispose()
     await item.close()
   }
+})
+
+it('queues knowledge through the mounted service without exposing approval or invoking extraction', async () => {
+  const item = await knowledgeFixture()
+  const ctx = new Context()
+  try {
+    await ctx.plugin(SessionStore)
+    await ctx.plugin(JsonlSessionPersistence, { root: `${item.root}/sessions`, compression: 'none' })
+    await ctx.plugin(MemoryPlugin, { projectId: item.spec.projectId, databasePath: item.spec.databasePath })
+    expect(await ctx.memory.listCandidates(item.spec.projectId, 'L2')).toEqual([])
+    expect(await ctx.memory.listKnowledgeTasks(item.spec.projectId)).toEqual([])
+    const operation = await ctx.memory.consolidate(item.project, 'L2', [item.source], item.config)
+    expect(await ctx.memory.getKnowledgeTask(item.project, operation)).toMatchObject({ status: 'pending', calls: 0 })
+    expect(await ctx.memory.getMemory(item.project, item.source)).toEqual(item.source)
+    expect('approveShare' in ctx.memory).toBe(false)
+    expect('revokeShare' in ctx.memory).toBe(false)
+    await expect(ctx.memory.consolidate(item.spec.projectId, 'L2', [], MemoryPlugin.resolveKnowledgeConfig({ provider: 'test', model: 'test' }))).rejects.toMatchObject({ code: 'source' })
+  } finally { await ctx.fiber.dispose(); await item.close() }
 })

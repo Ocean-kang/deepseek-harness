@@ -5,27 +5,30 @@
 /:
   en: 1687166ac8962cad
   zh: a749c8ae6f1f5457
-/l0-and-l1-memory:
-  en: 3168110051c9b27f
-  zh: 0be03c70b25f6f0a
-/l0-and-l1-memory/summary:
-  en: 96633e85918fa77e
-  zh: 26d8e866a7909d3d
-/l0-and-l1-memory/table-of-contents:
+/layered-memory:
+  en: 4a5d5335386ad846
+  zh: 5f0ab513bf8735c2
+/layered-memory/summary:
+  en: 5020741847dbadce
+  zh: f52ba1ca38f7434a
+/layered-memory/table-of-contents:
   en: 7200de989da6a3a8
   zh: 8e84e23d89213c2d
-/l0-and-l1-memory/use-this-plugin:
+/layered-memory/use-this-plugin:
   en: 06e2b4a16630d2fe
   zh: 499fc84c7b0fece2
-/l0-and-l1-memory/understand-the-implementation:
-  en: 560e21c5197089a5
-  zh: 98ca250afdcb4af6
-/l0-and-l1-memory/further-exploration:
+/layered-memory/understand-the-implementation:
+  en: ee4615a04fa6503d
+  zh: ee2c5fb2204a43cf
+/layered-memory/understand-the-implementation/long-term-knowledge:
+  en: 59df5b2fd0bd5379
+  zh: d4a1d3ce189e263b
+/layered-memory/further-exploration:
   en: b8531b2f76996ba1
   zh: 6259814b73192ede
-/l0-and-l1-memory/model-experience:
+/layered-memory/model-experience:
   en: 8490d992702a7e66
   zh: 0d043c8f29a28b11
-/l0-and-l1-memory/known-limitations-and-deferred-work:
-  en: 2f49ffa3b3680e30
-  zh: 3b83828ccd487b15
+/layered-memory/known-limitations-and-deferred-work:
+  en: c33a87c0f9ce4c7a
+  zh: 1adeae123b422fc5

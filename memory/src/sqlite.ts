@@ -13,9 +13,10 @@ import type { AppendRawRequest, AppendRawResult, RawMemory, ReadRawRequest, Read
 import type { ProjectId } from './types.ts'
 import type { L1Spec } from './l1-types.ts'
 import { L1_SCHEMA, L1Store } from './l1-store.ts'
+import { KNOWLEDGE_SCHEMA, KnowledgeStore } from './knowledge-store.ts'
 
 /** Physical L0 schema version; future migrations must increase it. */
-export const SCHEMA_VERSION = 2
+export const SCHEMA_VERSION = 3
 const APPLICATION_ID = 0x4453484d
 
 function parseJson(value: string): unknown {
@@ -62,7 +63,13 @@ export class SqliteMemory implements RawMemory {
   /** L1 operations share this provider's connection and close lifetime. */
   readonly l1: L1Store
 
-  private constructor(private readonly db: DatabaseSync) { this.l1 = new L1Store(db, () => this.assertOpen()) }
+  /** Long-term operations share the provider connection and lifetime. */
+  readonly knowledge: KnowledgeStore
+
+  private constructor(private readonly db: DatabaseSync) {
+    this.l1 = new L1Store(db, () => this.assertOpen())
+    this.knowledge = new KnowledgeStore(db, this.l1, () => this.assertOpen())
+  }
 
   /**
    * Read immutable ownership before adopting a Session.
@@ -120,7 +127,7 @@ export class SqliteMemory implements RawMemory {
           ) STRICT;
           CREATE INDEX sessions_project ON sessions(project, id);
           PRAGMA application_id = ${APPLICATION_ID}; PRAGMA user_version = 1`)
-        } else if ((version !== 1 && version !== SCHEMA_VERSION) || identity !== APPLICATION_ID) {
+        } else if ((version !== 1 && version !== 2 && version !== SCHEMA_VERSION) || identity !== APPLICATION_ID) {
           throw new MemoryError('schema', 'unrecognized memory database identity or schema version')
         }
         // Prepare exact columns before accepting a stamped but malformed database.
@@ -128,11 +135,19 @@ export class SqliteMemory implements RawMemory {
         db.prepare('SELECT session_id, seq, body FROM events LIMIT 0').all()
         if (version === 0 || version === 1) {
           db.exec(L1_SCHEMA)
+        }
+        if (version === 0 || version === 1 || version === 2) {
+          db.exec(KNOWLEDGE_SCHEMA)
           db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`)
         }
         db.prepare('SELECT session_id, cursor, open_turn, open_from FROM l1_scans LIMIT 0').all()
         db.prepare('SELECT id, project, session_id, from_seq, to_seq, turn, reason, config, memory_id, expected_revision, status, attempts, calls, next_retry_at, failure, candidate, lease_until, owner FROM l1_tasks LIMIT 0').all()
         db.prepare('SELECT id, revision, project, operation_id, summary, created_at FROM l1_memories LIMIT 0').all()
+        db.prepare('SELECT id, revision, project, level, operation_id, content_key, knowledge, config, created_at, state FROM knowledge_versions LIMIT 0').all()
+        db.prepare('SELECT id, project, body FROM knowledge_tasks LIMIT 0').all()
+        db.prepare('SELECT id, request, result FROM knowledge_operations LIMIT 0').all()
+        db.prepare('SELECT id, receipt_id, request FROM knowledge_share_actions LIMIT 0').all()
+        db.prepare('SELECT id, revision, action_id FROM knowledge_grants LIMIT 0').all()
         db.exec('COMMIT')
       } catch (error) {
         db.exec('ROLLBACK')

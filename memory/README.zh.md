@@ -3,13 +3,13 @@ description: "配置 L0 事件副本与持久化 L1 任务发现，并检查提�
 kind: "package-reference"
 ---
 
-# L0 与 L1 记忆
+# 分层记忆
 
 [English](README.md) | 中文
 
 ## 摘要
 
-将完整的已记录 Session 事件保存在项目所属的 SQLite 中，并可选地从已结束的 turn 区间发现 L1 提炼任务。调用方可以读取具体记忆版本，检查待处理或失败的操作。L1 存储、提炼和重试组件已有目录内测试；自动模型提炼仍需接通 Session 请求日志。执行证据与未完成验收见[任务清单](Tasks.md)。
+将完整的已记录 Session 事件保存在项目所属的 SQLite 中，并可选地从已结束的 turn 区间发现 L1 提炼任务。调用方可以读取具体记忆版本，检查待处理或失败的操作。L1 与 L2/L3 存储、提炼和重试组件已有目录内测试；自动模型提炼仍需接通 Session 请求日志。执行证据与未完成验收见[任务清单](Tasks.md)。
 
 ## 目录
 
@@ -72,10 +72,28 @@ node --import tsx/esm ../apps/cli/src/bin.ts --profile headless --patch ./profil
 <a id="understand-the-implementation"></a>
 ## 理解实现
 
+### 长期知识
+
+先通过 `resolveKnowledgeConfig` 解析明确的 provider/model 设置，再调用 `ctx.memory.consolidate(project, level, sourceRefs, spec)` 持久化 L2 或 L3 任务；排队不发起模型调用。通过 `getKnowledgeTask` / `listKnowledgeTasks` 检查任务，使用 `retryKnowledgeTask` 重排失败任务。`listCandidates(project, level, after, limit)` 返回有支持证据的当前记录，`invalidateMemory(project, ref, reason, operation)` 使所属项目的当前 L2/L3 失效。精确 `getMemory` 读取保留所属项目的历史；共享结果是带 `shared: true`、标题和正文的独立投影，不包含来源或生成元数据。
+
+| 字段 | 默认值 | 含义 |
+|---|---|---|
+| `scoreMin` / `scoreMax` | 0 / 5 | 整数闭区间，最大值不超过 100。 |
+| `l2Threshold` / `l3Threshold` | 3 / 4 | 评分区间内按顺序排列的阈值。 |
+| `promptVersion` | `knowledge-v1` | 随任务保存的固定实现版本。 |
+
+知识沿用上表的 L1 模型预算默认值。默认评分中，临时信息为 0–1，局部经验为 2，可复用方法为 3，稳定约束为 4，明确决策为 5。重要性不证明真实性：证据另分为 supported、unverified 和 conflict。低分不删除来源；冲突即使低于阈值也保留，避免旧事实继续进入候选。L3 只接受有支持证据的稳定类别。模型输入包含原始证据链；同一事件引用的重复摘要不能提供额外的成功证据。
+
+[知识存储](src/knowledge-store.ts) 持久化具体来源版本、设置、已准备候选、尝试及调用次数和退避时间。同项目租约在不同连接间串行化聚合。版本冲突重新读取当前知识并丢弃过时候选，存储重试保留候选。`KnowledgeWorker.run` 显式执行一次到期尝试，不安装定时器。显式重试重置尝试次数，但保留操作整个生命周期的调用预算；模型设置变化创建不同操作。完整输入超预算时明确失败，不截断。必须先关闭全部 worker，再关闭 Provider。
+
+[知识提炼器](src/knowledge-extractor.ts) 使用真实 LLM 服务，要求先等待 Session 请求记录器完成。生产环境既不安装该记录器，也不安装 worker。目录内测试使用受控 adapter 和记录器夹具，不能替代 Session 事件登记或真实 Provider 验证。
+
+内部 `provider.knowledge.approveShare` 和 `revokeShare` 要求可信验证器核验具体用户回执、项目、MemoryRef、操作和有效期。验证器是 adapter 依赖，不接受用户或模型传入；已加载服务不暴露批准方法或模型工具。当前没有安装生产可信 adapter。批准只适用于当前有支持证据的 L3；替代、失效和撤回在同一事务中删除授权。跨项目读取只暴露获批投影。重试旧批准不能撤销后来的撤回操作。撤回无法清除其他 Session 已记录的内容或此前读取产生的派生内容；未来用户入口必须在批准前说明这一点。
+
 <details>
 <summary>存储、恢复与生命周期</summary>
 
-[SQLite Provider](src/sqlite.ts) 使用独立数据库标识和 schema 版本 2，通过事务升级 schema 1，不重写 L0 事件。事件主键为 `(session_id, seq)`。Session 元数据和下一个未提交位置与事件行在同一事务中更新。未知较新版本及其他数据库标识被拒绝。
+[SQLite Provider](src/sqlite.ts) 使用独立数据库标识和 schema 版本 3，通过事务升级 schema 1 或 2，不重写 L0 事件和 L1 版本。事件主键为 `(session_id, seq)`。Session 元数据和下一个未提交位置与事件行在同一事务中更新。未知较新版本及其他数据库标识被拒绝。
 
 [L1 存储](src/l1-store.ts) 扫描已提交的 L0 分页，将任务创建与扫描游标、未闭合 turn 状态一起提交。启动时扫描所有已存储项目，包括未载入的 Session；采集和直接追加成功后扫描实际写入的项目。它跳过完全继承的 turn，保留在 fork 继承前缀之后结束的 turn。任务键包含项目、Session 区间、层级及已保存的提炼设置。配置变化影响新发现的 turn；显式重新提炼为已有逻辑记忆创建新操作。候选检查点先于记忆版本与任务完成状态的原子提交。操作查询用于处理提交结果不确定的情况，预期版本检查拒绝并发覆盖。历史版本仍可读取，并标记为已替代。
 
@@ -120,6 +138,6 @@ node ../apps/cli/lib/bin.js --profile headless --patch ./profiles/headless-built
 - 队列容量按事件数计算，不按字节计算。单个大事件和恢复分页仍可能占用较多内存；必要时减小批次和分页大小。
 - 来源服务级刷新可能报告其他 Session writer 的失败；恢复将该检查点失败视为错误。
 - SQLite 调用是同步的，可能阻塞至配置的锁超时；更大的工作负载可能需要独立设计的 Worker Provider。
-- 数据库持续增长；没有保留期限、附件备份、L2/L3、检索或索引。提炼器先将完整 turn 载入内存再划分请求；字节预算约束请求，不约束进程内存峰值。
+- 数据库持续增长；没有保留期限、附件备份、检索或 embedding 索引。提炼器先将完整 turn 载入内存再划分请求；字节预算约束请求，不约束进程内存峰值。
 - 自动 L1 提炼受阻于辅助 Session 事件登记，以及位于 `memory/` 外的必要持久化声明和录制会话证据。不会仅将请求记录在 SQLite，也不会伪装为普通用户 turn。真实 Provider 验证还需要凭据。
 - 来源 Provider 替换需要另行执行 profile 生命周期测试；目录内测试不能替代必需的录制会话快照。
