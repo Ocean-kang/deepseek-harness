@@ -9,7 +9,7 @@ import {
 } from '../../scripts/translation-pairing.ts'
 
 const root = fileURLToPath(new URL('../../', import.meta.url))
-const files = ['memory/README.md', 'memory/README.zh.md', 'memory/PROJECT.md', 'memory/Tasks.md']
+const files = ['memory/README.md', 'memory/README.zh.md', 'memory/PROJECT.md', 'memory/Tasks.md', 'memory/evaluation/task4.md']
 const anchors = anchorCache()
 const errors = files.flatMap(file => findViolations(resolve(root, file), anchors, root))
 function signature(sourcePath, counterpart) {
@@ -23,5 +23,5 @@ if (errors.length > 0) {
   console.error(errors)
   process.exitCode = 1
 } else {
-  console.log('Four documents: links and README bilingual structure passed. This does not replace doc-sync or the required pairing record.')
+  console.log('Five documents: links and README bilingual structure passed. This does not replace doc-sync or the required pairing record.')
 }

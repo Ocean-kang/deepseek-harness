@@ -7,6 +7,9 @@ import type {} from '@deepseek-ai/dsh-workspace'
 import { resolveConfig } from './config.ts'
 import type { Config as ConfigInput } from './config.ts'
 import { SqliteMemory } from './sqlite.ts'
+import { HttpEmbedder } from './embedding.ts'
+import { MemoryRetriever } from './retrieval.ts'
+import type { RetrievalRequest } from './retrieval.ts'
 import { RawCollector } from './collector.ts'
 import { MemoryError } from './types.ts'
 import type { AppendRawRequest, AppendRawResult, RawMemory, ReadRawRequest, ReadRawResult } from './types.ts'
@@ -15,6 +18,11 @@ import type { L1Spec, L1Task, MemoryRef, OperationId } from './l1-types.ts'
 
 import type { KnowledgeLevel, KnowledgeSpec, OwnedMemory, SharedMemory } from './knowledge-types.ts'
 
+export type * from './embedding.ts'
+export type * from './retrieval.ts'
+export { resolveEmbeddingConfig, HttpEmbedder } from './embedding.ts'
+export { MemoryRetriever } from './retrieval.ts'
+export { installMemoryInjector } from './injector.ts'
 export type * from './knowledge-types.ts'
 export { resolveKnowledgeConfig } from './knowledge-validation.ts'
 export { KnowledgeExtractor } from './knowledge-extractor.ts'
@@ -34,6 +42,10 @@ export const Config: z<Config> = z.object({
   projectId: z.string().required(), databasePath: z.string().required(),
   queueCapacity: z.number(), batchSize: z.number(), pageSize: z.number(), busyTimeoutMs: z.number(),
   journalMode: z.union(['wal', 'delete', 'truncate', 'persist'] as const),
+  embedding: z.union([z.object({ endpoint: z.string().required(), model: z.string().required(), dimensions: z.number().required(), apiKeyEnv: z.string().required(),
+    sendDimensions: z.boolean(), batchSize: z.number(), concurrency: z.number(), timeoutMs: z.number(), maxAttempts: z.number(), retryBaseMs: z.number(), retryMaxMs: z.number(),
+    retrievalTimeoutMs: z.number(), limit: z.number(), maxBytes: z.number(), threshold: z.number(), pageSize: z.number(), maxCandidates: z.number(),
+  }), z.const(undefined)]),
   l1: z.union([z.object({
     provider: z.string().required(), model: z.string().required(),
     maxInputBytes: z.number(), maxOutputTokens: z.number(), timeoutMs: z.number(), maxCalls: z.number(),
@@ -58,11 +70,32 @@ export class MemoryService extends Service implements RawMemory {
    * @param ctx - owning plugin context.
    * @param provider - ready SQLite provider.
    * @param l1 - resolved extraction configuration, if task scanning is enabled.
+   * @param retriever - optional explicitly configured semantic search.
    * @param scan - nonthrowing notification after L0 commits.
    */
-  constructor(ctx: Context, private readonly provider: SqliteMemory, private readonly l1: L1Spec | undefined, private readonly scan: (project: ProjectId) => void) {
+  constructor(ctx: Context, private readonly provider: SqliteMemory, private readonly l1: L1Spec | undefined, private readonly scan: (project: ProjectId) => void, private readonly retriever?: MemoryRetriever) {
     super(ctx, 'memory')
   }
+
+  private search(): MemoryRetriever {
+    if (this.retriever === undefined) throw new MemoryError('config', 'embedding configuration is required')
+    return this.retriever
+  }
+
+  /** Retrieve authorized version-bound references.
+   * @param request - accepted user query and project.
+   * @returns budgeted references; rejects on unavailable or incomplete index.
+   */
+  async retrieve(request: RetrievalRequest) { return this.search().retrieve(request) }
+
+  /** Inspect completeness for the requesting project.
+   * @param project - requester.
+   * @returns candidate counts and worker state.
+   */
+  async getIndexStatus(project: ProjectId) { return this.search().getIndexStatus(project) }
+
+  /** Rebuild only the configured vector space; inspect getIndexStatus for failures. */
+  async rebuildIndex(): Promise<void> { return this.search().rebuildIndex() }
 
   /**
    * Commit an ordered source batch.
@@ -189,8 +222,10 @@ export class MemoryService extends Service implements RawMemory {
  */
 export async function apply(ctx: Context, config: Config): Promise<void> {
   const spec = await resolveConfig(config)
+  const embedder = spec.embedding === undefined ? undefined : new HttpEmbedder(spec.embedding, process.env[spec.embedding.apiKeyEnv] ?? '')
   const provider = await SqliteMemory.open(spec)
   const report = (error: MemoryError) => ctx.logger.warn(`[memory/${error.code}] ${error.message}`)
+  const retriever = spec.embedding === undefined || embedder === undefined ? undefined : new MemoryRetriever(provider, spec.embedding, embedder, report)
   const scan = (project: ProjectId) => {
     if (spec.l1 === undefined) return
     try { provider.scanTurns(project, spec.l1, spec.pageSize) } catch (error) {
@@ -214,6 +249,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   const dispose = async () => {
     for (const dispose of listeners) dispose()
     try {
+      await retriever?.close()
       await collector.close()
     } finally {
       await provider.close()
@@ -230,7 +266,8 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     await Promise.all(existing.map(session => collector.flush(session)))
     if (spec.l1 !== undefined) for (const project of provider.listProjects()) scan(project)
     if (spec.l1 !== undefined) report(new MemoryError('integration', 'L1 tasks are persisted, but automatic extraction is unavailable until its Session request event is registered; no model requests will be dispatched'))
-    new MemoryService(ctx, provider, spec.l1, scan)
+    new MemoryService(ctx, provider, spec.l1, scan, retriever)
+    retriever?.schedule()
   } catch (error) {
     try {
       await dispose()

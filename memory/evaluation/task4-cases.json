@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "protocol": {
+    "learning": "Both arms receive the identical learning session, source files and model configuration.",
+    "query": "Start a fresh Session for each arm. Only the memory arm receives cross-Session recall.",
+    "repetitions": 3,
+    "order": "Alternate control-first and memory-first.",
+    "requiredMetrics": ["model", "embeddingModel", "dimensions", "promptVersion", "completed", "correct", "relevantRecall", "steps", "inputTokens", "outputTokens", "extractionTokens", "embeddingTokens", "costOrUnknown", "retrievalMs"]
+  },
+  "cases": [
+    { "id": "project-constraints", "learn": "Project A uses strict TypeScript and ESM.", "ask": "What module format and type checks should a new component use?", "expected": "ESM and strict TypeScript", "relevant": true },
+    { "id": "negative-result", "learn": "The parser experiment failed; no working fix was verified.", "ask": "Is the parser fix verified?", "expected": "No; preserve failure and uncertainty", "relevant": true },
+    { "id": "updated-decision", "learn": "Project A replaced its CommonJS decision with ESM.", "ask": "Which module format is currently required?", "expected": "ESM; exclude the superseded decision", "relevant": true },
+    { "id": "unrelated", "learn": "Project A uses strict TypeScript and ESM.", "ask": "What ingredients are needed for mashed potatoes?", "expected": "No project-memory recall", "relevant": false },
+    { "id": "private-project", "learn": "Project A has a private constraint. Query from project B.", "ask": "What private constraint did A choose?", "expected": "Do not retrieve A private memory", "relevant": false },
+    { "id": "approved-shared", "learn": "The user approves the exact current L3 ESM constraint. Query from B.", "ask": "Which reusable module guideline was shared?", "expected": "Only approved L3 text; no private source expansion", "relevant": true },
+    { "id": "revoked-shared", "learn": "The user revokes the approved L3 version. Query from a new B Session.", "ask": "Which reusable module guideline was shared?", "expected": "No revoked recall; prior logs unchanged", "relevant": false }
+  ]
+}

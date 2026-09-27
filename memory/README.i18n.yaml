@@ -21,8 +21,11 @@
   en: ee4615a04fa6503d
   zh: ee2c5fb2204a43cf
 /layered-memory/understand-the-implementation/long-term-knowledge:
-  en: 59df5b2fd0bd5379
-  zh: d4a1d3ce189e263b
+  en: a2d0e807e9cf16bb
+  zh: 5a077d16e6b1401e
+/layered-memory/understand-the-implementation/semantic-retrieval:
+  en: f4c24a0b5674f8af
+  zh: c674956d7c8730d6
 /layered-memory/further-exploration:
   en: b8531b2f76996ba1
   zh: 6259814b73192ede
@@ -30,5 +33,5 @@
   en: 8490d992702a7e66
   zh: 0d043c8f29a28b11
 /layered-memory/known-limitations-and-deferred-work:
-  en: c33a87c0f9ce4c7a
-  zh: 1adeae123b422fc5
+  en: 5e109f7ef09ba17a
+  zh: 6436c9d02c9e88c9

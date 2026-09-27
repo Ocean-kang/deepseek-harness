@@ -90,10 +90,32 @@ node --import tsx/esm ../apps/cli/src/bin.ts --profile headless --patch ./profil
 
 内部 `provider.knowledge.approveShare` 和 `revokeShare` 要求可信验证器核验具体用户回执、项目、MemoryRef、操作和有效期。验证器是 adapter 依赖，不接受用户或模型传入；已加载服务不暴露批准方法或模型工具。当前没有安装生产可信 adapter。批准只适用于当前有支持证据的 L3；替代、失效和撤回在同一事务中删除授权。跨项目读取只暴露获批投影。重试旧批准不能撤销后来的撤回操作。撤回无法清除其他 Session 已记录的内容或此前读取产生的派生内容；未来用户入口必须在批准前说明这一点。
 
+<a id="semantic-retrieval"></a>
+### 语义检索
+
+配置 `embedding` 后为当前记忆建立索引，并启用 `ctx.memory.retrieve`、`getIndexStatus` 和 `rebuildIndex`。未配置时，检索方法以 `config` 拒绝。必须显式提供完整 embeddings `endpoint`、与响应一致的 `model`、正整数 `dimensions` 和 `apiKeyEnv`。加载时指定环境变量必须含非空密钥。文本发送至该 endpoint，密钥不保存到 SQLite。此提供方独立于对话模型。
+
+| 字段 | 默认值 | 含义 |
+|---|---|---|
+| `sendDimensions` | false | 是否发送可选的 dimensions 字段；始终校验响应维度。 |
+| `batchSize` / `concurrency` | 16 / 1 | 索引批次大小与并行请求上限。 |
+| `timeoutMs` / `maxAttempts` | 15000 / 3 | 单次 HTTP 超时及暂时性失败的总尝试次数。 |
+| `retryBaseMs` / `retryMaxMs` | 500 / 5000 | 指数退避延迟范围。 |
+| `retrievalTimeoutMs` | 5000 | 包含 HTTP 重试与扫描的查询时限。 |
+| `limit` / `maxBytes` | 5 / 8192 | 结果数量及包含包装和引用的 UTF-8 字节预算。 |
+| `threshold` | 0.65 | 最低余弦相似度，需按模型校准。 |
+| `pageSize` / `maxCandidates` | 128 / 10000 | 候选分页大小与查询扫描上限。 |
+
+`retrieve({ projectId, text, levels?, limit?, maxBytes?, signal? })` 返回 `hits`、最终渲染的 `text`、`scanned` 和 `elapsedMs`。结果包含固定版本、项目 ID、共享标记和相似度。省略层级时选择 L1/L2/L3。候选为当前有依据的知识和最新 L1；其他项目私有记忆在评分前排除。按相似度降序、Memory ID 升序排序。整条超过剩余字节预算时跳过，继续选择后续较小条目。空文本、无候选和无命中返回空结果；索引不完整则明确拒绝。
+
+加载和本地记忆提交后触发索引。启动时补齐缺失向量，不重复已完成批次。endpoint、模型、维度或文本格式变化时选择独立空间。`getIndexStatus(project)` 检查项目完整性并报告扫描截断。缺少向量时查询以 `index-not-ready` 拒绝，候选过多以 `budget` 拒绝。索引失败产生诊断并保留状态；`rebuildIndex()` 等待 worker 后重建当前空间，调用方随后检查状态。其他连接不通知当前进程；重新加载或重建可以补齐其缺失向量。旧向量仍保留，不安装关键词回退。
+
+独立 [Injector](src/injector.ts) 不由插件注册。测试组合委托 `agent/pre-step`，每 turn 检索已接受的用户文本一次，复查可见性，并让循环以 `user/message` 记录确切参考正文。恢复依据已提交日志，数据库变化不修改旧记录。参考不构成指令，也不唤醒 turn。最终可见性检查后已接受的内容无法撤回。生产启用需要目录外持久化声明、SDK 证据和录制会话场景。参见[评估记录](evaluation/task4.md)。
+
 <details>
 <summary>存储、恢复与生命周期</summary>
 
-[SQLite Provider](src/sqlite.ts) 使用独立数据库标识和 schema 版本 3，通过事务升级 schema 1 或 2，不重写 L0 事件和 L1 版本。事件主键为 `(session_id, seq)`。Session 元数据和下一个未提交位置与事件行在同一事务中更新。未知较新版本及其他数据库标识被拒绝。
+[SQLite Provider](src/sqlite.ts) 使用独立数据库标识和 schema 版本 4，通过事务升级 schema 1、2 或 3，不重写 L0 事件和 L1 版本。事件主键为 `(session_id, seq)`。Session 元数据和下一个未提交位置与事件行在同一事务中更新。未知较新版本及其他数据库标识被拒绝。
 
 [L1 存储](src/l1-store.ts) 扫描已提交的 L0 分页，将任务创建与扫描游标、未闭合 turn 状态一起提交。启动时扫描所有已存储项目，包括未载入的 Session；采集和直接追加成功后扫描实际写入的项目。它跳过完全继承的 turn，保留在 fork 继承前缀之后结束的 turn。任务键包含项目、Session 区间、层级及已保存的提炼设置。配置变化影响新发现的 turn；显式重新提炼为已有逻辑记忆创建新操作。候选检查点先于记忆版本与任务完成状态的原子提交。操作查询用于处理提交结果不确定的情况，预期版本检查拒绝并发覆盖。历史版本仍可读取，并标记为已替代。
 
@@ -138,6 +160,6 @@ node ../apps/cli/lib/bin.js --profile headless --patch ./profiles/headless-built
 - 队列容量按事件数计算，不按字节计算。单个大事件和恢复分页仍可能占用较多内存；必要时减小批次和分页大小。
 - 来源服务级刷新可能报告其他 Session writer 的失败；恢复将该检查点失败视为错误。
 - SQLite 调用是同步的，可能阻塞至配置的锁超时；更大的工作负载可能需要独立设计的 Worker Provider。
-- 数据库持续增长；没有保留期限、附件备份、检索或 embedding 索引。提炼器先将完整 turn 载入内存再划分请求；字节预算约束请求，不约束进程内存峰值。
+- 数据库持续增长；没有保留期限或附件备份。提炼器先将完整 turn 载入内存再划分请求；字节预算约束请求，不约束进程内存峰值。
 - 自动 L1 提炼受阻于辅助 Session 事件登记，以及位于 `memory/` 外的必要持久化声明和录制会话证据。不会仅将请求记录在 SQLite，也不会伪装为普通用户 turn。真实 Provider 验证还需要凭据。
 - 来源 Provider 替换需要另行执行 profile 生命周期测试；目录内测试不能替代必需的录制会话快照。

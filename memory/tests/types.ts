@@ -20,3 +20,8 @@ const wrongOperation: OperationId = memory
 // @ts-expect-error An operation cannot identify a memory version.
 const wrongMemory: MemoryId = operation
 void [wrongOperation, wrongMemory]
+
+import type { VectorSpaceId } from '../src/embedding.ts'
+// @ts-expect-error A memory identity cannot identify a vector space.
+const wrongSpace: VectorSpaceId = memory
+void wrongSpace

@@ -1,5 +1,8 @@
 /** Real Cordis and JSONL lifecycle, including plugin unload and inherited history. */
 import { expect, it } from 'vitest'
+import { createServer } from 'node:http'
+import { once } from 'node:events'
+import { randomUUID } from 'node:crypto'
 import { Context } from '@deepseek-ai/cordis'
 import SessionStore, { Session, SessionId, SessionLogOffset } from '@deepseek-ai/dsh-session'
 import JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
@@ -139,4 +142,43 @@ it('queues knowledge through the mounted service without exposing approval or in
     expect('revokeShare' in ctx.memory).toBe(false)
     await expect(ctx.memory.consolidate(item.spec.projectId, 'L2', [], MemoryPlugin.resolveKnowledgeConfig({ provider: 'test', model: 'test' }))).rejects.toMatchObject({ code: 'source' })
   } finally { await ctx.fiber.dispose(); await item.close() }
+})
+
+it('exposes real HTTP retrieval through configured service and closes it on unload', async () => {
+  const item = await knowledgeFixture()
+  const ctx = new Context()
+  const keyName = `MEMORY_FIXTURE_${randomUUID().replaceAll('-', '_')}`
+  const previous = process.env[keyName]
+  process.env[keyName] = 'fixture-key'
+  const server = createServer(async (request, response) => {
+    const chunks: Buffer[] = []
+    for await (const chunk of request) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
+    const body: { input: string[] } = JSON.parse(Buffer.concat(chunks).toString())
+    response.setHeader('content-type', 'application/json')
+    response.end(JSON.stringify({ model: 'fixture', data: body.input.map((_text, index) => ({ index, embedding: [1, 0] })) }))
+  })
+  try {
+    server.listen(0, '127.0.0.1')
+    await once(server, 'listening')
+    const address = server.address()
+    if (address === null || typeof address === 'string') throw new Error('missing endpoint')
+    await ctx.plugin(SessionStore)
+    await ctx.plugin(JsonlSessionPersistence, { root: `${item.root}/sessions`, compression: 'none' })
+    const plugin = await ctx.plugin(MemoryPlugin, { projectId: item.project, databasePath: item.spec.databasePath,
+      embedding: { endpoint: `http://127.0.0.1:${address.port}/embeddings`, model: 'fixture', dimensions: 2, apiKeyEnv: keyName } })
+    await ctx.memory.rebuildIndex()
+    expect(await ctx.memory.getIndexStatus(item.project)).toMatchObject({ ready: true, candidates: 1 })
+    expect((await ctx.memory.retrieve({ projectId: item.project, text: 'parser' })).hits).toHaveLength(1)
+    const service = ctx.memory
+    await plugin.dispose()
+    await expect(service.retrieve({ projectId: item.project, text: 'after close' })).rejects.toMatchObject({ code: 'closed' })
+  } finally {
+    if (previous === undefined) delete process.env[keyName]
+    else process.env[keyName] = previous
+    await ctx.fiber.dispose()
+    const closed = new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()))
+    server.closeAllConnections()
+    await closed
+    await item.close()
+  }
 })

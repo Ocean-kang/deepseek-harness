@@ -2,7 +2,7 @@
 
 ## 摘要
 
-本文将分层记忆插件划分为四次 Codex 实现任务，依次交付 L0 原始记忆、L1 任务记忆、L2/L3 长期记忆和记忆检索与注入。每次任务包含本层能力的实现、测试和说明，以验收标准判断完成；详细数据与接口设计见 [PROJECT.md](PROJECT.md)。所有任务均未完成；Task 1 和 Task 2 已有目录内实现和下述验证记录，Task 2 的自动模型提炼仍受日志集成限制。`MemoryService` 为记忆插件服务，不是 DSH 核心 API。其他层能力仍为待实现设计。
+本文将分层记忆插件划分为四次 Codex 实现任务，依次交付 L0 原始记忆、L1 任务记忆、L2/L3 长期记忆和记忆检索与注入。每次任务包含本层能力的实现、测试和说明，以验收标准判断完成；详细数据与接口设计见 [PROJECT.md](PROJECT.md)。所有任务均未完成；Task 1–4 已有目录内实现和下述验证记录，自动模型提炼及生产注入仍受日志集成限制。`MemoryService` 为记忆插件服务，不是 DSH 核心 API。整体完成状态以下述验收与外部阻塞记录为准。
 
 ## 目录
 
@@ -244,6 +244,33 @@ Task 1–3 已完成，能够提供当前有效的项目记忆和具体版本的
 - 新 Session 可使用已学习知识；可降级的记忆故障有诊断且主任务继续，失败不冒充保存或注入成功。
 - 每项需求有实现和验证证据，不预设收益比例；缺少凭据、必要快照或目录外类型声明时保留未完成状态，不以目录内测试替代。
 - 新 Session 能检索并使用相关历史知识，日志可还原实际注入正文；效果、额外成本、容量和未验证限制均有记录。
+
+### Task 4 目录内实施记录（2026-09-27）
+
+已实现独立 embeddings HTTP 适配器、严格配置与响应校验、schema 4 事务迁移、绑定版本和空间的向量存储、提交后增量索引、启动恢复、项目权限筛选、余弦排序、整条 UTF-8 预算，以及独立 Injector。MemoryService 提供 `retrieve`、`getIndexStatus`、`rebuildIndex`。未配置 embedding 时保持关闭；显式配置但缺少密钥时在打开数据库前失败。生产插件不注册 Injector，不提供批准工具或自动提炼。
+
+Injector 组合测试使用真实 Agent、LLM 服务、JSONL Provider 和受控模型 adapter，验证正文进入正常 `user/message` 及请求、重试和同 turn 多步骤不重复检索、已提交日志控制监听器重载、取消不提交参考，以及索引失败时主任务继续。L1 测试保留来源标记和区分历史参考的提示。目录内测试不替代生产来源声明和仓库录制会话。
+
+产出与需求覆盖、固定对照任务集、容量数据和外部路径见[评估记录](evaluation/task4.md)。本次仅修改 memory/，保留原有未跟踪的 profiles/web.patch.yml，未提交或推送。Task 4 复选框保持未勾选。
+
+以下命令均从 memory/ 执行，先点入 scripts/environment.ps1；缓存、临时文件、数据库、日志和产物均在本目录。
+
+| 实际命令 | 结果 |
+|---|---|
+| `node ../node_modules/typescript/bin/tsc -p tsconfig.json --noEmit` | 通过，包含向量空间品牌 ID 负向类型检查。 |
+| `node scripts/test.mjs` | 130 项通过，3 项按显式开关跳过：真实 embedding、容量测量、profile-copy。 |
+| `node scripts/test.mjs retrieval-capacity`，设置 `DSH_MEMORY_BENCHMARK=1` | 1 项通过；100/1000/10000 条候选、128 维合成向量，每档 20 次计时。 |
+| `node scripts/test.mjs plugin` | 6 项通过，包含配置后通过动态端口调用真实 fetch、检索及卸载。 |
+| `node ../scripts/run-oxlint.ts --config ../.oxlintrc.json src tests` | 退出码 0。 |
+| `node scripts/check-local.mjs` | 42 个 TypeScript 文件语法与原有配置检查通过；不替代类型检查。 |
+| `node ../node_modules/tsdown/dist/run.mjs --config tsdown.config.ts --config-loader native` | 通过，仅输出 memory/lib/index.mjs。 |
+| `node scripts/link-profile.mjs` | 通过，未安装依赖。 |
+| `node ../apps/cli/lib/bin.js --profile headless --patch ./.artifacts/task4-profile.patch.yml 'Reply with OK without using tools.'` | 构建版通过受支持 profile 加载并返回 OK，退出码 0；使用独立 task4-smoke.sqlite。未配置 embedding，不代表自动检索或注入验收。 |
+| `node scripts/test.mjs profile-copy`，设置 `DSH_MEMORY_VERIFY_COPY=1`、`DSH_MEMORY_VERIFY_DB=data/task4-smoke.sqlite` | 1 项通过，L0 副本与真实原日志一致。 |
+| `node scripts/check-docs.mjs` | 五份文档链接及 README 双语结构通过。 |
+| `node ../scripts/verify-translation-pairing.ts --write memory/README.md`，随后去掉 `--write` | 目录内配对记录更新，1 对文档一致性检查通过。 |
+
+真实 embedding endpoint、模型、维度与密钥未配置，未运行真实语义检查或完整任务对照，未预设收益与费用。1 万条候选的本地检索 p95 为 624.14ms；这是合成容量证据，不包含网络或真实模型延迟。完整学习 Session → 新 Session 使用仍依赖 Task2/3 请求记录与可信批准入口，以及目录外持久化声明、快照和 SDK 预期。未运行根目录 doc-sync、完整构建/hygiene、平台矩阵或仓库录制快照；目录内检查不替代这些验收。
 
 ## 开发备注
 

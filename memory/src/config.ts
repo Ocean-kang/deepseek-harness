@@ -4,6 +4,8 @@ import { dirname, isAbsolute, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { ProjectId } from './types.ts'
 import { MemoryError } from './types.ts'
+import { resolveEmbeddingConfig } from './embedding.ts'
+import type { EmbeddingConfig, EmbeddingSpec } from './embedding.ts'
 import { resolveL1Config } from './l1-config.ts'
 import type { L1Config, L1Spec } from './l1-types.ts'
 
@@ -12,6 +14,7 @@ export const MEMORY_ROOT = fileURLToPath(new URL('../', import.meta.url))
 
 /** User configuration; defaults are applied only by resolveConfig. */
 export interface Config {
+  embedding?: EmbeddingConfig | undefined
   l1?: L1Config | undefined
   /** Required fallback for Sessions without a matching Workspace. */
   projectId: string
@@ -25,6 +28,7 @@ export interface Config {
 
 /** Validated absolute paths and all deployment values. */
 export interface Spec {
+  readonly embedding?: EmbeddingSpec
   readonly l1?: L1Spec
   readonly projectId: ProjectId
   readonly databasePath: string
@@ -89,6 +93,7 @@ export async function resolveConfig(input: Config): Promise<Spec> {
   const journalMode = input.journalMode ?? 'wal'
   if (!['wal', 'delete', 'truncate', 'persist'].includes(journalMode)) throw new MemoryError('config', 'invalid journalMode')
   return Object.freeze({
+    ...(input.embedding === undefined ? {} : { embedding: resolveEmbeddingConfig(input.embedding) }),
     ...(input.l1 === undefined ? {} : { l1: resolveL1Config(input.l1) }),
     projectId: input.projectId as ProjectId,
     databasePath: await memoryPath(input.databasePath),

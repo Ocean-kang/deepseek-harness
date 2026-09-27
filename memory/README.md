@@ -88,10 +88,32 @@ The [knowledge extractor](src/knowledge-extractor.ts) uses the real LLM service 
 
 Internal `provider.knowledge.approveShare` and `revokeShare` require a trusted verifier of the exact user receipt, project, MemoryRef, action and expiry. The verifier is an adapter dependency, not user/model input; the mounted service exposes no approval method or model tool. No production trusted adapter is installed. Approval applies only to the current supported L3 version; replacement, invalidation and revocation remove its grant atomically. Cross-project reads expose only the approved projection. Retrying an old approval cannot undo a later revocation. Revocation cannot erase content already recorded in another Session or derived from prior reads; a future user entry must explain this before approval.
 
+<a id="semantic-retrieval"></a>
+### Semantic retrieval
+
+Configure `embedding` to index current memories and enable `ctx.memory.retrieve`, `getIndexStatus` and `rebuildIndex`. Without it, search methods reject with `config`. Explicitly configure the complete embeddings `endpoint`, exact response `model`, positive `dimensions`, and `apiKeyEnv`. The named environment variable must contain a nonempty key at activation. Text is sent to that endpoint; keys are not saved in SQLite. This provider is independent of the conversational model.
+
+| Field | Default | Meaning |
+|---|---|---|
+| `sendDimensions` | false | Send the optional dimensions field; response dimensions are always checked. |
+| `batchSize` / `concurrency` | 16 / 1 | Index batch and parallel request limits. |
+| `timeoutMs` / `maxAttempts` | 15000 / 3 | Per-attempt HTTP timeout and total transient-failure attempts. |
+| `retryBaseMs` / `retryMaxMs` | 500 / 5000 | Exponential retry delay bounds. |
+| `retrievalTimeoutMs` | 5000 | Query deadline including HTTP retries and scanning. |
+| `limit` / `maxBytes` | 5 / 8192 | Result count and UTF-8 budget including wrapper and references. |
+| `threshold` | 0.65 | Minimum cosine similarity; calibrate for the configured model. |
+| `pageSize` / `maxCandidates` | 128 / 10000 | Candidate page size and query scan limit. |
+
+`retrieve({ projectId, text, levels?, limit?, maxBytes?, signal? })` returns `hits`, exact rendered `text`, `scanned` and `elapsedMs`. Hits contain fixed revisions, project IDs, shared flags and similarity. Omitted levels select L1/L2/L3. Current supported knowledge and latest L1 versions are eligible; foreign private memories are excluded before scoring. Results sort by descending similarity and ascending Memory ID. Whole entries exceeding the remaining byte budget are skipped so smaller entries can fit. Empty text, no candidates and no matches return empty results; incomplete indexes reject explicitly.
+
+Indexing starts on load and after local memory commits. Startup fills missing vectors without repeating completed batches. Endpoint, model, dimensions or text-format changes select a separate vector space. `getIndexStatus(project)` checks project completeness and reports capped scans. Queries reject missing vectors with `index-not-ready` and excessive candidates with `budget`. Index failures produce diagnostics and retained status; `rebuildIndex()` drains the worker and rebuilds its space, then callers inspect status. Other connections do not notify this process; reload or rebuild recovers their missing vectors. Old vectors remain stored. No keyword fallback is installed.
+
+The independent [Injector](src/injector.ts) is not registered by the plugin. Its test composition delegates `agent/pre-step`, searches accepted user text once per turn, rechecks visibility and lets the loop record exact recall text as `user/message`. Committed logs govern recovery and remain unchanged after database edits. References are not instructions and do not wake turns. Revocation cannot remove content admitted after its final visibility check. Production activation requires external persistence declarations, SDK evidence and recorded Session scenarios. See the [evaluation record](evaluation/task4.md).
+
 <details>
 <summary>Storage, recovery, and lifecycle</summary>
 
-The [SQLite provider](src/sqlite.ts) owns a separate database identity and schema version 3. It upgrades schema 1 or 2 transactionally without rewriting L0 events or L1 versions. Events use a `(session_id, seq)` primary key. Session metadata and the next uncommitted position advance in the same transaction as event rows. Unknown newer versions and other database identities are refused.
+The [SQLite provider](src/sqlite.ts) owns a separate database identity and schema version 4. It upgrades schema 1, 2 or 3 transactionally without rewriting L0 events or L1 versions. Events use a `(session_id, seq)` primary key. Session metadata and the next uncommitted position advance in the same transaction as event rows. Unknown newer versions and other database identities are refused.
 
 The [L1 store](src/l1-store.ts) scans committed L0 pages and commits task creation with its scan cursor and open-turn state. Startup scans every stored project, including unloaded Sessions; successful capture and direct appends scan their actual project. It skips fully inherited turns and retains turns ending beyond a fork's inherited prefix. Task keys include project, Session interval, layer and saved extraction settings. Configuration changes affect newly discovered turns; explicit re-extraction creates a new operation for an existing logical memory. Candidate checkpoints precede atomic memory-version and task-completion commits. Operation lookup resolves uncertain commits, and expected revisions reject concurrent replacement. Historical versions remain readable as superseded records.
 
@@ -135,6 +157,6 @@ The mounted plugin introduces no model tool or injected memory, and currently di
 - Queue capacity counts events, not bytes. A single large event and a recovery page can require substantial memory; use smaller batch and page sizes where necessary.
 - Source-wide flush may report another Session writer's failure. Recovery treats that failed checkpoint as an error.
 - SQLite calls are synchronous and can block up to the configured lock timeout. Larger workloads may need an independently designed worker-backed provider.
-- Database growth is unbounded; there is no retention policy, attachment backup, retrieval or embedding index. The extractor loads one complete turn into memory before partitioning requests; the byte budget limits requests, not peak process memory.
+- Database growth is unbounded; there is no retention policy or attachment backup. The extractor loads one complete turn into memory before partitioning requests; the byte budget limits requests, not peak process memory.
 - Automatic L1 extraction is blocked on a registered auxiliary Session event and the required persistence declarations and recorded-session evidence outside `memory/`. No request is journaled only in SQLite or disguised as an ordinary user turn. Real-provider validation also requires credentials.
 - Source-provider replacement requires another profile lifecycle test. Directory-local tests do not replace required recorded-session snapshots.

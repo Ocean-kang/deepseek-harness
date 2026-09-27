@@ -51,14 +51,18 @@ function levelOf(value: unknown): KnowledgeLevel {
 export class KnowledgeStore {
   /** @param db - parent-owned connection.
    * @param l1 - existing L1 reader.
+   * @param changed - nonthrowing post-commit notification.
    * @param assertOpen - parent lifetime check.
    */
-  constructor(private readonly db: DatabaseSync, private readonly l1: L1Store, private readonly assertOpen: () => void) {}
+  constructor(private readonly db: DatabaseSync, private readonly l1: L1Store, private readonly assertOpen: () => void, private readonly changed: () => void = () => {}) {}
 
   private transaction<T>(run: () => T): T {
     this.assertOpen()
     this.db.exec('BEGIN IMMEDIATE')
-    try { const result = run(); this.db.exec('COMMIT'); return result } catch (error) { this.db.exec('ROLLBACK'); throw error }
+    let result: T
+    try { result = run(); this.db.exec('COMMIT') } catch (error) { this.db.exec('ROLLBACK'); throw error }
+    this.changed()
+    return result
   }
 
   private decode(value: unknown): KnowledgeMemory {
@@ -115,8 +119,8 @@ export class KnowledgeStore {
       return this.db.prepare('SELECT id, MAX(revision) AS revision FROM l1_memories WHERE project = ? AND id > ? GROUP BY id ORDER BY id LIMIT ?').all(project, after, limit)
         .map(row => this.owned(project, knowledgeRef(row)))
     }
-    const rows = this.db.prepare(`SELECT * FROM knowledge_versions v WHERE state = 'active' AND level = ? AND id > ?
-      AND (project = ? OR (level = 'L3' AND EXISTS (SELECT 1 FROM knowledge_grants g WHERE g.id = v.id AND g.revision = v.revision))) ORDER BY id`).all(level, after, project)
+    const rows = this.db.prepare(`SELECT * FROM knowledge_versions v WHERE state = 'active' AND level = ? AND id > ? AND json_extract(knowledge, '$.evidence') = 'supported'
+      AND (project = ? OR (level = 'L3' AND EXISTS (SELECT 1 FROM knowledge_grants g WHERE g.id = v.id AND g.revision = v.revision))) ORDER BY id LIMIT ?`).all(level, after, project, limit)
     return rows.flatMap(row => {
       const memory = this.decode(row)
       if (memory.knowledge.evidence !== 'supported') return []

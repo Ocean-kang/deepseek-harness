@@ -4,7 +4,9 @@
   "private": true,
   "type": "module",
   "main": "lib/index.mjs",
-  "exports": { ".": "./lib/index.mjs" },
+  "exports": {
+    ".": "./lib/index.mjs"
+  },
   "peerDependencies": {
     "@deepseek-ai/cordis": "*",
     "@deepseek-ai/schemastery": "*",
@@ -13,9 +15,15 @@
     "@deepseek-ai/dsh-workspace": "*",
     "@deepseek-ai/dsh-llm": "*",
     "@deepseek-ai/dsh-timeout": "*",
-    "@deepseek-ai/dsh-util-values": "*"
+    "@deepseek-ai/dsh-util-values": "*",
+    "@deepseek-ai/dsh-agent": "*"
   },
   "peerDependenciesMeta": {
-    "@deepseek-ai/dsh-workspace": { "optional": true }
+    "@deepseek-ai/dsh-workspace": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-agent": {
+      "optional": true
+    }
   }
 }

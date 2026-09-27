@@ -19,12 +19,12 @@ it('migrates populated schema 2 while retaining exact L0 and L1 records', async 
   const raw = await item.provider.readRaw({ projectId: item.project, sessionId: header().id, from: SessionLogOffset(0), to: SessionLogOffset(3), limit: 10 })
   await item.provider.close()
   const db = new DatabaseSync(item.spec.databasePath)
-  try { db.exec('DROP TABLE knowledge_grants; DROP TABLE knowledge_share_actions; DROP TABLE knowledge_operations; DROP TABLE knowledge_tasks; DROP TABLE knowledge_versions; PRAGMA user_version = 2') } finally { db.close() }
+  try { db.exec('DROP TRIGGER memory_l1_insert; DROP TRIGGER memory_knowledge_insert; DROP TRIGGER memory_knowledge_update; DROP TRIGGER memory_grant_insert; DROP TRIGGER memory_grant_delete; DROP INDEX memory_knowledge_candidates; DROP TABLE memory_vectors; DROP TABLE memory_index_state; DROP TABLE memory_generation; DROP TABLE knowledge_grants; DROP TABLE knowledge_share_actions; DROP TABLE knowledge_operations; DROP TABLE knowledge_tasks; DROP TABLE knowledge_versions; PRAGMA user_version = 2') } finally { db.close() }
   const provider = await item.open()
   expect(provider.l1.getMemory(item.project, item.source)).toEqual(item.source)
   expect(await provider.readRaw({ projectId: item.project, sessionId: header().id, from: SessionLogOffset(0), to: SessionLogOffset(3), limit: 10 })).toEqual(raw)
   const check = new DatabaseSync(item.spec.databasePath)
-  try { expect(check.prepare('PRAGMA user_version').get()?.user_version).toBe(3) } finally { check.close() }
+  try { expect(check.prepare('PRAGMA user_version').get()?.user_version).toBe(4) } finally { check.close() }
 })
 
 it('rolls back schema 3 migration failures without changing schema 2 data', async () => {
@@ -32,7 +32,7 @@ it('rolls back schema 3 migration failures without changing schema 2 data', asyn
   await item.provider.close()
   const db = new DatabaseSync(item.spec.databasePath)
   try {
-    db.exec('DROP TABLE knowledge_grants; DROP TABLE knowledge_share_actions; DROP TABLE knowledge_operations; DROP TABLE knowledge_tasks; DROP TABLE knowledge_versions; CREATE TABLE knowledge_tasks (wrong TEXT); PRAGMA user_version = 2')
+    db.exec('DROP TRIGGER memory_l1_insert; DROP TRIGGER memory_knowledge_insert; DROP TRIGGER memory_knowledge_update; DROP TRIGGER memory_grant_insert; DROP TRIGGER memory_grant_delete; DROP INDEX memory_knowledge_candidates; DROP TABLE memory_vectors; DROP TABLE memory_index_state; DROP TABLE memory_generation; DROP TABLE knowledge_grants; DROP TABLE knowledge_share_actions; DROP TABLE knowledge_operations; DROP TABLE knowledge_tasks; DROP TABLE knowledge_versions; CREATE TABLE knowledge_tasks (wrong TEXT); PRAGMA user_version = 2')
     await expect(item.open()).rejects.toThrow()
     expect(db.prepare('PRAGMA user_version').get()?.user_version).toBe(2)
     expect(db.prepare('SELECT COUNT(*) AS n FROM l1_memories').get()?.n).toBe(1)

@@ -60,17 +60,18 @@ function decodeTask(value: unknown): L1Task {
 export class L1Store {
   /**
    * @param db - the parent provider's version-2 connection.
+   * @param changed - nonthrowing post-commit notification.
    * @param assertOpen - parent-owned lifetime check.
    */
-  constructor(private readonly db: DatabaseSync, private readonly assertOpen: () => void) {}
+  constructor(private readonly db: DatabaseSync, private readonly assertOpen: () => void, private readonly changed: () => void = () => {}) {}
 
   private transaction<T>(run: () => T): T {
     this.assertOpen()
     this.db.exec('BEGIN IMMEDIATE')
-    try { const result = run(); this.db.exec('COMMIT'); return result } catch (error) {
-      this.db.exec('ROLLBACK')
-      throw error
-    }
+    let result: T
+    try { result = run(); this.db.exec('COMMIT') } catch (error) { this.db.exec('ROLLBACK'); throw error }
+    this.changed()
+    return result
   }
 
   /**
