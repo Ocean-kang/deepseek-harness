@@ -1,0 +1,23 @@
+{
+  "layers": [
+    1,
+    1,
+    1
+  ],
+  "requestLevels": [
+    "L1",
+    "L2",
+    "L3"
+  ],
+  "settlements": [
+    "returned",
+    "returned",
+    "returned"
+  ],
+  "recalled": [
+    {
+      "shared": false,
+      "text": "Type checking\nUse strict TypeScript"
+    }
+  ]
+}

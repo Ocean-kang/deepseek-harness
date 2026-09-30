@@ -9,7 +9,7 @@ kind: "package-reference"
 
 ## 摘要
 
-将完整的已记录 Session 事件保存在项目所属的 SQLite 中，并可选地从已结束的 turn 区间发现 L1 提炼任务。调用方可以读取具体记忆版本，检查待处理或失败的操作。L1 与 L2/L3 存储、提炼和重试组件已有目录内测试；自动模型提炼仍需接通 Session 请求日志。执行证据与未完成验收见[任务清单](Tasks.md)。
+将完整的已记录 Session 事件保存在项目所属的 SQLite 中，并可选地从已结束的 turn 区间发现 L1 提炼任务。调用方可以读取具体记忆版本，检查待处理或失败的操作。L1 与 L2/L3 存储、提炼和重试组件已有目录内测试。`MemoryPipeline` 通过持久化辅助 Session 请求执行独立学习；采集插件不自动派发模型任务。执行证据与未完成验收见[任务清单](Tasks.md)。
 
 ## 目录
 
@@ -45,6 +45,8 @@ node --import tsx/esm ../apps/cli/src/bin.ts --profile headless --patch ./profil
 | `queueCapacity` | 1024 | 全部 Session 实时事件缓冲数量上限。 |
 | `batchSize` | 128 | 每次采集事务的事件数量上限。 |
 | `pageSize` | 128 | 每次来源恢复读取的事件数量上限，同时受批次大小限制。 |
+| `learningConcurrency` | 2 | 独立流水线同时执行的项目处理数量上限。 |
+| `learningQueueCapacity` | 128 | 等待项目顺序或并发容量的已接纳处理数量上限。 |
 | `busyTimeoutMs` | 5000 | SQLite 锁等待时间；零表示不等待。 |
 | `journalMode` | `wal` | 可选 `wal`、`delete`、`truncate` 或 `persist`；同步模式为 FULL。 |
 | `l1` | 不配置 | 可选提炼配置；目前只启用持久化任务发现。 |
@@ -91,9 +93,43 @@ Web profile patch 可以从启动工作目录设置必填的备用 `projectId`�
 
 [知识存储](src/knowledge-store.ts) 持久化具体来源版本、设置、已准备候选、尝试及调用次数和退避时间。同项目租约在不同连接间串行化聚合。版本冲突重新读取当前知识并丢弃过时候选，存储重试保留候选。`KnowledgeWorker.run` 显式执行一次到期尝试。持有持久化辅助请求记录器的调用方可通过 `watch(project, report)` 启用定时重试，排队后须调用 `notify()`；释放请求 Session 前须等待 `retire(project)` 完成。显式重试重置尝试次数，但保留操作整个生命周期的调用预算；模型设置变化创建不同操作。完整输入超预算时明确失败，不截断。必须先关闭全部 worker，再关闭 Provider。
 
-[知识提炼器](src/knowledge-extractor.ts) 使用真实 LLM 服务，要求先等待 Session 请求记录器完成。生产环境既不安装该记录器，也不安装 worker。目录内测试使用受控 adapter 和记录器夹具，不能替代 Session 事件登记或真实 Provider 验证。
+[知识提炼器](src/knowledge-extractor.ts) 使用真实 LLM 服务，要求先等待 Session 请求记录器完成。已加载采集插件既不安装该记录器，也不安装 worker。独立开发使用下述流水线；受控 adapter 不证明真实 Provider 的质量。
 
 组合交互式命令注册表后，`/memory-share show <id>@<revision>` 展示当前有支持证据的 L3 版本、撤回限制及五分钟有效的令牌。用户须在同一 Session 执行 `/memory-share approve <token>`；`/memory-share revoke <id>@<revision>` 停止后续共享。处理器先等待 Session 持久化，再以已记录的用户命令作为一次性回执提交指定版本的批准或撤回。未组合交互命令注册表时这些命令不可用。已加载记忆服务不向模型暴露批准方法或工具。替代、失效和撤回在同一事务中删除授权；跨项目读取只暴露获批投影。撤回无法清除其他 Session 已记录的内容或此前读取产生的派生内容。
+
+### 独立开发
+
+[MemoryPipeline](src/pipeline.ts) 组合现有 LLM、Session 和 SQLite 库，无需注册 DSH Agent 插件。调用方提供已配置的 LLM 服务、解析后的 L1/knowledge 设置、已打开的记忆数据库及完整来源事件批次。`learn(batch)` 提交 L0，并处理当前到期的 L1 → L2 → L3 任务。`flush(project, signal?)` 也可在数据库重开后恢复已存来源，无需持有实时来源 Session。`watch(project)` 执行启动恢复，并调度未来重试和后续记忆提交；新增 L0 输入仍通过 `learn` 或 `flush` 进入。`retire(project)` 停止后台调度，并等待该项目已排队的处理完成。未启用 watch 时，在已保存的退避结束后再次 flush 执行重试。须检查 L1 和知识任务状态：返回 L0 结果不代表所有模型任务成功。
+
+```ts
+import { MemoryPipeline, SqliteMemory, resolveConfig } from './src/index.ts'
+
+const spec = await resolveConfig({
+  projectId: 'my-project', databasePath: 'data/development.sqlite',
+  l1: { provider: 'configured-provider', model: 'configured-model' },
+  knowledge: { provider: 'configured-provider', model: 'configured-model' },
+})
+const memory = await SqliteMemory.open(spec)
+const pipeline = new MemoryPipeline(memory, spec, llm, report)
+try {
+  await pipeline.learn(sourceBatch)
+} finally {
+  await pipeline.close()
+  await memory.close()
+}
+```
+
+`llm`、不抛异常的 `report` 回调及项目所属 `sourceBatch` 由调用方提供；此片段说明库的用法，不是应用启动器。可选的调用方所属 `MemoryRetriever` 使用同一数据库，启用 `pipeline.retrieve`。先关闭流水线，再关闭检索器和数据库。通过学习批次的 `signal` 取消单次学习，或关闭流水线取消全部学习；已提交来源和未完成任务仍可恢复。
+
+[MemoryRequestJournal](src/request-journal.ts) 在派发前提交准确的 provider/model、提示、输入和输出预算，并在准备候选前保存返回的紧凑流。每次尝试在 L0 中拥有独立辅助 Session，包含 `memory/extraction-request` 和 `memory/extraction-result` 事件。事件信封带 `ignorable: true`，其他 Harness 读取方保留记录，但不派生普通 Agent 历史。不会创建虚假的 turn，也不改变原始来源 Session。缺少结束记录表示结果未知，不代表成功。这些事件使用现有 L0 表，数据库 schema 保持版本 4。`listSessions(project, after, limit)` 提供按所属项目过滤的元数据分页，`readRaw` 读取实际事件。
+
+独立路径已有学习、查询与重启测试，L1 和 L2 定时重试、并发项目执行、请求和结果事务失败、取消、所属项目隔离测试，以及测试所属的预期输出文件。它不在 DSH profile 中安装从自动采集到模型派发的流程或注入。正式 profile 集成、SDK 快照和真实模型效果仍属于未完成工作。
+
+每个项目内部按序处理，项目之间共用配置的并发上限。学习队列满时，L0 采集后抛出 `backpressure`；之后调用 `flush` 可以恢复已保留的来源。已监听项目在容量释放后恢复。取消等待并发容量的处理会在模型调用及任务租约之前移除它。
+
+按需运行真实 Provider 提炼 smoke 时，先构建本包并链接本地 profile，再从 `memory/` 执行 `node ../apps/cli/lib/bin.js --profile headless --patch ./profiles/learning-live.patch.yml 'Validate independent memory learning.'`。这个测试专用 overlay 用[学习夹具](tests/fixtures/learning-live.mjs)替代 headless runner，复用已选择的模型和凭据。YAML 显式限制尝试、调用次数、输出和超时。它处理一条合成的长期约束，在 `data/learning-live.sqlite` 保存请求和结果，打印任务状态并请求启动器退出。它不安装生产记忆集成，也不调用 embedding。`passed: true` 要求本次运行产生新的 L1、L2 和 L3 结果，不证明一般质量或检索效果。
+
+设置 `DSH_MEMORY_VERIFY_LEARNING=1`，将 `DSH_MEMORY_VERIFY_LEARNING_SOURCE` 设为本次输出的准确 `sourceSession`，再执行 `node scripts/test.mjs learning-live`。此检查重开数据库，不再调用模型，验证保守的 L1 内容、明确约束、准确来源链及请求和结果记录。`DSH_MEMORY_VERIFY_LEARNING_DB` 可选地指定另一 memory 相对数据库。缺少运行标识时明确失败，不验证无关的较早运行。
 
 <a id="semantic-retrieval"></a>
 ### 语义检索
@@ -166,5 +202,5 @@ node ../apps/cli/lib/bin.js --profile headless --patch ./profiles/headless-built
 - 来源服务级刷新可能报告其他 Session writer 的失败；恢复将该检查点失败视为错误。
 - SQLite 调用是同步的，可能阻塞至配置的锁超时；更大的工作负载可能需要独立设计的 Worker Provider。
 - 数据库持续增长；没有保留期限或附件备份。提炼器先将完整 turn 载入内存再划分请求；字节预算约束请求，不约束进程内存峰值。
-- 自动 L1 提炼受阻于辅助 Session 事件登记，以及位于 `memory/` 外的必要持久化声明和录制会话证据。不会仅将请求记录在 SQLite，也不会伪装为普通用户 turn。真实 Provider 验证还需要凭据。
+- 已加载采集插件不自动派发 L1 任务。`MemoryPipeline` 提供独立学习；正式 DSH 集成仍需持久化审查和录制会话证据。真实 Provider 验证还需要凭据。
 - 来源 Provider 替换需要另行执行 profile 生命周期测试；目录内测试不能替代必需的录制会话快照。

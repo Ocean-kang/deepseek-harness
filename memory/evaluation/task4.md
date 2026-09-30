@@ -14,6 +14,7 @@
 | 正常日志与主任务降级 | [Injector 测试](../tests/injector.spec.ts)：真实 Agent、JSONL、请求正文一致、同 turn 多步骤、监听器重载、取消、索引失败及卸载 | 生产持久化声明、仓库录制快照和 SDK 证据未集成 |
 | 历史参考不冒充新证据 | [L1 测试](../tests/l1-extractor.spec.ts) 检查来源与提炼指令，并保留受控结果的不确定性 | 不代表真实模型一定遵守指令 |
 | 插件组合与产物 | [插件测试](../tests/plugin.spec.ts) 通过动态端口调用真实 fetch；构建 profile 返回 OK，L0 副本与原日志一致 | profile smoke 未开启自动提炼或注入 |
+| 独立真实提炼 | [真实学习记录核验](../tests/learning-live.spec.ts) 重开单条明确约束的真实模型运行，验证 L1 保留未验证状态，L2/L3 内容与来源，以及完整请求和结果流 | 使用已有 deepseek-official/deepseek-flash，L1/L2/L3 各调用一次；不证明一般提炼质量，没有 embedding 或完整效果对照 |
 | 效果与容量 | 下述合成容量实测及[固定任务集](task4-cases.json) | 完整对照实验受前置集成和 embedding 配置限制 |
 
 ## 容量实测
@@ -36,6 +37,6 @@
 
 ## 外部阻塞
 
-仅允许写入 `memory/`。生产 `memory-recall` 来源需要更新 `docs/persistence-schema.json`、持久化目录与 `docs/persistence-changes/` 的变更记录；相关编译与读取程序必须纳入该来源声明。必需的跨 Session 命中、失败降级、批准及撤回回放归属 `snapshots/session/`。Task2/3 的辅助请求日志及可信用户批准入口仍未接通，需要同时核对 TypeScript SDK 和 Python SDK 的对应预期。目录内 JSONL 组合测试不能替代这些证据，不将独立 Injector 注册到生产来绕过它们。
+仅允许写入 `memory/`。生产 `memory-recall` 来源需要更新 `docs/persistence-schema.json`、持久化目录与 `docs/persistence-changes/` 的变更记录；相关编译与读取程序必须纳入该来源声明。必需的跨 Session 命中、失败降级、批准及撤回回放归属 `snapshots/session/`。目录内已提供可信用户共享命令和带可忽略辅助 Session 事件的独立提炼流水线；独立组合可验证新 Session 请求含刚生成的记忆。正式 profile 集成仍需核对 TypeScript SDK 和 Python SDK 的对应预期。目录内 JSONL 组合测试不能替代这些正式验收证据；真实 embedding 和完整效果对照另需实际提供方配置。
 
 完整命令记录与未执行项见 [Tasks.md](../Tasks.md#task-4实现记忆检索与注入)。

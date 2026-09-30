@@ -1,0 +1,85 @@
+/** Opt-in verification of one identified real-provider learning run, without further model calls. */
+import { expect, it } from 'vitest'
+import { expandAssistantStream } from '@deepseek-ai/dsh-llm'
+import { SessionId, SessionLogOffset } from '@deepseek-ai/dsh-session'
+import { resolveConfig } from '../src/config.ts'
+import { SqliteMemory } from '../src/sqlite.ts'
+
+it.runIf(process.env.DSH_MEMORY_VERIFY_LEARNING === '1')('reopens the live run and verifies content, ancestry and exact request/result logs', async () => {
+  const id = process.env.DSH_MEMORY_VERIFY_LEARNING_SOURCE
+  if (id === undefined || !id.trim()) throw new Error('DSH_MEMORY_VERIFY_LEARNING_SOURCE must identify the live fixture run')
+  const spec = await resolveConfig({ projectId: 'memory-live-learning', databasePath: process.env.DSH_MEMORY_VERIFY_LEARNING_DB ?? 'data/learning-live.sqlite' })
+  const memory = await SqliteMemory.open(spec)
+  try {
+    const project = spec.projectId
+    const l1Tasks = []
+    const tasks = []
+    let after = ''
+    for (;;) {
+      const page = memory.l1.listTasks(project, after, spec.pageSize)
+      l1Tasks.push(...page.filter(task => task.sessionId === SessionId(id)))
+      if (page.length < spec.pageSize) break
+      after = page.at(-1)!.operationId
+    }
+    expect(l1Tasks).toHaveLength(1)
+    const l1Task = l1Tasks[0]!
+    expect(l1Task.status).toBe('done')
+    const l1 = memory.l1.byOperation(project, l1Task.operationId)!
+    expect(l1.summary.outcome).toBe('unknown')
+    expect(l1.summary.solution).toBeNull()
+    expect(l1.summary.actions).toEqual([])
+    expect(l1.summary.sources).toEqual([{ sessionId: SessionId(id), seq: 1 }])
+    const source = await memory.readRaw({ projectId: project, sessionId: SessionId(id), from: SessionLogOffset(1), to: SessionLogOffset(2), limit: 1 })
+    expect(JSON.stringify(source.events)).toContain('No implementation or test execution has occurred')
+    after = ''
+    for (;;) {
+      const page = memory.knowledge.listTasks(project, after, spec.pageSize)
+      tasks.push(...page)
+      if (page.length < spec.pageSize) break
+      after = page.at(-1)!.operationId
+    }
+    const l2Tasks = tasks.filter(task => task.input.level === 'L2' && task.input.sources.some(record => record.id === l1.id && record.revision === l1.revision))
+    const l2Refs = l2Tasks.flatMap(task => task.result ?? [])
+    const l3Tasks = tasks.filter(task => task.input.level === 'L3' && task.input.sources.some(record => l2Refs.some(ref => ref.id === record.id && ref.revision === record.revision)))
+    expect(l2Tasks).toHaveLength(1)
+    expect(l3Tasks).toHaveLength(1)
+    for (const task of [...l2Tasks, ...l3Tasks]) {
+      expect(task.status).toBe('done')
+      expect(task.result?.length).toBeGreaterThan(0)
+      for (const ref of task.result!) {
+        const record = memory.knowledge.getMemory(project, ref)
+        if (record === null || record.level === 'L1' || 'shared' in record) throw new Error('expected owned knowledge')
+        expect(record.knowledge.body).toMatch(/strict TypeScript/i)
+        expect(record.knowledge.body).toContain('ESM')
+        expect(record.knowledge.evidence).toBe('supported')
+        expect(['constraint', 'decision']).toContain(record.knowledge.category)
+        expect(record.knowledge.sources.every(source => task.input.sources.some(input => input.id === source.ref.id && input.revision === source.ref.revision))).toBe(true)
+      }
+    }
+    const operations = new Set([l1Task.operationId, ...l2Tasks.map(task => task.operationId), ...l3Tasks.map(task => task.operationId)])
+    const levels: string[] = []
+    after = ''
+    for (;;) {
+      const sessions = memory.listSessions(project, after, spec.pageSize)
+      for (const session of sessions) {
+        const stored = await memory.readRaw({ projectId: project, sessionId: session.header.id, from: SessionLogOffset(0), to: session.committedTo, limit: spec.pageSize })
+        const request = stored.events[0]
+        if (request?.type !== 'memory/extraction-request' || !operations.has(request.data.operationId)) continue
+        const result = stored.events[1]
+        expect(request.ignorable).toBe(true)
+        expect(result?.type).toBe('memory/extraction-result')
+        if (result?.type !== 'memory/extraction-result') throw new Error('expected result')
+        expect(result.ignorable).toBe(true)
+        expect(result.data.outcome).toBe('returned')
+        expect(result.data.operationId).toBe(request.data.operationId)
+        expect(expandAssistantStream(result.data.stream).at(-1)?.chunk).toMatchObject({ type: 'finish', reason: { kind: 'stop' } })
+        expect(request.data.request.provider).toBe(l1Task.config.provider)
+        expect(request.data.request.model).toBe(l1Task.config.model)
+        levels.push(request.data.level)
+      }
+      if (sessions.length < spec.pageSize) break
+      after = sessions.at(-1)!.header.id
+    }
+    expect(levels.sort()).toEqual(['L1', 'L2', 'L3'])
+  } finally { await memory.close() }
+})

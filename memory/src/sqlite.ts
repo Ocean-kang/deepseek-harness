@@ -112,6 +112,19 @@ export class SqliteMemory implements RawMemory {
     return this.db.prepare('SELECT DISTINCT project FROM sessions ORDER BY project').all().map(row => parseProject(row.project))
   }
 
+  /** Page stored source and auxiliary Session metadata within one project.
+   * @param project - owning project.
+   * @param after - exclusive Session id, empty for the first page.
+   * @param limit - positive page size.
+   * @returns headers and committed prefixes in identity order.
+   */
+  listSessions(project: ProjectId, after = '', limit = 100): Array<{ header: SessionHeader; committedTo: SessionLogOffset }> {
+    this.assertOpen()
+    if (!Number.isSafeInteger(limit) || limit < 1) throw new MemoryError('config', 'Session page size must be positive')
+    return this.db.prepare('SELECT header, committed_to FROM sessions WHERE project = ? AND id > ? ORDER BY id LIMIT ?').all(project, after, limit)
+      .map(row => ({ header: parseHeader(row.header), committedTo: this.offset(row.committed_to) }))
+  }
+
   /**
    * Open a database without overwriting another database's schema.
    * @param spec - configuration already resolved by resolveConfig.

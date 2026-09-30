@@ -11,7 +11,7 @@ import { MemoryError } from './types.ts'
 import type { KnowledgeCandidate, KnowledgeTask } from './knowledge-types.ts'
 import { parseKnowledgeCandidates } from './knowledge-validation.ts'
 
-/** Recorder must commit the complete request to an acknowledged Session event before returning. */
+/** Recorder commits the complete request to a source or ignorable auxiliary Session event before returning. */
 export type KnowledgeRecorder = (task: KnowledgeTask, request: L1Request, signal: AbortSignal) => Promise<void>
 const policy = resolveRetryPolicy(undefined, 'memory.knowledge')
 const prompt = `Extract project knowledge from the supplied immutable memory versions. Return only a JSON array of {knowledge:{title,body,category,score,rationale,evidence,sources:[{kind:"memory",ref:{id,revision}}]},target:null|{id,revision}}.

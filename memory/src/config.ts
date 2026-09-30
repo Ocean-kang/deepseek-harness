@@ -23,6 +23,8 @@ export interface Config {
   projectId: string
   databasePath: string
   queueCapacity?: number
+  learningConcurrency?: number
+  learningQueueCapacity?: number
   batchSize?: number
   pageSize?: number
   busyTimeoutMs?: number
@@ -37,6 +39,8 @@ export interface Spec {
   readonly projectId: ProjectId
   readonly databasePath: string
   readonly queueCapacity: number
+  readonly learningConcurrency: number
+  readonly learningQueueCapacity: number
   readonly batchSize: number
   readonly pageSize: number
   readonly busyTimeoutMs: number
@@ -85,6 +89,8 @@ export async function resolveConfig(input: Config): Promise<Spec> {
   }
   const numbers = {
     queueCapacity: input.queueCapacity ?? 1024,
+    learningConcurrency: input.learningConcurrency ?? 2,
+    learningQueueCapacity: input.learningQueueCapacity ?? 128,
     batchSize: input.batchSize ?? 128,
     pageSize: input.pageSize ?? 128,
     busyTimeoutMs: input.busyTimeoutMs ?? 5000,

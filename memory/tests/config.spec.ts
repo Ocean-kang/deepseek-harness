@@ -11,9 +11,14 @@ const owned: Array<Awaited<ReturnType<typeof fixture>>> = []
 afterEach(async () => { for (const item of owned.splice(0)) await item.close() })
 
 it('resolves defaults once and rejects invalid deployment values', async () => {
-  expect(await resolveConfig({ projectId: 'stable', databasePath: 'data/test.sqlite' })).toMatchObject({ queueCapacity: 1024, batchSize: 128, pageSize: 128, busyTimeoutMs: 5000, journalMode: 'wal' })
+  expect(await resolveConfig({ projectId: 'stable', databasePath: 'data/test.sqlite' })).toMatchObject({ queueCapacity: 1024, learningConcurrency: 2, learningQueueCapacity: 128,
+    batchSize: 128, pageSize: 128, busyTimeoutMs: 5000, journalMode: 'wal' })
   for (const projectId of ['', ' ', ' trailing ']) await expect(resolveConfig({ projectId, databasePath: 'data/test.sqlite' })).rejects.toMatchObject({ code: 'config' })
   for (const queueCapacity of [0, -1, 1.5, Infinity]) await expect(resolveConfig({ projectId: 'a', databasePath: 'data/test.sqlite', queueCapacity })).rejects.toMatchObject({ code: 'config' })
+  for (const value of [0, -1, 1.5, Infinity]) {
+    await expect(resolveConfig({ projectId: 'a', databasePath: 'data/test.sqlite', learningConcurrency: value })).rejects.toMatchObject({ code: 'config' })
+    await expect(resolveConfig({ projectId: 'a', databasePath: 'data/test.sqlite', learningQueueCapacity: value })).rejects.toMatchObject({ code: 'config' })
+  }
   await expect(resolveConfig({ projectId: 'a', databasePath: '../escape.sqlite' })).rejects.toMatchObject({ code: 'config' })
 })
 

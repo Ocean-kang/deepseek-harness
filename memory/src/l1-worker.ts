@@ -33,21 +33,22 @@ export class L1Worker {
 
   /**
    * Process each due operation at most once; future retry times are not awaited.
-   * @param session - a source Session whose durable recorder is available.
+   * @param session - source identity whose requests can be durably recorded.
+   * @param signal - optional cancellation for this drain; tasks remain recoverable.
    * @returns settlement of currently executable work for this Session.
    */
-  flush(session: SessionId): Promise<void> {
+  flush(session: SessionId, signal?: AbortSignal): Promise<void> {
     if (this.closing) return Promise.reject(new MemoryError('closed', 'L1 worker is closing'))
     let local = this.sources.get(session)
     if (local === undefined) { local = new AbortController(); this.sources.set(session, local) }
-    const signal = AbortSignal.any([this.controller.signal, local.signal])
+    const drainSignal = AbortSignal.any([this.controller.signal, local.signal, ...signal === undefined ? [] : [signal]])
     const work = this.tail.then(async () => {
       const cutoff = this.now()
       for (;;) {
-        if (signal.aborted) return
+        if (drainSignal.aborted) return
         const task = this.memory.l1.claim(this.project, session, this.owner, cutoff)
         if (task === null) return
-        await this.run(task, signal)
+        await this.run(task, drainSignal)
       }
     })
     this.tail = work.catch(() => undefined)
@@ -55,8 +56,8 @@ export class L1Worker {
   }
 
   /**
-   * Schedule due work while this source Session can durably record requests.
-   * @param session - available writable source Session; call retire before releasing it.
+   * Schedule due work while a source or auxiliary recorder is available.
+   * @param session - source identity; call retire before releasing its recorder.
    */
   watch(session: SessionId): void {
     if (this.closing) throw new MemoryError('closed', 'L1 worker is closing')

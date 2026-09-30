@@ -1,4 +1,4 @@
-/** Bounded auxiliary LLM extraction; a durable Session recorder is mandatory. */
+/** Bounded auxiliary LLM extraction; a durable request Session recorder is mandatory. */
 import { BlockAssembler, resolveRetryPolicy } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions, LlmRuntime } from '@deepseek-ai/dsh-llm'
 import { deadline, timeoutOf } from '@deepseek-ai/dsh-timeout'
@@ -12,9 +12,9 @@ import { json, parseCandidate } from './l1-validation.ts'
 export type L1Request = Pick<GenerateOptions, 'provider' | 'model' | 'system' | 'messages' | 'maxTokens' | 'sessionId'>
 
 /**
- * Commit the exact request to the writable source Session before dispatch.
- * The production binding requires an acknowledged Session event; a SQLite-only
- * journal does not implement this interface's durability obligation.
+ * Commit the exact request to a source or auxiliary Session before dispatch.
+ * Independent callers may use MemoryRequestJournal's ignorable auxiliary events;
+ * ordinary agent history and its source Session remain unchanged.
  */
 export type L1Recorder = (task: L1Task, request: L1Request, signal: AbortSignal) => Promise<void>
 
@@ -44,7 +44,7 @@ const transientPolicy = resolveRetryPolicy(undefined, 'memory.l1')
 export class L1Extractor {
   /**
    * @param llm - provider-neutral streaming service.
-   * @param record - awaited durable source-Session request recorder.
+   * @param record - awaited durable request Session recorder.
    */
   constructor(private readonly llm: Pick<LlmRuntime, 'stream'>, private readonly record: L1Recorder) {}
 

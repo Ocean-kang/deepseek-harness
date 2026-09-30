@@ -1,0 +1,26 @@
+# Opt-in real model calls using the existing configured model and credentials.
+# This fixture writes only to memory/ and mounts no production memory integration.
+- id: headless-runner
+  disabled: true
+
+- insert:
+    - id: memory-learning-live
+      name: ../tests/fixtures/learning-live.mjs
+      inject: [agentDefaultModel]
+      config:
+        projectId: memory-live-learning
+        databasePath: data/learning-live.sqlite
+        l1:
+          provider: !!js ctx.agentDefaultModel.currentSelection().provider
+          model: !!js ctx.agentDefaultModel.currentSelection().model
+          timeoutMs: 60000
+          maxOutputTokens: 2048
+          maxCalls: 3
+          maxAttempts: 1
+        knowledge:
+          provider: !!js ctx.agentDefaultModel.currentSelection().provider
+          model: !!js ctx.agentDefaultModel.currentSelection().model
+          timeoutMs: 60000
+          maxOutputTokens: 2048
+          maxCalls: 1
+          maxAttempts: 1

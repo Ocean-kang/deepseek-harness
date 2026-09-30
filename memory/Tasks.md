@@ -2,7 +2,7 @@
 
 ## 摘要
 
-本文将分层记忆插件划分为四次 Codex 实现任务，依次交付 L0 原始记忆、L1 任务记忆、L2/L3 长期记忆和记忆检索与注入。每次任务包含本层能力的实现、测试和说明，以验收标准判断完成；详细数据与接口设计见 [PROJECT.md](PROJECT.md)。所有任务均未完成；Task 1–4 已有目录内实现和下述验证记录，自动模型提炼及生产注入仍受日志集成限制。`MemoryService` 为记忆插件服务，不是 DSH 核心 API。整体完成状态以下述验收与外部阻塞记录为准。
+本文将分层记忆插件划分为四次 Codex 实现任务，依次交付 L0 原始记忆、L1 任务记忆、L2/L3 长期记忆和记忆检索与注入。每次任务包含本层能力的实现、测试和说明，以验收标准判断完成；详细数据与接口设计见 [PROJECT.md](PROJECT.md)。所有任务均未完成；Task 1–4 已有目录内实现和下述验证记录。目录内独立学习已可执行 L0 → L1 → L2 → L3，正式 profile 自动模型提炼及生产注入仍未接入。`MemoryService` 为记忆插件服务，不是 DSH 核心 API。整体完成状态以下述验收与外部阻塞记录为准。
 
 ## 目录
 
@@ -273,5 +273,43 @@ Injector 组合测试使用真实 Agent、LLM 服务、JSONL Provider 和受控�
 真实 embedding endpoint、模型、维度与密钥未配置，未运行真实语义检查或完整任务对照，未预设收益与费用。1 万条候选的本地检索 p95 为 624.14ms；这是合成容量证据，不包含网络或真实模型延迟。完整学习 Session → 新 Session 使用仍依赖 Task2/3 请求记录与可信批准入口，以及目录外持久化声明、快照和 SDK 预期。未运行根目录 doc-sync、完整构建/hygiene、平台矩阵或仓库录制快照；目录内检查不替代这些验收。
 
 ## 开发备注
+
+### 独立开发验证（2026-09-30）
+
+[MemoryPipeline](src/pipeline.ts) 复用现有 LLM 服务和 worker，在目录内数据库中导入 L0 并执行到期的 L1/L2/L3 提炼；调用方可显式 flush，或通过 watch 自动调度已保存的重试和后续版本，不要求实时来源 Session。retire 停止项目后台调度并等待已排队工作，close 取消全部在途提炼并清理订阅及定时器。[辅助请求日志](src/request-journal.ts) 使用带 `ignorable: true` 的外部插件 Session 事件，在调用前保存完整请求，并在候选准备前提交结果流。其他 Harness 读取方保留这些事件且不把它们加入普通 Agent 历史。未添加独立可执行入口、修改共享源码或安装生产 Injector。
+
+[组合测试](tests/pipeline.spec.ts) 通过真实 LLM 服务及受控 adapter，验证三层生成、独立查询、数据库重开不重复调用、日志重读、请求提交失败不调用模型，以及调用方取消和关闭后的清理。独立组合真实 Agent、JSONL 和 Injector 后，新的提问 Session 请求包含刚生成的记忆，持久化日志保存相同正文。[请求日志测试](tests/request-journal.spec.ts) 验证未记录和已修改请求拒绝、单次派发、所属项目隔离、结果提交失败保留未知结果和可重试任务。测试所属预期输出位于 [pipeline.json](tests/expected/pipeline.json)。这些记录不证明真实模型的提炼质量，也不替代正式 DSH 集成验收。
+
+以下检查在加载目录内环境后执行，全部写入仍在 memory/。
+
+| 实际命令 | 结果 |
+|---|---|
+| `node scripts/test.mjs` | 当时 145 项通过，4 项保留显式开关跳过；随后增加学习队列上限用例。 |
+| `node scripts/test.mjs pipeline` | 当时 7 项通过，包含后台 L1 退避重试及重启后的 L2 重试；随后增加并发项目用例。 |
+| `node scripts/test.mjs pipeline config request-journal plugin` | 24 项通过，包含全局学习并发上限、排队取消、队列满后的 L0 保留和已监听项目恢复；类型检查和源码、测试 lint 同时通过。 |
+| `node scripts/test.mjs request-journal pipeline` | 最终 7 项通过，包含记录后修改输入拒绝、调用方取消及新 Session 组合用例。 |
+| `node ../node_modules/typescript/bin/tsc -p tsconfig.json --noEmit` | 最终源码和测试通过。 |
+| `node ../scripts/run-oxlint.ts --config ../.oxlintrc.json src tests` | 最终源码和测试通过。 |
+| `node scripts/check-local.mjs` | 最终 49 个 TypeScript 文件语法、默认配置和 6 个无效输入检查通过。 |
+| `node ../scripts/verify-translation-pairing.ts --write memory/README.md`，随后去掉 `--write` | README 双语配对记录更新且检查通过。 |
+| `node scripts/check-docs.mjs` | 五份文档链接及 README 双语结构通过。 |
+| `node ../node_modules/tsdown/dist/run.mjs --config tsdown.config.ts --config-loader native` | 产物构建通过，输出 memory/lib/index.mjs。 |
+| `node scripts/link-profile.mjs` | 本目录 profile 链接通过，不安装依赖。 |
+| `node ../apps/cli/lib/bin.js --profile headless --patch ./profiles/headless-built.patch.yml 'Reply with OK without using tools.'` | 受支持的产物加载返回 OK；已有 otel 条目导入警告仍存在。未启用独立提炼。 |
+| `git diff --check` | 通过。 |
+
+尝试从普通 Node 进程直接导入构建产物时，未安装的外部 peer `@deepseek-ai/cordis` 无法解析；本目录尚未加入根工作区。源码开发测试使用现有路径解析，产物通过现有 profile 解析依赖。没有为此修改工作区或增加替代启动器。用户确认暂未配置 embedding，真实 embedding 语义及固定任务效果对照尚未执行；真实提炼样例见下节，正式持久化声明、SDK 预期与仓库录制快照仍待集成阶段验收。
+
+### 后台调度与真实提炼验证
+
+[流水线测试](tests/pipeline.spec.ts) 验证 L1 暂时失败后自动退避重试并继续到 L3，数据库重开后恢复 L2 重试，以及一个项目等待模型时另一个项目完成全部提炼。停止项目监听和关闭流水线后没有残留定时器，来源项目与私有记忆保持隔离。
+
+通过现有受支持的 headless profile 加载[真实提炼测试 overlay](profiles/learning-live.patch.yml)，复用现有模型及凭据，处理一条合成的明确长期约束。实际模型为 `deepseek-official / deepseek-flash`；L1、L2、L3 各调用一次、各提交一个结果，无失败。L1 保留 `unknown`、空 actions 和 null solution；L2、L3 保存 strict TypeScript/ESM 约束及准确来源链，正文保留未执行实现和测试的限定。数据库为 `data/learning-live.sqlite`，本次来源 Session 为 `memory-live-source-ffd6583b-7f88-4e21-b095-41760a38e434`。这是一条真实模型样例，不代表一般质量或收益。
+
+Provider 返回的三次用量记录合计 uncached input 2094、cached input 128、output 4403、total 6625 Token；未配置价格，费用未知。用量保存在辅助结果流中，不把未返回用量的未来调用记为零。本次没有 embedding 调用。
+
+实际执行 `node ../apps/cli/lib/bin.js --profile headless --patch ./profiles/learning-live.patch.yml 'Validate independent memory learning.'`，退出码 0，输出 `passed: true`；已有 otel 导入警告仍存在。随后设置 `DSH_MEMORY_VERIFY_LEARNING=1` 和上述来源标识，执行 `node scripts/test.mjs learning-live pipeline`，9 项通过，其中一个检查重开实际数据库验证内容、来源及请求和结果日志，其余为受控组合验证。此检查不再调用模型。`node --check tests/fixtures/learning-live.mjs`、最终类型检查、源码及测试 lint、文档检查和构建均通过。独立测试夹具通过既有 profile 启动，没有新增应用 bin。
+
+真实提炼已验证上述单条约束样例；真实 embedding 语义及固定任务完整效果对照仍未执行。正式 profile 自动采集到提炼的注册、持久化声明、SDK 预期与仓库录制快照仍留在集成阶段，整体复选框保持未勾选。
 
 本清单只规定待执行的实现任务，不代表插件、测试或效果评估已完成。重要性评估的具体标准在 Task 3 实现时确定并同步设计说明；其余接口和行为以 PROJECT.md 为需求参考，实现前核实当前 DSH 源码。

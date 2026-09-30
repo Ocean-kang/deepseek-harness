@@ -29,6 +29,10 @@ export { resolveKnowledgeConfig } from './knowledge-validation.ts'
 export { KnowledgeExtractor } from './knowledge-extractor.ts'
 export type { KnowledgeRecorder } from './knowledge-extractor.ts'
 export { KnowledgeWorker } from './knowledge-worker.ts'
+export { MemoryRequestJournal } from './request-journal.ts'
+export { MemoryPipeline } from './pipeline.ts'
+export { resolveConfig } from './config.ts'
+export type { Spec } from './config.ts'
 export type * from './types.ts'
 export type * from './l1-types.ts'
 export { L1Extractor, L1ModelError } from './l1-extractor.ts'
@@ -42,6 +46,7 @@ export type Config = ConfigInput
 export const Config: z<Config> = z.object({
   projectId: z.string().required(), databasePath: z.string().required(),
   queueCapacity: z.number(), batchSize: z.number(), pageSize: z.number(), busyTimeoutMs: z.number(),
+  learningConcurrency: z.number(), learningQueueCapacity: z.number(),
   journalMode: z.union(['wal', 'delete', 'truncate', 'persist'] as const),
   embedding: z.union([z.object({ endpoint: z.string().required(), model: z.string().required(), dimensions: z.number().required(), apiKeyEnv: z.string().required(),
     sendDimensions: z.boolean(), batchSize: z.number(), concurrency: z.number(), timeoutMs: z.number(), maxAttempts: z.number(), retryBaseMs: z.number(), retryMaxMs: z.number(),
