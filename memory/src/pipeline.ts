@@ -76,25 +76,46 @@ export class MemoryPipeline {
     this.timers.delete(project)
     const drainSignal = AbortSignal.any([this.abort.signal, ...signal === undefined ? [] : [signal]])
     this.drains++
-    const work = (this.tails.get(project) ?? Promise.resolve()).then(async () => {
+    const previous = this.tails.get(project) ?? Promise.resolve()
+    const work = this.waitForProject(previous, drainSignal).then(async () => {
       const release = await this.acquire(drainSignal)
       try { await this.process(project, drainSignal) } finally { release() }
     })
-    const settled = work.catch(() => undefined)
+    const finished = work.catch(() => undefined)
+    const settled = Promise.all([previous, finished]).then(() => undefined)
     this.tails.set(project, settled)
-    void settled.then(() => {
+    void finished.then(() => {
       this.drains--
       const overloaded = this.overloaded.values().next().value
       if (overloaded !== undefined) {
         this.overloaded.delete(overloaded)
         this.schedule(overloaded, Date.now())
       }
+    })
+    void settled.then(() => {
       if (this.tails.get(project) !== settled) return
       this.tails.delete(project)
       if (this.dirty.delete(project)) this.schedule(project, Date.now())
       else this.arm(project)
     }).catch(error => this.reportScheduler(error))
     return work
+  }
+
+  private async waitForProject(previous: Promise<void>, signal: AbortSignal): Promise<void> {
+    signal.throwIfAborted()
+    return new Promise((resolve, reject) => {
+      const cancel = () => {
+        signal.removeEventListener('abort', cancel)
+        // AbortSignal.reason is ambient any; keep it out of the typed pipeline.
+        const reason: unknown = signal.reason
+        reject(reason)
+      }
+      signal.addEventListener('abort', cancel, { once: true })
+      void previous.then(() => {
+        signal.removeEventListener('abort', cancel)
+        resolve()
+      })
+    })
   }
 
   private acquire(signal: AbortSignal): Promise<() => void> {

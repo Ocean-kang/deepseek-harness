@@ -287,6 +287,7 @@ Injector 组合测试使用真实 Agent、LLM 服务、JSONL Provider 和受控�
 | `node scripts/test.mjs` | 当时 145 项通过，4 项保留显式开关跳过；随后增加学习队列上限用例。 |
 | `node scripts/test.mjs pipeline` | 当时 7 项通过，包含后台 L1 退避重试及重启后的 L2 重试；随后增加并发项目用例。 |
 | `node scripts/test.mjs pipeline config request-journal plugin` | 24 项通过，包含全局学习并发上限、排队取消、队列满后的 L0 保留和已监听项目恢复；类型检查和源码、测试 lint 同时通过。 |
+| `node scripts/test.mjs pipeline` | 11 项通过；新增同项目排队立即取消及已取消信号检查，验证释放队列容量后后续处理仍等待前一个项目任务，且不增加模型调用。 |
 | `node scripts/test.mjs request-journal pipeline` | 最终 7 项通过，包含记录后修改输入拒绝、调用方取消及新 Session 组合用例。 |
 | `node ../node_modules/typescript/bin/tsc -p tsconfig.json --noEmit` | 最终源码和测试通过。 |
 | `node ../scripts/run-oxlint.ts --config ../.oxlintrc.json src tests` | 最终源码和测试通过。 |

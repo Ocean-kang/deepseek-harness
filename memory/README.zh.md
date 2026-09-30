@@ -125,7 +125,7 @@ try {
 
 独立路径已有学习、查询与重启测试，L1 和 L2 定时重试、并发项目执行、请求和结果事务失败、取消、所属项目隔离测试，以及测试所属的预期输出文件。它不在 DSH profile 中安装从自动采集到模型派发的流程或注入。正式 profile 集成、SDK 快照和真实模型效果仍属于未完成工作。
 
-每个项目内部按序处理，项目之间共用配置的并发上限。学习队列满时，L0 采集后抛出 `backpressure`；之后调用 `flush` 可以恢复已保留的来源。已监听项目在容量释放后恢复。取消等待并发容量的处理会在模型调用及任务租约之前移除它。
+每个项目内部按序处理，项目之间共用配置的并发上限。学习队列满时，L0 采集后抛出 `backpressure`；之后调用 `flush` 可以恢复已保留的来源。已监听项目在容量释放后恢复。取消等待项目顺序或并发容量的处理会在模型调用及任务租约之前移除它，释放其队列容量，并保留后续处理的项目顺序。
 
 按需运行真实 Provider 提炼 smoke 时，先构建本包并链接本地 profile，再从 `memory/` 执行 `node ../apps/cli/lib/bin.js --profile headless --patch ./profiles/learning-live.patch.yml 'Validate independent memory learning.'`。这个测试专用 overlay 用[学习夹具](tests/fixtures/learning-live.mjs)替代 headless runner，复用已选择的模型和凭据。YAML 显式限制尝试、调用次数、输出和超时。它处理一条合成的长期约束，在 `data/learning-live.sqlite` 保存请求和结果，打印任务状态并请求启动器退出。它不安装生产记忆集成，也不调用 embedding。`passed: true` 要求本次运行产生新的 L1、L2 和 L3 结果，不证明一般质量或检索效果。
 

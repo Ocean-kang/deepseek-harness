@@ -370,6 +370,59 @@ it('lets project B finish while project A is blocked in its model, preserving so
   }
 })
 
+it('cancels same-project queued work without releasing project ordering or consuming a model call', async () => {
+  const item = await fixture()
+  const provider = await item.open()
+  const ctx = new Context()
+  const entered = Promise.withResolvers<void>()
+  const release = Promise.withResolvers<void>()
+  const caller = new AbortController()
+  const source = header('cancel-same-project')
+  let calls = 0
+  let pipeline: MemoryPipeline | undefined
+  let first: Promise<unknown> | undefined
+  let cancelled: Promise<unknown> | undefined
+  let next: Promise<unknown> | undefined
+  try {
+    await ctx.plugin(LlmRuntime)
+    ctx.llm.registerAdapter(['test'], new Adapter(async function* (options) {
+      calls++
+      if (options.system?.startsWith('Summarize')) {
+        entered.resolve()
+        await release.promise
+        yield* response(JSON.stringify(candidate({ sessionId: source.id })))
+      } else {
+        const block = options.messages[0]!.content[0]!
+        if (block.type !== 'text') throw new Error('expected text')
+        yield* response(JSON.stringify([knowledgeCandidate(JSON.parse(block.text).input.sources[0])]))
+      }
+    }))
+    pipeline = new MemoryPipeline(provider, { ...settings, learningQueueCapacity: 1 }, ctx.llm, () => {})
+    first = pipeline.learn({ ...batch(item.spec, turnEvents()), header: source }).catch(error => error)
+    await entered.promise
+    cancelled = pipeline.flush(item.spec.projectId, caller.signal).catch(error => error)
+    const reason = new Error('cancel project queue')
+    caller.abort(reason)
+    expect(await cancelled).toBe(reason)
+    await expect(pipeline.flush(item.spec.projectId, AbortSignal.abort(reason))).rejects.toBe(reason)
+    next = pipeline.flush(item.spec.projectId).catch(error => error)
+    await Promise.resolve()
+    expect(calls).toBe(1)
+    release.resolve()
+    expect(await first).not.toBeInstanceOf(Error)
+    expect(await next).toBeUndefined()
+    expect(calls).toBe(3)
+    expect(provider.knowledge.listCandidates(item.spec.projectId, 'L3')).toHaveLength(1)
+  } finally {
+    caller.abort(new Error('test cleanup'))
+    release.resolve()
+    await pipeline?.close()
+    await Promise.all([first, cancelled, next])
+    await ctx.fiber.dispose()
+    await item.close()
+  }
+})
+
 it('bounds concurrency, cancels a queued drain promptly, and retains L0 rejected by backpressure', async () => {
   const item = await fixture()
   const provider = await item.open()
