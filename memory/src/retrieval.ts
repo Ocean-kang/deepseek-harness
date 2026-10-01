@@ -8,6 +8,10 @@ import { MemoryError } from './types.ts'
 import type { SqliteMemory } from './sqlite.ts'
 import { vectorDocument } from './vector-store.ts'
 import type { VectorDocument } from './vector-store.ts'
+import type { TextMemoryRetriever } from './text-retrieval.ts'
+
+/** Explicitly selected text or vector search with the same authorization and lifecycle operations. */
+export type MemorySearch = MemoryRetriever | TextMemoryRetriever
 
 /** Authorized immutable reference text. */
 export interface RetrievalHit {
@@ -15,10 +19,12 @@ export interface RetrievalHit {
   readonly projectId: ProjectId
   readonly shared: boolean
   readonly text: string
-  readonly similarity: number
+  readonly similarity: number | null
+  /** BM25 relevance when text search is selected; larger values rank first. */
+  readonly score?: number
 }
 /** Exact rendered reference text, already within the configured byte budget. */
-export interface RetrievalResult { readonly hits: readonly RetrievalHit[]; readonly text: string; readonly scanned: number; readonly elapsedMs: number }
+export interface RetrievalResult { readonly hits: readonly RetrievalHit[]; readonly text: string; readonly scanned: number; readonly elapsedMs: number; readonly method: 'vector' | 'bm25' }
 /** Query settings use resolved deployment defaults unless explicitly overridden. */
 export interface RetrievalRequest {
   readonly projectId: ProjectId
@@ -155,7 +161,7 @@ export class MemoryRetriever {
       candidates++
       if (this.provider.vectors.read(this.spec, document) === null) missing++
     }
-    return { space: this.spec.space, ...this.provider.vectors.status(this.spec), candidates, missing, truncated, ready: !truncated && missing === 0 }
+    return { method: 'vector' as const, space: this.spec.space, ...this.provider.vectors.status(this.spec), candidates, missing, truncated, ready: !truncated && missing === 0 }
   }
 
   /** Retrieve only current, visible versions; failures reject rather than masquerade as no matches.
@@ -181,7 +187,7 @@ export class MemoryRetriever {
       const limit = request.limit ?? this.spec.limit
       const maxBytes = request.maxBytes ?? this.spec.maxBytes
       if (!Number.isSafeInteger(limit) || limit < 1 || limit > this.spec.maxCandidates || !Number.isSafeInteger(maxBytes) || maxBytes < 1) throw new MemoryError('config', 'invalid retrieval count or byte budget')
-      const empty = (): RetrievalResult => ({ hits: [], text: '', scanned: 0, elapsedMs: performance.now() - start })
+      const empty = (): RetrievalResult => ({ hits: [], text: '', scanned: 0, elapsedMs: performance.now() - start, method: 'vector' })
       if (!request.text.trim() || request.levels?.length === 0) return empty()
       const store = this.provider.vectors
       const generation = store.generation()
@@ -224,7 +230,7 @@ export class MemoryRetriever {
         if (expected.size) throw new MemoryError('conflict', 'memory candidates changed during retrieval')
       }
       check()
-      return { hits, text: renderRecall(hits), scanned: candidates.length, elapsedMs: performance.now() - start }
+      return { hits, text: renderRecall(hits), scanned: candidates.length, elapsedMs: performance.now() - start, method: 'vector' }
     } catch (error) {
       request.signal?.throwIfAborted()
       this.abort.signal.throwIfAborted()

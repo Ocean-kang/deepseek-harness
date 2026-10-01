@@ -34,11 +34,12 @@ export class KnowledgeExtractor {
    */
   async consolidate(task: KnowledgeTask, signal: AbortSignal, reserveCall: () => void): Promise<readonly KnowledgeCandidate[]> {
     signal.throwIfAborted()
+    const system = task.config.promptVersion === 'knowledge-v1' ? prompt : prompt + '\nEvery candidate must cite at least one exact ref from input.sources. Additional direct refs may only come from input.sources or input.existing. input.lineage is ancestry evidence only, not an allowed direct output source. When merging an existing record, cite that record\'s own id and revision to preserve its ancestry; do not copy its nested sources unless those refs also appear in input.sources or input.existing.'
     const input = JSON.stringify({ input: task.input, scoring: { min: task.config.scoreMin, max: task.config.scoreMax,
       threshold: task.input.level === 'L2' ? task.config.l2Threshold : task.config.l3Threshold } })
-    if (Buffer.byteLength(prompt) + Buffer.byteLength(input) > task.config.maxInputBytes) throw new MemoryError('budget', 'Knowledge input exceeds configured budget')
+    if (Buffer.byteLength(system) + Buffer.byteLength(input) > task.config.maxInputBytes) throw new MemoryError('budget', 'Knowledge input exceeds configured budget')
     using limit = deadline(signal, task.config.timeoutMs, 'MEMORY_KNOWLEDGE_TIMEOUT')
-    const request: L1Request = deepFreeze({ provider: task.config.provider, model: task.config.model, system: prompt,
+    const request: L1Request = deepFreeze({ provider: task.config.provider, model: task.config.model, system,
       messages: [{ role: 'user', content: [{ type: 'text', text: input }] }], maxTokens: task.config.maxOutputTokens, sessionId: this.sessionId })
     try {
       await this.record(task, request, limit.signal)

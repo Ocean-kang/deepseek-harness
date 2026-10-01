@@ -9,7 +9,10 @@ import type { Config as ConfigInput } from './config.ts'
 import { SqliteMemory } from './sqlite.ts'
 import { HttpEmbedder } from './embedding.ts'
 import { MemoryRetriever } from './retrieval.ts'
-import type { RetrievalRequest } from './retrieval.ts'
+import type { RetrievalRequest, MemorySearch } from './retrieval.ts'
+import { TextMemoryRetriever } from './text-retrieval.ts'
+import { MemoryPipeline } from './pipeline.ts'
+import type {} from '@deepseek-ai/dsh-llm'
 import { RawCollector } from './collector.ts'
 import { installShareCommand } from './share-command.ts'
 import { MemoryError } from './types.ts'
@@ -23,6 +26,8 @@ export type * from './embedding.ts'
 export type * from './retrieval.ts'
 export { resolveEmbeddingConfig, HttpEmbedder } from './embedding.ts'
 export { MemoryRetriever } from './retrieval.ts'
+export { TextMemoryRetriever, resolveTextSearchConfig } from './text-retrieval.ts'
+export type { TextSearchConfig, TextSearchSpec } from './text-retrieval.ts'
 export { installMemoryInjector } from './injector.ts'
 export type * from './knowledge-types.ts'
 export { resolveKnowledgeConfig } from './knowledge-validation.ts'
@@ -44,9 +49,13 @@ export { resolveL1Config } from './l1-config.ts'
 export type Config = ConfigInput
 /** Loader-visible validation; cross-field and filesystem checks live in resolveConfig. */
 export const Config: z<Config> = z.object({
+  autoLearning: z.boolean(),
   projectId: z.string().required(), databasePath: z.string().required(),
   queueCapacity: z.number(), batchSize: z.number(), pageSize: z.number(), busyTimeoutMs: z.number(),
   learningConcurrency: z.number(), learningQueueCapacity: z.number(),
+  textSearch: z.union([z.object({ tokenizer: z.union(['unicode61', 'trigram'] as const), limit: z.number(), maxBytes: z.number(),
+    maxCandidates: z.number(), pageSize: z.number(), timeoutMs: z.number(), maxQueryBytes: z.number(), maxTerms: z.number(),
+  }), z.const(undefined)]),
   journalMode: z.union(['wal', 'delete', 'truncate', 'persist'] as const),
   embedding: z.union([z.object({ endpoint: z.string().required(), model: z.string().required(), dimensions: z.number().required(), apiKeyEnv: z.string().required(),
     sendDimensions: z.boolean(), batchSize: z.number(), concurrency: z.number(), timeoutMs: z.number(), maxAttempts: z.number(), retryBaseMs: z.number(), retryMaxMs: z.number(),
@@ -82,15 +91,26 @@ export class MemoryService extends Service implements RawMemory {
    * @param ctx - owning plugin context.
    * @param provider - ready SQLite provider.
    * @param l1 - resolved extraction configuration, if task scanning is enabled.
-   * @param retriever - optional explicitly configured semantic search.
+   * @param retriever - optional explicitly selected text or vector search.
    * @param scan - nonthrowing notification after L0 commits.
+   * @param pipeline - optional background learner, disposed separately before the database.
    */
-  constructor(ctx: Context, private readonly provider: SqliteMemory, private readonly l1: L1Spec | undefined, private readonly scan: (project: ProjectId) => void, private readonly retriever?: MemoryRetriever) {
+  constructor(ctx: Context, private readonly provider: SqliteMemory, private readonly l1: L1Spec | undefined, private readonly scan: (project: ProjectId) => void, private readonly retriever?: MemorySearch, private readonly pipeline?: MemoryPipeline) {
     super(ctx, 'memory')
   }
 
-  private search(): MemoryRetriever {
-    if (this.retriever === undefined) throw new MemoryError('config', 'embedding configuration is required')
+  /** Await due learning work after source capture has committed.
+   * @param project - owner to process.
+   * @param signal - caller cancellation; committed sources remain available.
+   * @returns settlement of due work; inspect persisted task states for individual failures.
+   */
+  async flushLearning(project: ProjectId, signal?: AbortSignal): Promise<void> {
+    if (this.pipeline === undefined) throw new MemoryError('config', 'autoLearning is not enabled')
+    await this.pipeline.flush(project, signal)
+  }
+
+  private search(): MemorySearch {
+    if (this.retriever === undefined) throw new MemoryError('config', 'textSearch or embedding configuration is required')
     return this.retriever
   }
 
@@ -106,7 +126,7 @@ export class MemoryService extends Service implements RawMemory {
    */
   async getIndexStatus(project: ProjectId) { return this.search().getIndexStatus(project) }
 
-  /** Rebuild only the configured vector space; inspect getIndexStatus for failures. */
+  /** Rebuild the configured index; text search has no retained index to rebuild. */
   async rebuildIndex(): Promise<void> { return this.search().rebuildIndex() }
 
   /**
@@ -150,15 +170,17 @@ export class MemoryService extends Service implements RawMemory {
     return this.provider.knowledge.listCandidates(project, level, after, limit)
   }
 
-  /** Queue an explicit consolidation; automatic model dispatch remains unavailable.
+  /** Persist explicit consolidation and wake the background learner when enabled.
    * @param project - owner.
    * @param level - target level.
    * @param sources - exact previous-level versions.
    * @param config - resolved settings.
-   * @returns durable operation identity.
+   * @returns durable operation identity without awaiting its model call.
    */
   async consolidate(project: ProjectId, level: KnowledgeLevel, sources: readonly MemoryRef[], config: KnowledgeSpec): Promise<OperationId> {
-    return this.provider.knowledge.enqueue(project, level, sources, config)
+    const operation = this.provider.knowledge.enqueue(project, level, sources, config)
+    this.pipeline?.wake(project)
+    return operation
   }
 
   /** Read a consolidation task.
@@ -180,7 +202,10 @@ export class MemoryService extends Service implements RawMemory {
    * @param project - owner.
    * @param operation - task identity.
    */
-  async retryKnowledgeTask(project: ProjectId, operation: OperationId): Promise<void> { this.provider.knowledge.retry(project, operation) }
+  async retryKnowledgeTask(project: ProjectId, operation: OperationId): Promise<void> {
+    this.provider.knowledge.retry(project, operation)
+    this.pipeline?.wake(project)
+  }
 
   /** Invalidate current owned knowledge and revoke its grant.
    * @param project - owner.
@@ -222,7 +247,9 @@ export class MemoryService extends Service implements RawMemory {
    */
   async rerunTask(project: ProjectId, operation: OperationId, mode: 'retry' | 'reextract'): Promise<OperationId> {
     if (this.l1 === undefined) throw new MemoryError('config', 'L1 configuration is required for explicit reruns')
-    return this.provider.l1.rerun(project, operation, mode, this.l1)
+    const next = this.provider.l1.rerun(project, operation, mode, this.l1)
+    this.pipeline?.wake(project)
+    return next
   }
 }
 
@@ -234,10 +261,16 @@ export class MemoryService extends Service implements RawMemory {
  */
 export async function apply(ctx: Context, config: Config): Promise<void> {
   const spec = await resolveConfig(config)
+  const llm = ctx.get('llm')
+  if (spec.autoLearning && !Object.hasOwn(ctx.fiber.inject, 'llm')) throw new MemoryError('config', 'autoLearning requires llm in this plugin entry\'s inject list')
+  if (spec.autoLearning && llm === undefined) throw new MemoryError('config', 'autoLearning requires the configured DSH LLM service')
   const embedder = spec.embedding === undefined ? undefined : new HttpEmbedder(spec.embedding, process.env[spec.embedding.apiKeyEnv] ?? '')
   const provider = await SqliteMemory.open(spec)
   const report = (error: MemoryError) => ctx.logger.warn(`[memory/${error.code}] ${error.message}`)
-  const retriever = spec.embedding === undefined || embedder === undefined ? undefined : new MemoryRetriever(provider, spec.embedding, embedder, report)
+  const retriever = spec.textSearch !== undefined ? new TextMemoryRetriever(provider, spec.textSearch)
+    : spec.embedding === undefined || embedder === undefined ? undefined : new MemoryRetriever(provider, spec.embedding, embedder, report)
+  const pipeline = spec.autoLearning && llm !== undefined ? new MemoryPipeline(provider, spec, llm, report, retriever) : undefined
+  let shuttingDown = false
   const enqueueKnowledge = () => {
     if (spec.knowledge === undefined) return
     try {
@@ -258,7 +291,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   }
   const scan = (project: ProjectId) => {
     if (spec.l1 === undefined) return
-    try { provider.scanTurns(project, spec.l1, spec.pageSize) } catch (error) {
+    try { provider.scanTurns(project, spec.l1, spec.pageSize); if (!shuttingDown) pipeline?.wake(project) } catch (error) {
       report(new MemoryError('source', 'L1 scan failed; its last committed checkpoint is retained', error))
     }
   }
@@ -277,8 +310,10 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   })
   const listeners: Array<() => void> = []
   const dispose = async () => {
+    shuttingDown = true
     for (const dispose of listeners) dispose()
     try {
+      await pipeline?.close()
       await retriever?.close()
       await collector.close()
     } finally {
@@ -297,8 +332,8 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     await Promise.all(existing.map(session => collector.flush(session)))
     if (spec.l1 !== undefined) for (const project of provider.listProjects()) scan(project)
     enqueueKnowledge()
-    if (spec.l1 !== undefined) report(new MemoryError('integration', 'L1 tasks are persisted, but automatic extraction is unavailable until its Session request event is registered; no model requests will be dispatched'))
-    new MemoryService(ctx, provider, spec.l1, scan, retriever)
+    if (spec.l1 !== undefined && pipeline === undefined) report(new MemoryError('integration', 'L1 tasks are persisted; enable autoLearning with L1 and knowledge model configurations to dispatch recorded background requests'))
+    new MemoryService(ctx, provider, spec.l1, scan, retriever, pipeline)
     installShareCommand(ctx, provider)
     retriever?.schedule()
   } catch (error) {

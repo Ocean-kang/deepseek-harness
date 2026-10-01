@@ -6,11 +6,76 @@ import { randomUUID } from 'node:crypto'
 import { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import CommandRuntime from '@deepseek-ai/dsh-commands'
+import LlmRuntime, { LlmAdapter, createUserMessage } from '@deepseek-ai/dsh-llm'
+import type { GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm'
 import SessionStore, { Session, SessionId, SessionLogOffset } from '@deepseek-ai/dsh-session'
 import JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
 import * as MemoryPlugin from '../src/index.ts'
 import { fixture } from './helpers.ts'
 import { knowledgeFixture, knowledgeCandidate, commitKnowledge } from './knowledge-fixtures.ts'
+import { candidate } from './l1-fixtures.ts'
+
+it('automatically learns captured turns using the mounted LLM and serves text recall without embeddings', async () => {
+  const item = await fixture()
+  const ctx = new Context()
+  const entered = Promise.withResolvers<void>()
+  const release = Promise.withResolvers<void>()
+  let calls = 0
+  try {
+    await ctx.plugin(LlmRuntime)
+    await ctx.plugin(SessionStore)
+    await ctx.plugin(JsonlSessionPersistence, { root: `${item.root}/sessions`, compression: 'none' })
+    const session = ctx.sessions.create(SessionId('automatic-learning-source'))
+    const writer = await ctx.sessionPersistence.create(session.header)
+    class Adapter extends LlmAdapter {
+      async *stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
+        calls++
+        let text: string
+        if (options.system?.startsWith('Summarize')) {
+          entered.resolve()
+          await release.promise
+          text = JSON.stringify(candidate({ sessionId: session.id }))
+        } else {
+          const block = options.messages[0]!.content[0]!
+          if (block.type !== 'text') throw new Error('expected text')
+          text = JSON.stringify([knowledgeCandidate(JSON.parse(block.text).input.sources[0])])
+        }
+        yield { type: 'block-start', index: 0, blockType: 'text' }
+        yield { type: 'text-delta', index: 0, text }
+        yield { type: 'block-end', index: 0, block: { type: 'text', text } }
+        yield { type: 'finish', reason: { kind: 'stop' } }
+      }
+    }
+    ctx.llm.registerAdapter(['test'], new Adapter())
+    const options = { projectId: item.spec.projectId, databasePath: item.spec.databasePath, autoLearning: true, textSearch: {},
+      l1: { provider: 'test', model: 'test' }, knowledge: { provider: 'test', model: 'test' } }
+    const plugin = await ctx.plugin({ ...MemoryPlugin, inject: [...MemoryPlugin.inject, 'llm'] }, options)
+    session.append('turn/start', { turn: 1 })
+    session.append('user/message', createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: 'Use strict TypeScript' }] }), { surfaceOp: 'append' })
+    session.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
+    await ctx.sessions.flush(session)
+    // Model entry is observed before invoking the explicit learning barrier.
+    await entered.promise
+    expect((await ctx.memory.readRaw({ projectId: item.spec.projectId, sessionId: session.id, from: SessionLogOffset(0), to: session.seq, limit: 10 })).events).toHaveLength(3)
+    release.resolve()
+    await ctx.memory.flushLearning(item.spec.projectId)
+    expect(calls).toBe(3)
+    expect(await ctx.memory.listCandidates(item.spec.projectId, 'L3')).toHaveLength(1)
+    const recall = await ctx.memory.retrieve({ projectId: item.spec.projectId, text: 'TypeScript', levels: ['L3'] })
+    expect(recall).toMatchObject({ method: 'bm25', hits: [{ similarity: null }] })
+    expect(recall.text).toContain('Use strict TypeScript')
+    await plugin.dispose()
+    const reopened = await ctx.plugin({ ...MemoryPlugin, inject: [...MemoryPlugin.inject, 'llm'] }, options)
+    await ctx.memory.flushLearning(item.spec.projectId)
+    expect(calls).toBe(3)
+    await reopened.dispose()
+    await writer.close()
+  } finally {
+    release.resolve()
+    await ctx.fiber.dispose()
+    await item.close()
+  }
+})
 
 it('captures real persisted events, unloads, and recovers missed events on reload', async () => {
   const item = await fixture()

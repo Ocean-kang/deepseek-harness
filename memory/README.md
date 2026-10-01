@@ -9,7 +9,7 @@ English | [中文](README.zh.md)
 
 ## Summary
 
-Keep complete recorded Session events in project-owned SQLite and optionally discover L1 extraction tasks from completed turn intervals. Read exact memory versions and inspect pending or failed operations. L1 and L2/L3 storage, extraction and retry components have local tests. `MemoryPipeline` executes independent learning with durable auxiliary Session requests; the capture plugin does not dispatch model tasks automatically. Execution evidence and outstanding acceptance checks are recorded in [Tasks](Tasks.md).
+Keep complete recorded Session events in project-owned SQLite and inspect exact memory versions and task states. With `autoLearning`, the capture plugin uses the mounted DSH LLM service for background L1/L2/L3 learning with durable auxiliary Session requests. Explicit text search works without embeddings; vector search is an optional alternative. Formal production injection remains a separate integration stage. Execution evidence and outstanding acceptance checks are recorded in [Tasks](Tasks.md).
 
 ## Table of Contents
 
@@ -46,10 +46,12 @@ Configuration is resolved before opening SQLite. Relative database paths resolve
 | `pageSize` | 128 | Maximum source events per recovery read, also limited by batch size. |
 | `learningConcurrency` | 2 | Maximum simultaneous project drains in an independent pipeline. |
 | `learningQueueCapacity` | 128 | Maximum admitted drains waiting for project ordering or concurrency capacity. |
+| `autoLearning` | false | Enable background learning; requires L1/knowledge settings and `llm` in the plugin entry's inject list. |
+| `textSearch` | Absent | Explicit BM25 text search, mutually exclusive with `embedding`. |
 | `busyTimeoutMs` | 5000 | SQLite lock wait; zero disables waiting. |
 | `journalMode` | `wal` | `wal`, `delete`, `truncate`, or `persist`; synchronous mode is FULL. |
-| `l1` | Absent | Optional extraction configuration; currently enables durable task discovery only. |
-| `knowledge` | Absent | Optional L2/L3 model and scoring settings; queues tasks but does not dispatch model calls. |
+| `l1` | Absent | Optional extraction configuration; enables task discovery and supplies L1 settings for `autoLearning`. |
+| `knowledge` | Absent | Optional L2/L3 model and scoring settings; `autoLearning` controls model dispatch. |
 
 Automatic capture preserves a Session's stored project. For a new Session, it resolves `SessionHeader.cwd` through the optional Workspace registry and uses `workspace.id`. Missing registry, cwd, directory, or matching Workspace uses `projectId`; other lookup failures reject capture and remain retryable at an explicit flush. Ownership is fixed at the first L0 commit, including fallback ownership. Existing memory is not migrated when a Workspace is created, deleted, or renamed.
 
@@ -67,7 +69,7 @@ The optional `l1` object requires explicit `provider` and `model` values. Its re
 | `retryBaseMs` | 1000 | Initial exponential retry delay. |
 | `retryMaxMs` | 30000 | Maximum retry delay; must be at least `retryBaseMs`. |
 
-With `l1` configured, the plugin reports `memory/integration` and leaves tasks pending without dispatching a model request. The [scan fixture](tests/fixtures/l1-scan.patch.yml) exercises this limited composition through the supported profile. It does not enable automatic summarization. Inspect operations through `ctx.memory.listTasks(project, after, limit)` and `getTask(project, operation)`, and read exact versions through `getMemory(project, ref)`. `rerunTask(project, operation, mode)` accepts `retry` for failed/deferred work or `reextract` for a new operation using the current configuration. Requeueing does not bypass the missing Session logging integration.
+With `l1` configured and `autoLearning` disabled, the plugin reports `memory/integration` and leaves tasks pending. The [scan fixture](tests/fixtures/l1-scan.patch.yml) exercises this capture-only composition. Enable background learning with [automatic.patch.yml](profiles/automatic.patch.yml), which resolves both extraction models from `agentDefaultModel` and uses the existing LLM adapter's credentials. L0 commits coalesce project wakeups; capture flush does not wait for model calls. After capture, `ctx.memory.flushLearning(project, signal)` awaits currently due work; failures remain inspectable in task states. Inspect operations through `ctx.memory.listTasks(project, after, limit)` and `getTask(project, operation)`, and read exact versions through `getMemory(project, ref)`. `rerunTask(project, operation, mode)` accepts `retry` for failed/deferred work or `reextract` for a new operation using the current configuration. Unload cancels model work before releasing SQLite; the final captured sources remain recoverable on restart.
 
 `ctx.memory.appendRaw` accepts project identity, source header, inherited prefix length, and an ordered contiguous event batch. It permits overlap with the stored prefix. Identical JSON values are duplicates; another project, different source metadata, or conflicting event content rejects the entire transaction. An empty batch binds source metadata and returns the current prefix. Successful writes return only after commit; cancellation observed after commit does not undo it.
 
@@ -77,7 +79,7 @@ With `l1` configured, the plugin reports `memory/integration` and leaves tasks p
 
 ### Long-term knowledge
 
-When `knowledge` is configured, the plugin queues one L2 task per current L1 version and one L3 task per supported current L2 version. It reconciles existing versions at startup and newly committed versions in the same process. Equivalent tasks are idempotent; commits from another process are discovered on restart. No production model worker is installed.
+When `knowledge` is configured, the plugin queues one L2 task per current L1 version and one L3 task per supported current L2 version. It reconciles existing versions at startup and newly committed versions in the same process. Equivalent tasks are idempotent; commits from another process are discovered on restart. With `autoLearning`, the recoverable pipeline executes these tasks in the background.
 
 Resolve explicit provider/model settings with `resolveKnowledgeConfig`, then call `ctx.memory.consolidate(project, level, sourceRefs, spec)` to persist an L2 or L3 task. This queues work without dispatching a model. Inspect it through `getKnowledgeTask` / `listKnowledgeTasks`; `retryKnowledgeTask` requeues failed work. Use `listCandidates(project, level, after, limit)` for supported current records and `invalidateMemory(project, ref, reason, operation)` to invalidate current owned L2/L3. Exact `getMemory` reads preserve owned history; a shared result is a distinct projection with `shared: true`, title and body, without sources or generation metadata.
 
@@ -85,13 +87,13 @@ Resolve explicit provider/model settings with `resolveKnowledgeConfig`, then cal
 |---|---|---|
 | `scoreMin` / `scoreMax` | 0 / 5 | Inclusive integer range; maximum 100. |
 | `l2Threshold` / `l3Threshold` | 3 / 4 | Ordered thresholds inside the score range. |
-| `promptVersion` | `knowledge-v1` | Fixed implementation version persisted with tasks. |
+| `promptVersion` | `knowledge-v2` | Fixed implementation version persisted with tasks; saved v1 tasks retain their original prompt. |
 
 Knowledge uses the L1 model-budget defaults above. At the default scale, temporary information scores 0–1, local experience 2, reusable methods 3, stable constraints 4, and explicit decisions 5. Importance never establishes truth: evidence is separately supported, unverified, or conflict. Low scores do not delete sources; conflicts remain stored even below the threshold so an obsolete fact does not remain eligible. L3 accepts only supported stable categories. Original ancestry accompanies model input, and repeated summaries of the same event references do not establish additional successful evidence.
 
 The [knowledge store](src/knowledge-store.ts) persists exact source versions, settings, prepared candidates, attempt/call counts and backoff. Same-project leases serialize aggregation across connections. A version conflict refreshes current knowledge and discards the stale candidate; storage retry retains it. `KnowledgeWorker.run` executes one due attempt explicitly. A caller with a durable auxiliary request recorder may use `watch(project, report)` for scheduled retries and must call `notify()` after enqueueing; `retire(project)` waits for in-flight work before releasing its request Session. Explicit retry resets attempts but retains the lifetime call budget; changed model settings create a distinct operation. Complete oversized inputs fail without truncation. Close all workers before closing their provider.
 
-The [knowledge extractor](src/knowledge-extractor.ts) uses the real LLM service and requires an awaited Session-backed request recorder. The mounted capture plugin installs neither that recorder nor the worker. Independent development uses the pipeline below; controlled adapters do not establish real-provider quality.
+The [knowledge extractor](src/knowledge-extractor.ts) uses the real LLM service and requires an awaited Session-backed request recorder. With `autoLearning`, the capture plugin installs the auxiliary Session recorder and worker. Independent development can also use the pipeline below; controlled adapters do not establish real-provider quality.
 
 When the interactive command registry is composed, `/memory-share show <id>@<revision>` displays a current supported L3 version, the revocation limit, and a five-minute token. The user then runs `/memory-share approve <token>` in the same Session; `/memory-share revoke <id>@<revision>` stops future sharing. The handler awaits Session durability before committing an exact-version grant or revocation, and uses its logged human command as the one-time receipt. These commands are unavailable without the interactive registry. The mounted memory service exposes no approval method or model tool. Replacement, invalidation and revocation remove a grant atomically; cross-project reads expose only the approved projection. Revocation cannot erase content already recorded in another Session or derived from prior reads.
 
@@ -121,13 +123,19 @@ try {
 
 [MemoryRequestJournal](src/request-journal.ts) commits exact provider/model, prompt, input and output budget before dispatch, then saves the compact returned stream before candidate preparation. Each attempt has a separate auxiliary Session in L0 with `memory/extraction-request` and `memory/extraction-result` events. Their envelopes carry `ignorable: true`: other Harness readers retain them without deriving ordinary agent history. No turn is invented and the original source Session is unchanged. A missing settlement means the outcome is unknown, not success. The database schema stays at version 4 because these events use the existing L0 tables. `listSessions(project, after, limit)` exposes owner-filtered metadata for paging and audit; `readRaw` retrieves the actual events.
 
-The independent path is covered by learned-memory/query/restart tests, scheduled L1 and L2 retries, concurrent project execution, request and result transaction failures, cancellation, owner isolation and an owner-local expected-output file. It does not install automatic capture-to-model dispatch or injection in the DSH profile. Formal profile integration, SDK snapshots and real-model effectiveness remain separate unfinished work.
+The independent path is covered by learned-memory/query/restart tests, scheduled L1 and L2 retries, concurrent project execution, request and result transaction failures, cancellation, owner isolation and an owner-local expected-output file. The automatic overlay adds capture-to-model dispatch; production injection, persistence registration, SDK snapshots and general real-model effectiveness remain separate unfinished work.
 
 Project drains execute serially within each project and share the configured concurrency limit. A full learning queue rejects with `backpressure` after L0 capture; call `flush` later to recover the retained source. Watched projects resume when capacity becomes available. Cancelling a drain waiting for project ordering or concurrency capacity removes it before any model call or task lease, frees its queue capacity and preserves ordering for later drains.
 
-For an opt-in real-provider extraction smoke, build this package, link the local profile, then run `node ../apps/cli/lib/bin.js --profile headless --patch ./profiles/learning-live.patch.yml 'Validate independent memory learning.'` from `memory/`. This test-only overlay replaces the headless runner with the [learning fixture](tests/fixtures/learning-live.mjs) and uses the already selected model and credentials. Its YAML explicitly bounds attempts, calls, output and timeout. It processes a synthetic standing constraint, saves requests and results in `data/learning-live.sqlite`, prints task status and requests launcher exit. It mounts no production memory integration and performs no embedding calls. `passed: true` requires new L1, L2 and L3 results for that run; it does not establish general quality or retrieval effectiveness.
+For an opt-in real-provider learning smoke, build this package, link the local profile, then run `node ../apps/cli/lib/bin.js --profile headless --patch ./profiles/learning-live.patch.yml 'Validate automatic memory learning and text retrieval.'` from `memory/`. This test-only overlay replaces the headless runner with the [learning fixture](tests/fixtures/learning-live.mjs), mounts automatic learning and text search, and uses the already selected model and credentials. Its YAML explicitly bounds attempts, calls, output and timeout. Each run processes a synthetic standing constraint in a unique `data/automatic-live-<uuid>.sqlite` database, prints its database path and source Session, and requests launcher exit. It installs no production injection and performs no embedding calls. `passed: true` requires L1, L2 and L3 results for that run and a text-search hit; failed runs remain recorded and do not establish general quality or retrieval effectiveness.
 
-Set `DSH_MEMORY_VERIFY_LEARNING=1` and `DSH_MEMORY_VERIFY_LEARNING_SOURCE` to the exact `sourceSession` printed by that run, then execute `node scripts/test.mjs learning-live`. This reopens the database without further model calls and checks conservative L1 content, the explicit constraint, exact ancestry and request/result settlements. `DSH_MEMORY_VERIFY_LEARNING_DB` optionally selects another memory-relative database. Missing run identity fails visibly rather than verifying an unrelated earlier run.
+Set `DSH_MEMORY_VERIFY_LEARNING=1`, `DSH_MEMORY_VERIFY_LEARNING_SOURCE` to the exact `sourceSession` printed by that run, and `DSH_MEMORY_VERIFY_LEARNING_DB` to its memory-relative database path, then execute `node scripts/test.mjs learning-live`. This reopens the database without further model calls and checks conservative L1 content, the explicit constraint, exact ancestry and request/result settlements. Missing run identity or database path fails visibly.
+
+### Text retrieval
+
+Set `textSearch: {}` to use SQLite FTS5/BM25 without an embedding model, key or network request. Results identify `method: 'bm25'`; hits carry a positive BM25 `score` and `similarity: null`. Vector results identify `method: 'vector'`. Configure one mode explicitly; neither replaces a failing query in the other mode. Private memories are removed before constructing the scoring corpus, and current revisions and grants are checked before return and admission. Each query builds and closes a capped in-memory corpus from SQLite records; database schema stays at version 4.
+
+Text defaults are `tokenizer: unicode61`, `limit: 5`, `maxBytes: 8192`, `maxCandidates: 10000`, `pageSize: 128`, `timeoutMs: 5000`, `maxQueryBytes: 8192`, and `maxTerms: 64`. Exceeding query or candidate limits rejects without truncation. The query treats letter/number runs as literal OR terms, so user text cannot inject FTS operators. `unicode61` matches complete words; optional `trigram` matches substrings of at least three Unicode characters, including Chinese. Neither tokenizer recognizes synonyms or guarantees relevance. The deadline is checked between pages and after synchronous SQLite ranking; it cannot interrupt one native statement. `getIndexStatus` reports current candidate capacity, and `rebuildIndex` has no retained text index to rebuild.
 
 <a id="semantic-retrieval"></a>
 ### Semantic retrieval
@@ -189,7 +197,7 @@ node ../apps/cli/lib/bin.js --profile headless --patch ./profiles/headless-built
 
 ## Model Experience
 
-The mounted plugin introduces no model tool or injected memory, and currently dispatches no extraction calls. The separately tested extractor's [prompt](src/l1-extractor.ts) treats event text as untrusted evidence, distinguishes execution from recalled references, and requests a sourced JSON summary. It preserves uncertainty; normal turn completion alone does not prove success. A failed L0 checkpoint can fail the caller's durability checkpoint; L1 scan failures retain their cursor and report diagnostics without undoing committed L0.
+The mounted plugin introduces no model tool or injected memory. With `autoLearning`, auxiliary model calls use the existing provider and credentials; their full requests and returned streams are journaled. The extractor's [prompt](src/l1-extractor.ts) treats event text as untrusted evidence, distinguishes execution from recalled references, and requests a sourced JSON summary. It preserves uncertainty; normal turn completion alone does not prove success. A failed L0 checkpoint can fail the caller's durability checkpoint; L1 scan failures retain their cursor and report diagnostics without undoing committed L0.
 
 ## Known Limitations and Deferred Work
 
@@ -199,5 +207,5 @@ The mounted plugin introduces no model tool or injected memory, and currently di
 - Source-wide flush may report another Session writer's failure. Recovery treats that failed checkpoint as an error.
 - SQLite calls are synchronous and can block up to the configured lock timeout. Larger workloads may need an independently designed worker-backed provider.
 - Database growth is unbounded; there is no retention policy or attachment backup. The extractor loads one complete turn into memory before partitioning requests; the byte budget limits requests, not peak process memory.
-- The mounted capture plugin does not automatically dispatch L1 tasks. Independent learning is available through `MemoryPipeline`; formal DSH integration still needs its persistence review and recorded-session evidence. Real-provider validation also requires credentials.
+- `autoLearning` enables background extraction and is disabled by default. Formal DSH integration still needs persistence review and recorded-session evidence; real models use the credentials already configured in DSH.
 - Source-provider replacement requires another profile lifecycle test. Directory-local tests do not replace required recorded-session snapshots.

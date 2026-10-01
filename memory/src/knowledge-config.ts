@@ -18,5 +18,5 @@ export function resolveKnowledgeConfig(input: KnowledgeConfig): KnowledgeSpec {
     || l2Threshold < scoreMin || l3Threshold < l2Threshold || l3Threshold > scoreMax) {
     throw new MemoryError('config', 'Invalid knowledge score range or thresholds')
   }
-  return Object.freeze({ ...base, promptVersion: 'knowledge-v1', scoreMin, scoreMax, l2Threshold, l3Threshold })
+  return Object.freeze({ ...base, promptVersion: 'knowledge-v2', scoreMin, scoreMax, l2Threshold, l3Threshold })
 }

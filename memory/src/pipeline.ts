@@ -10,7 +10,7 @@ import { L1Worker } from './l1-worker.ts'
 import { KnowledgeExtractor } from './knowledge-extractor.ts'
 import { KnowledgeWorker } from './knowledge-worker.ts'
 import { MemoryRequestJournal } from './request-journal.ts'
-import type { MemoryRetriever, RetrievalRequest, RetrievalResult } from './retrieval.ts'
+import type { MemorySearch, RetrievalRequest, RetrievalResult } from './retrieval.ts'
 
 /** Serializes learning per project and bounds concurrent drains across projects. */
 export class MemoryPipeline {
@@ -36,7 +36,7 @@ export class MemoryPipeline {
    * @param retriever - optional caller-owned index on the same provider.
    */
   constructor(private readonly memory: SqliteMemory, private readonly spec: Pick<Spec, 'l1' | 'knowledge' | 'pageSize' | 'learningConcurrency' | 'learningQueueCapacity'>,
-    llm: Pick<LlmRuntime, 'stream'>, private readonly report: (error: MemoryError) => void, private readonly retriever?: MemoryRetriever) {
+    llm: Pick<LlmRuntime, 'stream'>, private readonly report: (error: MemoryError) => void, private readonly retriever?: MemorySearch) {
     if (spec.l1 === undefined || spec.knowledge === undefined) throw new MemoryError('config', 'Independent learning requires L1 and knowledge model configurations')
     this.journal = new MemoryRequestJournal(memory, llm)
     const extractor = new KnowledgeExtractor(this.journal, this.journal.recordKnowledge, SessionId('memory-knowledge'))
@@ -146,6 +146,16 @@ export class MemoryPipeline {
     this.assertOpen()
     this.watched.add(project)
     return this.flush(project)
+  }
+
+  /** Coalesce committed source notifications without awaiting a model request.
+   * @param project - source owner; enables retry watching for this project.
+   */
+  wake(project: ProjectId): void {
+    this.assertOpen()
+    this.watched.add(project)
+    if (this.tails.has(project)) this.dirty.add(project)
+    else this.schedule(project, Date.now())
   }
 
   /** Stop background work for one project and await its currently queued drains.

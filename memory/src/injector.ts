@@ -4,7 +4,7 @@ import type {} from '@deepseek-ai/dsh-agent'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { MemoryRef } from './l1-types.ts'
-import type { MemoryRetriever } from './retrieval.ts'
+import type { MemorySearch } from './retrieval.ts'
 import type { ProjectId } from './types.ts'
 import { MemoryError } from './types.ts'
 
@@ -23,7 +23,7 @@ declare module '@deepseek-ai/dsh-llm' {
  * @param report - nonthrowing diagnostic sink.
  * @returns asynchronous disposer which waits for in-flight listeners.
  */
-export function installMemoryInjector(ctx: Context, retriever: MemoryRetriever, projectOf: (agent: Agent) => Promise<ProjectId>, report: (error: MemoryError) => void): () => Promise<void> {
+export function installMemoryInjector(ctx: Context, retriever: MemorySearch, projectOf: (agent: Agent) => Promise<ProjectId>, report: (error: MemoryError) => void): () => Promise<void> {
   const abort = new AbortController()
   const pending = new Set<Promise<unknown>>()
   const attempted = new WeakMap<Agent, number>()

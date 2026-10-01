@@ -48,6 +48,7 @@ it('records the frozen exact request before calling the real LLM service and com
     expect(options.messages).toEqual(item.records[0]?.messages)
     expect(Object.isFrozen(item.records[0]?.messages)).toBe(true)
     expect(options.sessionId).toBe('auxiliary')
+    expect(options.system).toContain('input.lineage is ancestry evidence only')
     return response(JSON.stringify([knowledgeCandidate(item.source)]))
   }))
   await item.worker.run(item.project, item.operation, new AbortController().signal)
@@ -55,6 +56,22 @@ it('records the frozen exact request before calling the real LLM service and com
   expect(calls).toBe(1)
   expect(item.store.getTask(item.project, item.operation)).toMatchObject({ status: 'done', calls: 1, attempts: 1 })
   expect(item.store.listCandidates(item.project, 'L2')).toHaveLength(1)
+})
+
+it('preserves saved legacy prompt settings when reading and executing an existing task', async () => {
+  const item = await setup()
+  const operation = item.store.enqueue(item.project, 'L2', [item.source], { ...item.config, promptVersion: 'knowledge-v1' })
+  const reopened = await item.open()
+  expect(reopened.knowledge.getTask(item.project, operation)?.config.promptVersion).toBe('knowledge-v1')
+  item.ctx.llm.registerAdapter(['test'], new Adapter(options => {
+    expect(options.system).not.toContain('input.lineage is ancestry evidence only')
+    return response(JSON.stringify([knowledgeCandidate(item.source)]))
+  }))
+  await item.worker.run(item.project, operation, new AbortController().signal)
+  expect(item.store.getTask(item.project, operation)?.status).toBe('done')
+  const memory = item.store.listCandidates(item.project, 'L2')[0]
+  if (memory === undefined || 'shared' in memory || memory.level === 'L1') throw new Error('expected owned knowledge')
+  expect(memory.config.promptVersion).toBe('knowledge-v1')
 })
 
 it('schedules pending work and a durable retry without a manual run', async () => {

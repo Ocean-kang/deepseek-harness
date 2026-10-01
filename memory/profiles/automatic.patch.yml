@@ -1,0 +1,21 @@
+# Opt-in background learning uses the configured DSH model and credentials.
+- insert:
+    - id: memory-l0
+      name: ../lib/index.mjs
+      inject: [llm, agentDefaultModel]
+      config:
+        projectId: !!js process.env.DSH_MEMORY_PROJECT
+        databasePath: data/automatic.sqlite
+        autoLearning: true
+        textSearch: {}
+        l1:
+          provider: !!js ctx.agentDefaultModel.currentSelection().provider
+          model: !!js ctx.agentDefaultModel.currentSelection().model
+          maxOutputTokens: 4096
+        knowledge:
+          provider: !!js ctx.agentDefaultModel.currentSelection().provider
+          model: !!js ctx.agentDefaultModel.currentSelection().model
+          maxOutputTokens: 4096
+
+- id: headless-runner
+  inject: [headlessStartup, memory]

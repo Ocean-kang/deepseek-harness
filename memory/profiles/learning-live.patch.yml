@@ -9,18 +9,20 @@
       inject: [agentDefaultModel]
       config:
         projectId: memory-live-learning
-        databasePath: data/learning-live.sqlite
+        databasePath: data/automatic-live.sqlite
+        autoLearning: true
+        textSearch: {}
         l1:
           provider: !!js ctx.agentDefaultModel.currentSelection().provider
           model: !!js ctx.agentDefaultModel.currentSelection().model
           timeoutMs: 60000
-          maxOutputTokens: 2048
+          maxOutputTokens: 4096
           maxCalls: 3
           maxAttempts: 1
         knowledge:
           provider: !!js ctx.agentDefaultModel.currentSelection().provider
           model: !!js ctx.agentDefaultModel.currentSelection().model
           timeoutMs: 60000
-          maxOutputTokens: 2048
+          maxOutputTokens: 4096
           maxCalls: 1
           maxAttempts: 1

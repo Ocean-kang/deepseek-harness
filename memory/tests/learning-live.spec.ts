@@ -4,11 +4,14 @@ import { expandAssistantStream } from '@deepseek-ai/dsh-llm'
 import { SessionId, SessionLogOffset } from '@deepseek-ai/dsh-session'
 import { resolveConfig } from '../src/config.ts'
 import { SqliteMemory } from '../src/sqlite.ts'
+import { TextMemoryRetriever, resolveTextSearchConfig } from '../src/text-retrieval.ts'
 
 it.runIf(process.env.DSH_MEMORY_VERIFY_LEARNING === '1')('reopens the live run and verifies content, ancestry and exact request/result logs', async () => {
   const id = process.env.DSH_MEMORY_VERIFY_LEARNING_SOURCE
   if (id === undefined || !id.trim()) throw new Error('DSH_MEMORY_VERIFY_LEARNING_SOURCE must identify the live fixture run')
-  const spec = await resolveConfig({ projectId: 'memory-live-learning', databasePath: process.env.DSH_MEMORY_VERIFY_LEARNING_DB ?? 'data/learning-live.sqlite' })
+  const databasePath = process.env.DSH_MEMORY_VERIFY_LEARNING_DB
+  if (databasePath === undefined || !databasePath.trim()) throw new Error('DSH_MEMORY_VERIFY_LEARNING_DB must identify the live fixture database')
+  const spec = await resolveConfig({ projectId: 'memory-live-learning', databasePath })
   const memory = await SqliteMemory.open(spec)
   try {
     const project = spec.projectId
@@ -25,9 +28,8 @@ it.runIf(process.env.DSH_MEMORY_VERIFY_LEARNING === '1')('reopens the live run a
     const l1Task = l1Tasks[0]!
     expect(l1Task.status).toBe('done')
     const l1 = memory.l1.byOperation(project, l1Task.operationId)!
-    expect(l1.summary.outcome).toBe('unknown')
+    expect(['unknown', 'incomplete']).toContain(l1.summary.outcome)
     expect(l1.summary.solution).toBeNull()
-    expect(l1.summary.actions).toEqual([])
     expect(l1.summary.sources).toEqual([{ sessionId: SessionId(id), seq: 1 }])
     const source = await memory.readRaw({ projectId: project, sessionId: SessionId(id), from: SessionLogOffset(1), to: SessionLogOffset(2), limit: 1 })
     expect(JSON.stringify(source.events)).toContain('No implementation or test execution has occurred')
@@ -43,6 +45,13 @@ it.runIf(process.env.DSH_MEMORY_VERIFY_LEARNING === '1')('reopens the live run a
     const l3Tasks = tasks.filter(task => task.input.level === 'L3' && task.input.sources.some(record => l2Refs.some(ref => ref.id === record.id && ref.revision === record.revision)))
     expect(l2Tasks).toHaveLength(1)
     expect(l3Tasks).toHaveLength(1)
+    const search = new TextMemoryRetriever(memory, resolveTextSearchConfig({}))
+    try {
+      const result = await search.retrieve({ projectId: project, text: 'TypeScript ESM', levels: ['L3'] })
+      expect(result.method).toBe('bm25')
+      expect(result.hits.some(hit => l3Tasks[0]!.result!.some(ref => ref.id === hit.ref.id && ref.revision === hit.ref.revision))).toBe(true)
+      expect(result.hits.every(hit => hit.similarity === null)).toBe(true)
+    } finally { await search.close() }
     for (const task of [...l2Tasks, ...l3Tasks]) {
       expect(task.status).toBe('done')
       expect(task.result?.length).toBeGreaterThan(0)

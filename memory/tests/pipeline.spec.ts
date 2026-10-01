@@ -15,6 +15,7 @@ import { MemoryPipeline } from '../src/pipeline.ts'
 import { resolveL1Config } from '../src/l1-config.ts'
 import { resolveKnowledgeConfig } from '../src/knowledge-config.ts'
 import { MemoryRetriever } from '../src/retrieval.ts'
+import { TextMemoryRetriever, resolveTextSearchConfig } from '../src/text-retrieval.ts'
 import { resolveEmbeddingConfig } from '../src/embedding.ts'
 import type { ProjectId } from '../src/types.ts'
 import { installMemoryInjector } from '../src/injector.ts'
@@ -138,13 +139,12 @@ it('does not call the model if its request cannot commit, and recovers from reta
   }
 })
 
-it('delivers newly learned memory to a new Agent Session and persists the exact recalled body', async () => {
+it('delivers newly learned memory through text search to a new Agent Session and persists the exact recalled body', async () => {
   const item = await fixture()
   const ctx = new Context()
   const provider = await item.open()
   const errors: string[] = []
-  const retriever = new MemoryRetriever(provider, resolveEmbeddingConfig({ endpoint: 'https://example.invalid/embeddings', model: 'test', dimensions: 2, apiKeyEnv: 'TEST_KEY' }),
-    { embed: async texts => ({ vectors: texts.map(() => [1, 0]), tokens: null }) }, error => errors.push(error.code))
+  const retriever = new TextMemoryRetriever(provider, resolveTextSearchConfig({}))
   let pipeline: MemoryPipeline | undefined
   let dispose: (() => Promise<void>) | undefined
   try {

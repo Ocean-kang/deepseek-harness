@@ -30,11 +30,11 @@ CREATE TABLE knowledge_grants (id TEXT NOT NULL, revision INTEGER NOT NULL, acti
 
 function storedConfig(value: unknown): KnowledgeSpec {
   const item = object(value)
-  if (item.promptVersion !== 'knowledge-v1') throw new MemoryError('corrupt', 'Unsupported knowledge prompt version')
-  return resolveKnowledgeConfig({ provider: textValue(item.provider), model: textValue(item.model),
+  if (item.promptVersion !== 'knowledge-v1' && item.promptVersion !== 'knowledge-v2') throw new MemoryError('corrupt', 'Unsupported knowledge prompt version')
+  return { ...resolveKnowledgeConfig({ provider: textValue(item.provider), model: textValue(item.model),
     maxInputBytes: integer(item.maxInputBytes), maxOutputTokens: integer(item.maxOutputTokens), timeoutMs: integer(item.timeoutMs),
     maxCalls: integer(item.maxCalls), maxAttempts: integer(item.maxAttempts), retryBaseMs: integer(item.retryBaseMs), retryMaxMs: integer(item.retryMaxMs),
-    scoreMin: integer(item.scoreMin), scoreMax: integer(item.scoreMax), l2Threshold: integer(item.l2Threshold), l3Threshold: integer(item.l3Threshold) })
+    scoreMin: integer(item.scoreMin), scoreMax: integer(item.scoreMax), l2Threshold: integer(item.l2Threshold), l3Threshold: integer(item.l3Threshold) }), promptVersion: item.promptVersion }
 }
 
 function refs(value: unknown): MemoryRef[] {

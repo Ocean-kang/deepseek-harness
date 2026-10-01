@@ -20,6 +20,8 @@ it('resolves defaults once and rejects invalid deployment values', async () => {
     await expect(resolveConfig({ projectId: 'a', databasePath: 'data/test.sqlite', learningQueueCapacity: value })).rejects.toMatchObject({ code: 'config' })
   }
   await expect(resolveConfig({ projectId: 'a', databasePath: '../escape.sqlite' })).rejects.toMatchObject({ code: 'config' })
+  await expect(resolveConfig({ projectId: 'a', databasePath: 'data/test.sqlite', autoLearning: true })).rejects.toMatchObject({ code: 'config' })
+  expect((await resolveConfig({ projectId: 'a', databasePath: 'data/test.sqlite', textSearch: {} })).textSearch).toMatchObject({ tokenizer: 'unicode61', limit: 5 })
 })
 
 it('refuses a directory junction before creating a database', async () => {
@@ -48,7 +50,7 @@ it('resolves knowledge settings at load and rejects invalid scoring', async () =
   const config = { provider: 'test', model: 'test', scoreMin: 1, scoreMax: 5, l2Threshold: 3, l3Threshold: 4 }
   const spec = await resolveConfig({ projectId: 'stable', databasePath: 'data/test.sqlite', knowledge: config })
   expect(spec.knowledge).toEqual(resolveKnowledgeConfig(config))
-  expect(spec.knowledge?.promptVersion).toBe('knowledge-v1')
+  expect(spec.knowledge?.promptVersion).toBe('knowledge-v2')
   await expect(resolveConfig({ projectId: 'stable', databasePath: 'data/test.sqlite', knowledge: { ...config, l3Threshold: 2 } })).rejects.toMatchObject({ code: 'config' })
   await expect(resolveConfig({ projectId: 'stable', databasePath: 'data/test.sqlite', knowledge: { ...config, provider: '' } })).rejects.toMatchObject({ code: 'config' })
 })

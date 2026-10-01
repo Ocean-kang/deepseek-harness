@@ -2,12 +2,13 @@
 
 ## 摘要
 
-目录内实现提供真实 embeddings HTTP 适配器、schema 4 向量存储、受项目权限约束的检索，以及未在生产注册的 Injector。受控 adapter 和本地 HTTP 测试验证实现行为；它们不证明真实模型的语义质量或完整学习流程。Task4 保持未完成，默认 profile 不自动注入。
+目录内实现提供明确选择的 FTS5/BM25 文本检索、真实 embeddings HTTP 适配器、schema 4 向量存储、受项目权限约束的检索，以及未在生产注册的 Injector。当前用户目标以独立后台整理和无需 embedding 的文本检索为本阶段范围，正式集成验收另行保留。真实单案例已跑通自动 L1/L2/L3 并命中文本结果；受控 adapter 和本地 HTTP 测试不证明真实语义质量或一般效果。Task4 完整集成保持未完成，默认 profile 不自动注入。
 
 ## 需求覆盖
 
 | 需求 | 实现与证据 | 验收限制 |
 |---|---|---|
+| 明确文本模式 | [文本检索](../src/text-retrieval.ts)、[真实 FTS5 测试](../tests/text-retrieval.spec.ts)：BM25 排序、授权语料、更新、撤回、预算、取消、重开及中文 trigram；真实单案例已命中生成的 L3 | 属于当前独立阶段，不能识别同义词；每次查询重建有界内存语料，不报告语义效果 |
 | 有序有效向量、配置与取消 | [适配器](../src/embedding.ts)、[协议测试](../tests/embedding.spec.ts)：乱序、缺项、重复索引、模型/维度不符、零向量、非有限数值、退避及真实 HTTP 超时 | 未配置真实 embedding endpoint、模型、维度和密钥 |
 | 持久化、迁移和重建 | [向量存储](../src/vector-store.ts)、[检索测试](../tests/retrieval.spec.ts)：迁移回滚、写入回滚、重开、失败恢复及空间隔离 | 旧空间不自动清理 |
 | 权限、排序和预算 | [Retriever](../src/retrieval.ts)：先筛选、稳定排序、完整条目预算、扫描上限、共享撤回、失效及并发版本变化 | 相似度阈值尚未按真实模型校准 |

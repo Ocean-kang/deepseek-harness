@@ -22,7 +22,7 @@ export interface Knowledge {
 export interface KnowledgeConfig extends L1Config { scoreMin?: number; scoreMax?: number; l2Threshold?: number; l3Threshold?: number }
 /** Complete, persisted model and scoring settings. */
 export interface KnowledgeSpec extends Omit<L1Spec, 'promptVersion'> {
-  readonly promptVersion: 'knowledge-v1'
+  readonly promptVersion: 'knowledge-v1' | 'knowledge-v2'
   readonly scoreMin: number
   readonly scoreMax: number
   readonly l2Threshold: number

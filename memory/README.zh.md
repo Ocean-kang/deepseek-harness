@@ -9,7 +9,7 @@ kind: "package-reference"
 
 ## 摘要
 
-将完整的已记录 Session 事件保存在项目所属的 SQLite 中，并可选地从已结束的 turn 区间发现 L1 提炼任务。调用方可以读取具体记忆版本，检查待处理或失败的操作。L1 与 L2/L3 存储、提炼和重试组件已有目录内测试。`MemoryPipeline` 通过持久化辅助 Session 请求执行独立学习；采集插件不自动派发模型任务。执行证据与未完成验收见[任务清单](Tasks.md)。
+将完整的已记录 Session 事件保存在项目所属的 SQLite 中，并检查具体记忆版本及任务状态。开启 `autoLearning` 后，采集插件使用已加载的 DSH 模型服务，通过持久化辅助 Session 请求执行后台 L1/L2/L3 学习。明确选择的文本检索无需 embedding；向量检索作为可选替代模式。正式生产注入属于独立集成阶段。执行证据与未完成验收见[任务清单](Tasks.md)。
 
 ## 目录
 
@@ -47,10 +47,12 @@ node --import tsx/esm ../apps/cli/src/bin.ts --profile headless --patch ./profil
 | `pageSize` | 128 | 每次来源恢复读取的事件数量上限，同时受批次大小限制。 |
 | `learningConcurrency` | 2 | 独立流水线同时执行的项目处理数量上限。 |
 | `learningQueueCapacity` | 128 | 等待项目顺序或并发容量的已接纳处理数量上限。 |
+| `autoLearning` | false | 开启后台学习；要求 L1/knowledge 配置，并在插件条目的 inject 列表声明 `llm`。 |
+| `textSearch` | 未配置 | 明确选择 BM25 文本检索，与 `embedding` 互斥。 |
 | `busyTimeoutMs` | 5000 | SQLite 锁等待时间；零表示不等待。 |
 | `journalMode` | `wal` | 可选 `wal`、`delete`、`truncate` 或 `persist`；同步模式为 FULL。 |
-| `l1` | 不配置 | 可选提炼配置；目前只启用持久化任务发现。 |
-| `knowledge` | 不配置 | 可选 L2/L3 模型与评分设置；排队任务但不派发模型调用。 |
+| `l1` | 不配置 | 可选提炼配置；启用任务发现，并为 `autoLearning` 提供 L1 设置。 |
+| `knowledge` | 不配置 | 可选 L2/L3 模型与评分设置；由 `autoLearning` 控制模型派发。 |
 
 自动采集保留 Session 已存储的项目归属。对于新 Session，插件通过可选的 Workspace 注册表解析 `SessionHeader.cwd`，使用 `workspace.id`。缺少注册表、cwd、目录或匹配的 Workspace 时使用 `projectId`；其他查询失败会拒绝采集，可在显式刷新时重试。归属在首次 L0 提交时固定，包括备用项目归属。创建、删除或重命名 Workspace 不迁移已有记忆。
 
@@ -68,7 +70,7 @@ Web profile patch 可以从启动工作目录设置必填的备用 `projectId`�
 | `retryBaseMs` | 1000 | 指数退避的初始延迟。 |
 | `retryMaxMs` | 30000 | 最大重试延迟，不得小于 `retryBaseMs`。 |
 
-配置 `l1` 后，插件报告 `memory/integration`，保留待处理任务，不发起模型请求。[扫描测试配置](tests/fixtures/l1-scan.patch.yml) 通过受支持的 profile 验证这一有限组合，不启用自动总结。通过 `ctx.memory.listTasks(project, after, limit)` 和 `getTask(project, operation)` 检查操作，通过 `getMemory(project, ref)` 读取具体版本。`rerunTask(project, operation, mode)` 使用 `retry` 重排失败或延迟任务，使用 `reextract` 按当前配置创建新操作。重新排队不会绕过缺少的 Session 日志接入。
+配置 `l1` 且关闭 `autoLearning` 时，插件报告 `memory/integration`，保留待处理任务。[扫描测试配置](tests/fixtures/l1-scan.patch.yml) 验证这一仅采集组合。通过 [automatic.patch.yml](profiles/automatic.patch.yml) 开启后台学习；它从 `agentDefaultModel` 解析两类提炼模型，并使用已有模型适配器的凭据。L0 提交合并项目唤醒通知；采集刷新不等待模型调用。采集后，`ctx.memory.flushLearning(project, signal)` 等待当前到期工作；失败仍保留在任务状态中。通过 `ctx.memory.listTasks(project, after, limit)` 和 `getTask(project, operation)` 检查操作，通过 `getMemory(project, ref)` 读取具体版本。`rerunTask(project, operation, mode)` 使用 `retry` 重排失败或延迟任务，使用 `reextract` 按当前配置创建新操作。卸载先取消模型工作，再释放 SQLite；最终采集的来源可在重启后恢复。
 
 `ctx.memory.appendRaw` 接收项目标识、来源 header、继承前缀长度和有序连续事件批次，允许与已存前缀重叠。JSON 值相同视为重复；项目、来源元数据或事件内容冲突会拒绝整个事务。空批次绑定来源元数据并返回当前前缀。写入只有在提交后才返回成功；提交后观察到的取消不撤销结果。
 
@@ -79,7 +81,7 @@ Web profile patch 可以从启动工作目录设置必填的备用 `projectId`�
 
 ### 长期知识
 
-配置 `knowledge` 后，插件为每个当前 L1 版本排队一个 L2 任务，并为每个有支持证据的当前 L2 版本排队一个 L3 任务。启动时补排已有版本，本进程提交新版本后继续排队。同一任务幂等；其他进程的提交在重启后发现。生产环境尚未安装模型 worker。
+配置 `knowledge` 后，插件为每个当前 L1 版本排队一个 L2 任务，并为每个有支持证据的当前 L2 版本排队一个 L3 任务。启动时补排已有版本，本进程提交新版本后继续排队。同一任务幂等；其他进程的提交在重启后发现。开启 `autoLearning` 后，可恢复流水线在后台执行这些任务。
 
 先通过 `resolveKnowledgeConfig` 解析明确的 provider/model 设置，再调用 `ctx.memory.consolidate(project, level, sourceRefs, spec)` 持久化 L2 或 L3 任务；排队不发起模型调用。通过 `getKnowledgeTask` / `listKnowledgeTasks` 检查任务，使用 `retryKnowledgeTask` 重排失败任务。`listCandidates(project, level, after, limit)` 返回有支持证据的当前记录，`invalidateMemory(project, ref, reason, operation)` 使所属项目的当前 L2/L3 失效。精确 `getMemory` 读取保留所属项目的历史；共享结果是带 `shared: true`、标题和正文的独立投影，不包含来源或生成元数据。
 
@@ -87,13 +89,13 @@ Web profile patch 可以从启动工作目录设置必填的备用 `projectId`�
 |---|---|---|
 | `scoreMin` / `scoreMax` | 0 / 5 | 整数闭区间，最大值不超过 100。 |
 | `l2Threshold` / `l3Threshold` | 3 / 4 | 评分区间内按顺序排列的阈值。 |
-| `promptVersion` | `knowledge-v1` | 随任务保存的固定实现版本。 |
+| `promptVersion` | `knowledge-v2` | 随任务保存的固定实现版本；已有 v1 任务保留原提示词。 |
 
 知识沿用上表的 L1 模型预算默认值。默认评分中，临时信息为 0–1，局部经验为 2，可复用方法为 3，稳定约束为 4，明确决策为 5。重要性不证明真实性：证据另分为 supported、unverified 和 conflict。低分不删除来源；冲突即使低于阈值也保留，避免旧事实继续进入候选。L3 只接受有支持证据的稳定类别。模型输入包含原始证据链；同一事件引用的重复摘要不能提供额外的成功证据。
 
 [知识存储](src/knowledge-store.ts) 持久化具体来源版本、设置、已准备候选、尝试及调用次数和退避时间。同项目租约在不同连接间串行化聚合。版本冲突重新读取当前知识并丢弃过时候选，存储重试保留候选。`KnowledgeWorker.run` 显式执行一次到期尝试。持有持久化辅助请求记录器的调用方可通过 `watch(project, report)` 启用定时重试，排队后须调用 `notify()`；释放请求 Session 前须等待 `retire(project)` 完成。显式重试重置尝试次数，但保留操作整个生命周期的调用预算；模型设置变化创建不同操作。完整输入超预算时明确失败，不截断。必须先关闭全部 worker，再关闭 Provider。
 
-[知识提炼器](src/knowledge-extractor.ts) 使用真实 LLM 服务，要求先等待 Session 请求记录器完成。已加载采集插件既不安装该记录器，也不安装 worker。独立开发使用下述流水线；受控 adapter 不证明真实 Provider 的质量。
+[知识提炼器](src/knowledge-extractor.ts) 使用真实 LLM 服务，要求先等待 Session 请求记录器完成。开启 `autoLearning` 后，采集插件安装辅助 Session 记录器及 worker。独立开发也可使用下述流水线；受控 adapter 不证明真实 Provider 的质量。
 
 组合交互式命令注册表后，`/memory-share show <id>@<revision>` 展示当前有支持证据的 L3 版本、撤回限制及五分钟有效的令牌。用户须在同一 Session 执行 `/memory-share approve <token>`；`/memory-share revoke <id>@<revision>` 停止后续共享。处理器先等待 Session 持久化，再以已记录的用户命令作为一次性回执提交指定版本的批准或撤回。未组合交互命令注册表时这些命令不可用。已加载记忆服务不向模型暴露批准方法或工具。替代、失效和撤回在同一事务中删除授权；跨项目读取只暴露获批投影。撤回无法清除其他 Session 已记录的内容或此前读取产生的派生内容。
 
@@ -123,13 +125,19 @@ try {
 
 [MemoryRequestJournal](src/request-journal.ts) 在派发前提交准确的 provider/model、提示、输入和输出预算，并在准备候选前保存返回的紧凑流。每次尝试在 L0 中拥有独立辅助 Session，包含 `memory/extraction-request` 和 `memory/extraction-result` 事件。事件信封带 `ignorable: true`，其他 Harness 读取方保留记录，但不派生普通 Agent 历史。不会创建虚假的 turn，也不改变原始来源 Session。缺少结束记录表示结果未知，不代表成功。这些事件使用现有 L0 表，数据库 schema 保持版本 4。`listSessions(project, after, limit)` 提供按所属项目过滤的元数据分页，`readRaw` 读取实际事件。
 
-独立路径已有学习、查询与重启测试，L1 和 L2 定时重试、并发项目执行、请求和结果事务失败、取消、所属项目隔离测试，以及测试所属的预期输出文件。它不在 DSH profile 中安装从自动采集到模型派发的流程或注入。正式 profile 集成、SDK 快照和真实模型效果仍属于未完成工作。
+独立路径已有学习、查询与重启测试，L1 和 L2 定时重试、并发项目执行、请求和结果事务失败、取消、所属项目隔离测试，以及测试所属的预期输出文件。自动 overlay 接通采集到模型派发；生产注入、持久化登记、SDK 快照和一般真实模型效果仍属于未完成工作。
 
 每个项目内部按序处理，项目之间共用配置的并发上限。学习队列满时，L0 采集后抛出 `backpressure`；之后调用 `flush` 可以恢复已保留的来源。已监听项目在容量释放后恢复。取消等待项目顺序或并发容量的处理会在模型调用及任务租约之前移除它，释放其队列容量，并保留后续处理的项目顺序。
 
-按需运行真实 Provider 提炼 smoke 时，先构建本包并链接本地 profile，再从 `memory/` 执行 `node ../apps/cli/lib/bin.js --profile headless --patch ./profiles/learning-live.patch.yml 'Validate independent memory learning.'`。这个测试专用 overlay 用[学习夹具](tests/fixtures/learning-live.mjs)替代 headless runner，复用已选择的模型和凭据。YAML 显式限制尝试、调用次数、输出和超时。它处理一条合成的长期约束，在 `data/learning-live.sqlite` 保存请求和结果，打印任务状态并请求启动器退出。它不安装生产记忆集成，也不调用 embedding。`passed: true` 要求本次运行产生新的 L1、L2 和 L3 结果，不证明一般质量或检索效果。
+按需运行真实 Provider 学习 smoke 时，先构建本包并链接本地 profile，再从 `memory/` 执行 `node ../apps/cli/lib/bin.js --profile headless --patch ./profiles/learning-live.patch.yml 'Validate automatic memory learning and text retrieval.'`。这个测试专用 overlay 用[学习夹具](tests/fixtures/learning-live.mjs)替代 headless runner，加载自动学习及文本检索，复用已选择的模型和凭据。YAML 显式限制尝试、调用次数、输出和超时。每次运行在独立的 `data/automatic-live-<uuid>.sqlite` 数据库中处理一条合成的长期约束，输出数据库路径和来源 Session，并请求启动器退出。它不安装生产注入，也不调用 embedding。`passed: true` 要求本次运行产生 L1、L2 和 L3 结果，并有文本检索命中；失败运行仍保留记录，不证明一般质量或检索效果。
 
-设置 `DSH_MEMORY_VERIFY_LEARNING=1`，将 `DSH_MEMORY_VERIFY_LEARNING_SOURCE` 设为本次输出的准确 `sourceSession`，再执行 `node scripts/test.mjs learning-live`。此检查重开数据库，不再调用模型，验证保守的 L1 内容、明确约束、准确来源链及请求和结果记录。`DSH_MEMORY_VERIFY_LEARNING_DB` 可选地指定另一 memory 相对数据库。缺少运行标识时明确失败，不验证无关的较早运行。
+设置 `DSH_MEMORY_VERIFY_LEARNING=1`，将 `DSH_MEMORY_VERIFY_LEARNING_SOURCE` 设为本次输出的准确 `sourceSession`，将 `DSH_MEMORY_VERIFY_LEARNING_DB` 设为该次运行的 memory 相对数据库路径，再执行 `node scripts/test.mjs learning-live`。此检查重开数据库，不再调用模型，验证保守的 L1 内容、明确约束、准确来源链及请求和结果记录。缺少运行标识或数据库路径时明确失败。
+
+### 文本检索
+
+设置 `textSearch: {}` 即可使用 SQLite FTS5/BM25，无需 embedding 模型、密钥或网络请求。结果标明 `method: 'bm25'`；条目带正值 BM25 `score` 和 `similarity: null`。向量结果标明 `method: 'vector'`。必须明确选择一种模式；任一模式的失败不会触发另一种模式。先移除私有记忆，再构建评分语料；返回及接纳前复查当前版本与批准。每次查询从 SQLite 记录构建并关闭有上限的内存语料，数据库 schema 保持版本 4。
+
+文本默认值为 `tokenizer: unicode61`、`limit: 5`、`maxBytes: 8192`、`maxCandidates: 10000`、`pageSize: 128`、`timeoutMs: 5000`、`maxQueryBytes: 8192` 和 `maxTerms: 64`。超过查询或候选上限直接拒绝，不截断。查询将字母及数字连续串作为字面 OR 词项，用户文本不能注入 FTS 操作符。`unicode61` 匹配完整词；可选 `trigram` 匹配至少三个 Unicode 字符的子串，包括中文。两种分词器均不识别同义词，也不保证相关性。在分页间及同步 SQLite 排序后检查时限，不能中断单条原生语句。`getIndexStatus` 报告当前候选容量；`rebuildIndex` 没有需要重建的持久文本索引。
 
 <a id="semantic-retrieval"></a>
 ### 语义检索
@@ -192,7 +200,7 @@ node ../apps/cli/lib/bin.js --profile headless --patch ./profiles/headless-built
 
 ## Model Experience
 
-已加载插件不增加模型工具或注入记忆，目前也不发起提炼请求。独立测试的提炼器[提示词](src/l1-extractor.ts) 将事件文本视为不可信证据，区分实际执行与引用资料，并要求带来源的 JSON 总结。它保留不确定性，不将 turn 正常结束直接视为任务成功。L0 检查点失败可能导致调用方的持久化检查点失败；L1 扫描失败保留其游标并报告诊断，不撤销已经提交的 L0。
+已加载插件不增加模型工具或注入记忆。开启 `autoLearning` 后，辅助模型调用使用已有提供方及凭据，完整请求和返回流均写入日志。提炼器[提示词](src/l1-extractor.ts) 将事件文本视为不可信证据，区分实际执行与引用资料，并要求带来源的 JSON 总结。它保留不确定性，不将 turn 正常结束直接视为任务成功。L0 检查点失败可能导致调用方的持久化检查点失败；L1 扫描失败保留其游标并报告诊断，不撤销已经提交的 L0。
 
 ## Known Limitations and Deferred Work
 
@@ -202,5 +210,5 @@ node ../apps/cli/lib/bin.js --profile headless --patch ./profiles/headless-built
 - 来源服务级刷新可能报告其他 Session writer 的失败；恢复将该检查点失败视为错误。
 - SQLite 调用是同步的，可能阻塞至配置的锁超时；更大的工作负载可能需要独立设计的 Worker Provider。
 - 数据库持续增长；没有保留期限或附件备份。提炼器先将完整 turn 载入内存再划分请求；字节预算约束请求，不约束进程内存峰值。
-- 已加载采集插件不自动派发 L1 任务。`MemoryPipeline` 提供独立学习；正式 DSH 集成仍需持久化审查和录制会话证据。真实 Provider 验证还需要凭据。
+- `autoLearning` 开启后台提炼，默认关闭。正式 DSH 集成仍需持久化审查和录制会话证据；真实模型使用 DSH 已配置的凭据。
 - 来源 Provider 替换需要另行执行 profile 生命周期测试；目录内测试不能替代必需的录制会话快照。

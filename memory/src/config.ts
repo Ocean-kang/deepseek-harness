@@ -10,12 +10,16 @@ import { resolveL1Config } from './l1-config.ts'
 import type { L1Config, L1Spec } from './l1-types.ts'
 import { resolveKnowledgeConfig } from './knowledge-config.ts'
 import type { KnowledgeConfig, KnowledgeSpec } from './knowledge-types.ts'
+import { resolveTextSearchConfig } from './text-retrieval.ts'
+import type { TextSearchConfig, TextSearchSpec } from './text-retrieval.ts'
 
 /** This plugin's permitted write root, preserved in both src/ and lib/. */
 export const MEMORY_ROOT = fileURLToPath(new URL('../', import.meta.url))
 
 /** User configuration; defaults are applied only by resolveConfig. */
 export interface Config {
+  autoLearning?: boolean
+  textSearch?: TextSearchConfig | undefined
   embedding?: EmbeddingConfig | undefined
   l1?: L1Config | undefined
   knowledge?: KnowledgeConfig | undefined
@@ -33,6 +37,8 @@ export interface Config {
 
 /** Validated absolute paths and all deployment values. */
 export interface Spec {
+  readonly autoLearning: boolean
+  readonly textSearch?: TextSearchSpec
   readonly embedding?: EmbeddingSpec
   readonly l1?: L1Spec
   readonly knowledge?: KnowledgeSpec
@@ -81,6 +87,9 @@ export async function memoryPath(path: string): Promise<string> {
  * @returns complete immutable deployment specification.
  */
 export async function resolveConfig(input: Config): Promise<Spec> {
+  if (input.autoLearning !== undefined && typeof input.autoLearning !== 'boolean') throw new MemoryError('config', 'autoLearning must be boolean')
+  if (input.autoLearning === true && (input.l1 === undefined || input.knowledge === undefined)) throw new MemoryError('config', 'autoLearning requires L1 and knowledge model configurations')
+  if (input.textSearch !== undefined && input.embedding !== undefined) throw new MemoryError('config', 'Choose text search or vector search explicitly; simultaneous modes are not supported')
   if (typeof input.projectId !== 'string' || input.projectId.trim() === '' || input.projectId !== input.projectId.trim()) {
     throw new MemoryError('config', 'projectId must be an explicit nonempty identifier without surrounding whitespace')
   }
@@ -103,6 +112,8 @@ export async function resolveConfig(input: Config): Promise<Spec> {
   const journalMode = input.journalMode ?? 'wal'
   if (!['wal', 'delete', 'truncate', 'persist'].includes(journalMode)) throw new MemoryError('config', 'invalid journalMode')
   return Object.freeze({
+    autoLearning: input.autoLearning ?? false,
+    ...(input.textSearch === undefined ? {} : { textSearch: resolveTextSearchConfig(input.textSearch) }),
     ...(input.embedding === undefined ? {} : { embedding: resolveEmbeddingConfig(input.embedding) }),
     ...(input.l1 === undefined ? {} : { l1: resolveL1Config(input.l1) }),
     ...(input.knowledge === undefined ? {} : { knowledge: resolveKnowledgeConfig(input.knowledge) }),
