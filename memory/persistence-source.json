@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "sourceKind": "memory-recall",
+  "eventType": "user/message",
+  "role": "user",
+  "required": ["kind", "form", "turn", "memories"],
+  "optional": ["selectionId"],
+  "compatibility": "Generic DSH user-message readers retain producer-owned source fields. Recall text uses existing text blocks and requires no new Session event type or role.",
+  "migration": "Keep version-1 fields readable; incompatible producer-field changes require a plugin-owned reader and migration before enabling writes."
+}

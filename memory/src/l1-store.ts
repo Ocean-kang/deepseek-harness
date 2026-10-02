@@ -92,9 +92,10 @@ export class L1Store {
    * @param session - source Session.
    * @param config - immutable extraction configuration.
    * @param events - contiguous decoded L0 page beginning at the scan cursor.
+   * @param excludeInheritedTurns - omit turns whose start is part of inherited history.
    * @returns number of newly enqueued tasks.
    */
-  scanPage(project: ProjectId, session: SessionId, config: L1Spec, events: readonly SessionEvent[]): number {
+  scanPage(project: ProjectId, session: SessionId, config: L1Spec, events: readonly SessionEvent[], excludeInheritedTurns = false): number {
     if (events.length === 0) return 0
     return this.transaction(() => {
       const source = this.db.prepare('SELECT project, committed_to, inherited_count FROM sessions WHERE id = ?').get(session)
@@ -113,7 +114,7 @@ export class L1Store {
           start = event.seq
         } else if (event.type === 'turn/end') {
           if (turn !== event.data.turn || start === null) throw new MemoryError('source', 'L1 end event has no matching turn start')
-          if (event.seq >= integer(source.inherited_count)) {
+          if ((excludeInheritedTurns ? start : event.seq) >= integer(source.inherited_count)) {
             const memoryId = l1Key('L1', project, session, start, cursor + 1) as MemoryId
             const id = l1Key(memoryId, config) as OperationId
             const revision = this.currentRevision(project, memoryId)

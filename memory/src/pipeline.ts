@@ -9,8 +9,21 @@ import { L1Extractor } from './l1-extractor.ts'
 import { L1Worker } from './l1-worker.ts'
 import { KnowledgeExtractor } from './knowledge-extractor.ts'
 import { KnowledgeWorker } from './knowledge-worker.ts'
+import { enqueueCandidates } from './knowledge-store.ts'
 import { MemoryRequestJournal } from './request-journal.ts'
 import type { MemorySearch, RetrievalRequest, RetrievalResult } from './retrieval.ts'
+
+/** Shared counters and waiters for all databases owned by one plugin instance. */
+export class LearningBudget {
+  /** Currently executing project drains across all attached pipelines. */
+  active = 0
+  /** Queued and executing drains across all attached pipelines. */
+  drains = 0
+  /** FIFO execution waiters; cancelled entries are removed by their owner. */
+  readonly waiting: Array<{ start: () => void }> = []
+  /** Pipeline callbacks notified after queued capacity becomes available. */
+  readonly available = new Set<() => void>()
+}
 
 /** Serializes learning per project and bounds concurrent drains across projects. */
 export class MemoryPipeline {
@@ -22,9 +35,6 @@ export class MemoryPipeline {
   private readonly dirty = new Set<ProjectId>()
   private readonly timers = new Map<ProjectId, ReturnType<typeof setTimeout>>()
   private readonly overloaded = new Set<ProjectId>()
-  private readonly waiting: Array<{ start: () => void }> = []
-  private active = 0
-  private drains = 0
   private readonly unsubscribe: () => void
   private readonly abort = new AbortController()
   private closing = false
@@ -34,19 +44,26 @@ export class MemoryPipeline {
    * @param llm - existing configured model service.
    * @param report - nonthrowing observer for retained task failures.
    * @param retriever - optional caller-owned index on the same provider.
+   * @param budget - shared counters for all databases belonging to one plugin instance.
    */
   constructor(private readonly memory: SqliteMemory, private readonly spec: Pick<Spec, 'l1' | 'knowledge' | 'pageSize' | 'learningConcurrency' | 'learningQueueCapacity'>,
-    llm: Pick<LlmRuntime, 'stream'>, private readonly report: (error: MemoryError) => void, private readonly retriever?: MemorySearch) {
+    llm: Pick<LlmRuntime, 'stream'>, private readonly report: (error: MemoryError) => void, private readonly retriever?: MemorySearch, private readonly budget = new LearningBudget()) {
     if (spec.l1 === undefined || spec.knowledge === undefined) throw new MemoryError('config', 'Independent learning requires L1 and knowledge model configurations')
     this.journal = new MemoryRequestJournal(memory, llm)
     const extractor = new KnowledgeExtractor(this.journal, this.journal.recordKnowledge, SessionId('memory-knowledge'))
     this.knowledge = new KnowledgeWorker(memory.knowledge, extractor)
+    this.budget.available.add(this.resumeOverloaded)
     this.unsubscribe = memory.onMemoryChange(() => {
       for (const project of this.watched) {
         if (this.tails.has(project)) this.dirty.add(project)
         else this.schedule(project, Date.now())
       }
     })
+  }
+
+  private readonly resumeOverloaded = () => {
+    for (const project of this.overloaded) this.schedule(project, Date.now())
+    this.overloaded.clear()
   }
 
   /** Capture complete source events and process presently due learning tasks.
@@ -67,7 +84,7 @@ export class MemoryPipeline {
    */
   flush(project: ProjectId, signal?: AbortSignal): Promise<void> {
     this.assertOpen()
-    if (this.drains - this.active >= this.spec.learningQueueCapacity) {
+    if (this.budget.drains - this.budget.active >= this.spec.learningQueueCapacity) {
       if (this.watched.has(project)) this.overloaded.add(project)
       throw new MemoryError('backpressure', 'Learning queue is full; committed L0 remains available for recovery')
     }
@@ -75,7 +92,7 @@ export class MemoryPipeline {
     if (timer !== undefined) clearTimeout(timer)
     this.timers.delete(project)
     const drainSignal = AbortSignal.any([this.abort.signal, ...signal === undefined ? [] : [signal]])
-    this.drains++
+    this.budget.drains++
     const previous = this.tails.get(project) ?? Promise.resolve()
     const work = this.waitForProject(previous, drainSignal).then(async () => {
       const release = await this.acquire(drainSignal)
@@ -85,12 +102,8 @@ export class MemoryPipeline {
     const settled = Promise.all([previous, finished]).then(() => undefined)
     this.tails.set(project, settled)
     void finished.then(() => {
-      this.drains--
-      const overloaded = this.overloaded.values().next().value
-      if (overloaded !== undefined) {
-        this.overloaded.delete(overloaded)
-        this.schedule(overloaded, Date.now())
-      }
+      this.budget.drains--
+      for (const available of this.budget.available) available()
     })
     void settled.then(() => {
       if (this.tails.get(project) !== settled) return
@@ -123,18 +136,18 @@ export class MemoryPipeline {
     return new Promise((resolve, reject) => {
       const entry = { start: () => {
         signal.removeEventListener('abort', cancel)
-        this.active++
-        resolve(() => { this.active--; this.waiting.shift()?.start() })
+        this.budget.active++
+        resolve(() => { this.budget.active--; this.budget.waiting.shift()?.start() })
       } }
       const cancel = () => {
-        const index = this.waiting.indexOf(entry)
-        if (index !== -1) this.waiting.splice(index, 1)
+        const index = this.budget.waiting.indexOf(entry)
+        if (index !== -1) this.budget.waiting.splice(index, 1)
         // AbortSignal.reason is ambient any; keep it out of the typed pipeline.
         const reason: unknown = signal.reason
         reject(reason)
       }
-      if (this.active < this.spec.learningConcurrency) entry.start()
-      else { this.waiting.push(entry); signal.addEventListener('abort', cancel, { once: true }) }
+      if (this.budget.active < this.spec.learningConcurrency) entry.start()
+      else { this.budget.waiting.push(entry); signal.addEventListener('abort', cancel, { once: true }) }
     })
   }
 
@@ -226,15 +239,9 @@ export class MemoryPipeline {
       this.workers.set(project, worker)
     }
     for (const session of this.sourceSessions(project)) { await worker.flush(session, signal); signal.throwIfAborted() }
-    for (const [source, target] of [['L1', 'L2'], ['L2', 'L3']] as const) {
+    for (const target of ['L2', 'L3'] as const) {
+      enqueueCandidates(this.memory.knowledge, project, target, this.spec.knowledge!, this.spec.pageSize)
       let after = ''
-      for (;;) {
-        const records = this.memory.knowledge.listCandidates(project, source, after, this.spec.pageSize)
-        for (const record of records) this.memory.knowledge.enqueue(project, target, [record], this.spec.knowledge!)
-        if (records.length < this.spec.pageSize) break
-        after = records.at(-1)!.id
-      }
-      after = ''
       for (;;) {
         const tasks = this.memory.knowledge.listTasks(project, after, this.spec.pageSize)
         for (const task of tasks) {
@@ -268,6 +275,7 @@ export class MemoryPipeline {
   async close(): Promise<void> {
     this.closing = true
     this.unsubscribe()
+    this.budget.available.delete(this.resumeOverloaded)
     for (const timer of this.timers.values()) clearTimeout(timer)
     this.timers.clear()
     this.watched.clear()

@@ -15,6 +15,32 @@ import { fixture } from './helpers.ts'
 import { knowledgeFixture, knowledgeCandidate, commitKnowledge } from './knowledge-fixtures.ts'
 import { candidate } from './l1-fixtures.ts'
 
+it('isolates fallback projects by working directory without a Workspace registry', async () => {
+  const item = await fixture()
+  const ctx = new Context()
+  const writers: Array<Awaited<ReturnType<typeof ctx.sessionPersistence.create>>> = []
+  try {
+    await ctx.plugin(SessionStore)
+    await ctx.plugin(JsonlSessionPersistence, { root: `${item.root}/sessions`, compression: 'none' })
+    await ctx.plugin(MemoryPlugin, { projectId: 'unassigned', databasePath: item.spec.databasePath, projectByPath: true })
+    const sessions = ['first', 'second', 'same-first'].map((id, index) => ctx.sessions.create(SessionId(id), {
+      meta: { cwd: `${item.root}/${index === 1 ? 'second' : 'first'}` },
+    }))
+    for (const session of sessions) {
+      writers.push(await ctx.sessionPersistence.create(session.header))
+      await ctx.sessions.flush(session)
+    }
+    const owners = sessions.map(session => ctx.memory.projectOfSession(session.id))
+    expect(owners[0]).toMatch(/^path:/)
+    expect(owners[0]).not.toBe(owners[1])
+    expect(owners[0]).toBe(owners[2])
+  } finally {
+    await ctx.fiber.dispose()
+    await Promise.all(writers.map(writer => writer.close()))
+    await item.close()
+  }
+})
+
 it('automatically learns captured turns using the mounted LLM and serves text recall without embeddings', async () => {
   const item = await fixture()
   const ctx = new Context()
@@ -211,25 +237,36 @@ it('queues knowledge through the mounted service without exposing approval or in
   } finally { await ctx.fiber.dispose(); await item.close() }
 })
 
-it('queues existing L1 and L2 versions for consolidation across plugin restarts', async () => {
+it('queues every page of existing L1 and L2 versions across restarts while automatic learning is disabled', async () => {
   const item = await knowledgeFixture()
   const ctx = new Context()
   try {
     await ctx.plugin(SessionStore)
     await ctx.plugin(JsonlSessionPersistence, { root: `${item.root}/sessions`, compression: 'none' })
-    const options = { projectId: item.project, databasePath: item.spec.databasePath, knowledge: { provider: 'test', model: 'test' } }
+    const options = { projectId: item.project, databasePath: item.spec.databasePath, autoLearning: false, pageSize: 1,
+      knowledge: { provider: 'test', model: 'test' } }
     const first = await ctx.plugin(MemoryPlugin, options)
     const l2 = (await ctx.memory.listKnowledgeTasks(item.project))[0]!
     expect(l2).toMatchObject({ input: { level: 'L2' }, status: 'pending', calls: 0 })
     await first.dispose()
     item.provider.knowledge.claim(item.project, l2.operationId, 'fixture', 10)
-    item.provider.knowledge.prepare(item.project, l2.operationId, 'fixture', [knowledgeCandidate(item.source)])
-    const source = item.provider.knowledge.commit(item.project, l2.operationId, 'fixture', 11)[0]!
+    item.provider.knowledge.prepare(item.project, l2.operationId, 'fixture', [
+      knowledgeCandidate(item.source, 'Use strict TypeScript'),
+      knowledgeCandidate(item.source, 'Use ESM'),
+      knowledgeCandidate(item.source, 'Keep source references'),
+    ])
+    const sources = item.provider.knowledge.commit(item.project, l2.operationId, 'fixture', 11)
     const second = await ctx.plugin(MemoryPlugin, options)
     const tasks = await ctx.memory.listKnowledgeTasks(item.project)
-    expect(tasks).toHaveLength(2)
-    expect(tasks.find(task => task.input.level === 'L3')).toMatchObject({ input: { sources: [{ id: source.id, revision: source.revision }] }, status: 'pending', calls: 0 })
+    expect(tasks).toHaveLength(4)
+    const pending = tasks.filter(task => task.input.level === 'L3')
+    expect(pending).toHaveLength(3)
+    expect(pending.every(task => task.status === 'pending' && task.calls === 0)).toBe(true)
+    expect(pending.flatMap(task => task.input.sources.map(({ id, revision }) => ({ id, revision })))
+      .sort((a, b) => a.id.localeCompare(b.id))).toEqual([...sources].sort((a, b) => a.id.localeCompare(b.id)))
     await second.dispose()
+    await ctx.plugin(MemoryPlugin, options)
+    expect(await ctx.memory.listKnowledgeTasks(item.project)).toEqual(tasks)
   } finally { await ctx.fiber.dispose(); await item.close() }
 })
 

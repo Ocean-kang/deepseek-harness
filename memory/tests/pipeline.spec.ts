@@ -11,9 +11,8 @@ import LlmRuntime, { LlmAdapter, expandAssistantStream, createUserMessage } from
 import type { GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm'
 import SessionStore, { Session, SessionId, SessionLogOffset } from '@deepseek-ai/dsh-session'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
-import { MemoryPipeline } from '../src/pipeline.ts'
-import { resolveL1Config } from '../src/l1-config.ts'
-import { resolveKnowledgeConfig } from '../src/knowledge-config.ts'
+import { LearningBudget, MemoryPipeline } from '../src/pipeline.ts'
+import { resolveKnowledgeConfig, resolveL1Config } from '../src/l1-config.ts'
 import { MemoryRetriever } from '../src/retrieval.ts'
 import { TextMemoryRetriever, resolveTextSearchConfig } from '../src/text-retrieval.ts'
 import { resolveEmbeddingConfig } from '../src/embedding.ts'
@@ -38,6 +37,57 @@ async function* response(text: string): AsyncIterable<StreamChunk> {
 
 const settings = { l1: resolveL1Config({ provider: 'test', model: 'test' }),
   knowledge: resolveKnowledgeConfig({ provider: 'test', model: 'test' }), pageSize: 2, learningConcurrency: 2, learningQueueCapacity: 128 }
+
+it('shares execution and queued capacity across separate databases and cancels a waiting drain', async () => {
+  const items = await Promise.all([fixture(), fixture()])
+  const providers = await Promise.all(items.map(item => item.open()))
+  const ctx = new Context()
+  const entered = Promise.withResolvers<void>()
+  const release = Promise.withResolvers<void>()
+  const budget = new LearningBudget()
+  const pipelines: MemoryPipeline[] = []
+  const work: Promise<unknown>[] = []
+  let calls = 0
+  try {
+    await ctx.plugin(LlmRuntime)
+    ctx.llm.registerAdapter(['test'], new Adapter(async function* () {
+      calls++
+      entered.resolve()
+      await release.promise
+      yield* response(JSON.stringify({ kind: 'empty' }))
+    }))
+    for (const [i, item] of items.entries()) {
+      const provider = providers[i]!
+      await provider.appendRaw(batch(item.spec, turnEvents()))
+      pipelines.push(new MemoryPipeline(provider, { ...settings, learningConcurrency: 1, learningQueueCapacity: 1 }, ctx.llm, () => {}, undefined, budget))
+    }
+    work.push(pipelines[0]!.flush(items[0]!.spec.projectId))
+    await entered.promise
+    const cancel = new AbortController()
+    work.push(pipelines[1]!.flush(items[1]!.spec.projectId, cancel.signal).catch(error => error))
+    expect(budget.active).toBe(1)
+    expect(budget.drains).toBe(2)
+    expect(() => pipelines[1]!.flush(items[1]!.spec.projectId)).toThrow('queue is full')
+    expect(calls).toBe(1)
+    cancel.abort(new Error('Cancelled queued project'))
+    expect(await work[1]).toMatchObject({ message: 'Cancelled queued project' })
+    release.resolve()
+    await work[0]
+    await pipelines[0]!.retire(items[0]!.spec.projectId)
+    await pipelines[1]!.retire(items[1]!.spec.projectId)
+    await pipelines[1]!.flush(items[1]!.spec.projectId)
+    expect(calls).toBe(2)
+  } finally {
+    release.resolve()
+    await Promise.all(pipelines.map(pipeline => pipeline.close()))
+    await Promise.allSettled(work)
+    expect(budget.active).toBe(0)
+    expect(budget.drains).toBe(0)
+    expect(budget.waiting).toEqual([])
+    await ctx.fiber.dispose()
+    await Promise.all(items.map(item => item.close()))
+  }
+})
 
 it('learns all layers, retrieves independently, replays requests and restarts without repeat calls', async () => {
   const item = await fixture()

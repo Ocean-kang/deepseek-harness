@@ -4,8 +4,6 @@ import { MemoryError } from './types.ts'
 import type { MemoryId, MemoryRef } from './l1-types.ts'
 import type { Knowledge, KnowledgeCandidate, KnowledgeInput, KnowledgeSpec, OwnedMemory } from './knowledge-types.ts'
 
-export { resolveKnowledgeConfig } from './knowledge-config.ts'
-
 /** Decode an exact version reference from JSON.
  * @param value - external or durable JSON.
  * @returns nonempty identity and positive revision.

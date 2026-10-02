@@ -33,6 +33,6 @@ $env:XDG_DATA_HOME = Join-Path $memoryTaskRoot 'home'
 $env:XDG_STATE_HOME = Join-Path $memoryTaskRoot 'home'
 $env:npm_config_cache = Join-Path $memoryTaskRoot '.cache'
 $env:NODE_COMPILE_CACHE = Join-Path $memoryTaskRoot '.cache'
-$env:TSX_TSCONFIG_PATH = Join-Path $memoryTaskRoot 'tsconfig.json'
+$env:TSX_TSCONFIG_PATH = Join-Path $memoryTaskRoot 'tsconfig.host.json'
 $env:DSH_TELEMETRY_DISABLED = '1'
 Set-Location -LiteralPath $memoryTaskRoot

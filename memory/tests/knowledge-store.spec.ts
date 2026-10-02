@@ -2,7 +2,9 @@
 import { afterEach, expect, it } from 'vitest'
 import { DatabaseSync } from 'node:sqlite'
 import { SessionLogOffset } from '@deepseek-ai/dsh-session'
-import { resolveKnowledgeConfig, parseKnowledgeCandidates } from '../src/knowledge-validation.ts'
+import { resolveKnowledgeConfig } from '../src/l1-config.ts'
+import { enqueueCandidates } from '../src/knowledge-store.ts'
+import { parseKnowledgeCandidates } from '../src/knowledge-validation.ts'
 import type { MemoryId, OperationId } from '../src/l1-types.ts'
 import type { ProjectId } from '../src/types.ts'
 import type { KnowledgeMemory, ShareAction } from '../src/knowledge-types.ts'
@@ -13,6 +15,36 @@ const owned: Array<Awaited<ReturnType<typeof knowledgeFixture>>> = []
 afterEach(async () => { for (const item of owned.splice(0)) await item.close() })
 async function setup() { const item = await knowledgeFixture(); owned.push(item); return item }
 const other = 'other-project' as ProjectId
+
+it('queues all candidate pages on memory changes and retains one task per source after repeated notifications', async () => {
+  const item = await setup()
+  const store = item.provider.knowledge
+  const notify = () => {
+    for (const level of ['L2', 'L3'] as const) enqueueCandidates(store, item.project, level, item.config, 1)
+  }
+  const unsubscribe = item.provider.onMemoryChange(notify)
+  try {
+    notify()
+    const operation = store.listTasks(item.project)[0]!.operationId
+    store.claim(item.project, operation, 'fixture', 10)
+    store.prepare(item.project, operation, 'fixture', [
+      knowledgeCandidate(item.source, 'Use strict TypeScript'),
+      knowledgeCandidate(item.source, 'Use ESM'),
+      knowledgeCandidate(item.source, 'Keep source references'),
+    ])
+    const sources = store.commit(item.project, operation, 'fixture', 11)
+    const tasks = store.listTasks(item.project)
+    expect(tasks).toHaveLength(4)
+    const pending = tasks.filter(task => task.input.level === 'L3')
+    expect(pending).toHaveLength(3)
+    expect(pending.every(task => task.status === 'pending' && task.calls === 0)).toBe(true)
+    expect(pending.flatMap(task => task.input.sources.map(({ id, revision }) => ({ id, revision })))
+      .sort((a, b) => a.id.localeCompare(b.id))).toEqual([...sources].sort((a, b) => a.id.localeCompare(b.id)))
+    notify()
+    notify()
+    expect(store.listTasks(item.project)).toEqual(tasks)
+  } finally { unsubscribe() }
+})
 
 it('finds pending and retry work after the current project lease settles', async () => {
   const item = await setup()
@@ -36,12 +68,12 @@ it('migrates populated schema 2 while retaining exact L0 and L1 records', async 
   const raw = await item.provider.readRaw({ projectId: item.project, sessionId: header().id, from: SessionLogOffset(0), to: SessionLogOffset(3), limit: 10 })
   await item.provider.close()
   const db = new DatabaseSync(item.spec.databasePath)
-  try { db.exec('DROP TRIGGER memory_l1_insert; DROP TRIGGER memory_knowledge_insert; DROP TRIGGER memory_knowledge_update; DROP TRIGGER memory_grant_insert; DROP TRIGGER memory_grant_delete; DROP INDEX memory_knowledge_candidates; DROP TABLE memory_vectors; DROP TABLE memory_index_state; DROP TABLE memory_generation; DROP TABLE knowledge_grants; DROP TABLE knowledge_share_actions; DROP TABLE knowledge_operations; DROP TABLE knowledge_tasks; DROP TABLE knowledge_versions; PRAGMA user_version = 2') } finally { db.close() }
+  try { db.exec('DROP TRIGGER memory_l1_insert; DROP TRIGGER memory_knowledge_insert; DROP TRIGGER memory_knowledge_update; DROP TRIGGER memory_grant_insert; DROP TRIGGER memory_grant_delete; DROP INDEX memory_knowledge_candidates; DROP TABLE memory_selections; DROP TABLE memory_vectors; DROP TABLE memory_index_state; DROP TABLE memory_generation; DROP TABLE knowledge_grants; DROP TABLE knowledge_share_actions; DROP TABLE knowledge_operations; DROP TABLE knowledge_tasks; DROP TABLE knowledge_versions; PRAGMA user_version = 2') } finally { db.close() }
   const provider = await item.open()
   expect(provider.l1.getMemory(item.project, item.source)).toEqual(item.source)
   expect(await provider.readRaw({ projectId: item.project, sessionId: header().id, from: SessionLogOffset(0), to: SessionLogOffset(3), limit: 10 })).toEqual(raw)
   const check = new DatabaseSync(item.spec.databasePath)
-  try { expect(check.prepare('PRAGMA user_version').get()?.user_version).toBe(4) } finally { check.close() }
+  try { expect(check.prepare('PRAGMA user_version').get()?.user_version).toBe(5) } finally { check.close() }
 })
 
 it('rolls back schema 3 migration failures without changing schema 2 data', async () => {
@@ -49,7 +81,7 @@ it('rolls back schema 3 migration failures without changing schema 2 data', asyn
   await item.provider.close()
   const db = new DatabaseSync(item.spec.databasePath)
   try {
-    db.exec('DROP TRIGGER memory_l1_insert; DROP TRIGGER memory_knowledge_insert; DROP TRIGGER memory_knowledge_update; DROP TRIGGER memory_grant_insert; DROP TRIGGER memory_grant_delete; DROP INDEX memory_knowledge_candidates; DROP TABLE memory_vectors; DROP TABLE memory_index_state; DROP TABLE memory_generation; DROP TABLE knowledge_grants; DROP TABLE knowledge_share_actions; DROP TABLE knowledge_operations; DROP TABLE knowledge_tasks; DROP TABLE knowledge_versions; CREATE TABLE knowledge_tasks (wrong TEXT); PRAGMA user_version = 2')
+    db.exec('DROP TRIGGER memory_l1_insert; DROP TRIGGER memory_knowledge_insert; DROP TRIGGER memory_knowledge_update; DROP TRIGGER memory_grant_insert; DROP TRIGGER memory_grant_delete; DROP INDEX memory_knowledge_candidates; DROP TABLE memory_selections; DROP TABLE memory_vectors; DROP TABLE memory_index_state; DROP TABLE memory_generation; DROP TABLE knowledge_grants; DROP TABLE knowledge_share_actions; DROP TABLE knowledge_operations; DROP TABLE knowledge_tasks; DROP TABLE knowledge_versions; CREATE TABLE knowledge_tasks (wrong TEXT); PRAGMA user_version = 2')
     await expect(item.open()).rejects.toThrow()
     expect(db.prepare('PRAGMA user_version').get()?.user_version).toBe(2)
     expect(db.prepare('SELECT COUNT(*) AS n FROM l1_memories').get()?.n).toBe(1)

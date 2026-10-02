@@ -1,6 +1,6 @@
 /** Project-owned turn summaries and durable extraction jobs. */
 import type { Branded } from '@deepseek-ai/dsh-brand'
-import type { SessionId, SessionSeq, TurnEndReason } from '@deepseek-ai/dsh-session'
+import type { SessionId, SessionSeq, TurnEndReason } from '@deepseek-ai/dsh-session/types'
 import type { ProjectId, RawRange } from './types.ts'
 
 /** Stable identity of one turn's logical memory. */

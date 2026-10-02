@@ -1,0 +1,9 @@
+- id: ui-chat
+  config:
+    transcriptView: detailed
+- insert:
+    - id: memory-l0
+      name: ../src/index.ts
+      config:
+        projectId: !!js process.cwd().split(/[\\/]/).pop()
+        databasePath: data/l0.sqlite

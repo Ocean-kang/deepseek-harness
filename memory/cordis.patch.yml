@@ -1,0 +1,7 @@
+# Base-backed profiles supply the existing model, credentials and Session services.
+- id: connection
+  inject: [webRuntime, webServer]
+- insert:
+    - id: memory-l0
+      name: ./lib/portable.mjs
+      config: {}

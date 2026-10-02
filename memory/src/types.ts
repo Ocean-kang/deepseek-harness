@@ -1,6 +1,6 @@
 /** L0 API: project-owned, complete Session events and durable prefix positions. */
 import type { Branded } from '@deepseek-ai/dsh-brand'
-import type { SessionEvent, SessionHeader, SessionId, SessionLogOffset } from '@deepseek-ai/dsh-session'
+import type { SessionEvent, SessionHeader, SessionId, SessionLogOffset } from '@deepseek-ai/dsh-session/types'
 
 /** Stable Workspace identifier or configured fallback, fixed at first L0 commit. */
 export type ProjectId = Branded<'MemoryProjectId'>
@@ -63,7 +63,7 @@ export interface RawMemory {
 }
 
 /** Stable diagnostic categories; messages never include event bodies. */
-export type MemoryErrorCode = 'config' | 'closed' | 'conflict' | 'gap' | 'schema' | 'corrupt' | 'storage' | 'source' | 'backpressure' | 'model' | 'output' | 'budget' | 'integration' | 'index-not-ready' | 'timeout'
+export type MemoryErrorCode = 'excluded' | 'config' | 'closed' | 'conflict' | 'gap' | 'schema' | 'corrupt' | 'storage' | 'source' | 'backpressure' | 'model' | 'output' | 'budget' | 'integration' | 'index-not-ready' | 'timeout'
 
 /** A memory failure with an optional underlying cause for local debugging. */
 export class MemoryError extends Error {

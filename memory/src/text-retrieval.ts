@@ -5,9 +5,8 @@ import type { SqliteMemory } from './sqlite.ts'
 import { MemoryError } from './types.ts'
 import type { ProjectId } from './types.ts'
 import type { RetrievalHit, RetrievalRequest, RetrievalResult } from './retrieval.ts'
-import { renderRecall } from './retrieval.ts'
+import { renderRecall, revalidateRecall } from './retrieval.ts'
 import type { VectorDocument } from './vector-store.ts'
-import { vectorDocument } from './vector-store.ts'
 
 /** Text search is selected explicitly and never replaces a failing vector query. */
 export interface TextSearchConfig {
@@ -139,13 +138,7 @@ export class TextMemoryRetriever {
    */
   revalidate(project: ProjectId, result: RetrievalResult): RetrievalResult {
     this.assertOpen()
-    const hits = result.hits.filter(hit => {
-      const memory = this.provider.knowledge.getMemory(project, hit.ref)
-      if (memory === null) return false
-      const document = vectorDocument(memory)
-      return this.provider.vectors.current(project, document) && document.text === hit.text
-    })
-    return { ...result, hits, text: renderRecall(hits) }
+    return revalidateRecall(this.provider, project, result)
   }
 
   /** Cancel queries and release their transient databases before the parent closes SQLite. */

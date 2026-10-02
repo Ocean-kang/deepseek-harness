@@ -44,6 +44,22 @@ export function renderRecall(hits: readonly RetrievalHit[]): string {
     + hits.map(hit => JSON.stringify({ memory: hit.ref, project: hit.projectId, shared: hit.shared, text: hit.text })).join('\n')
 }
 
+/** Recheck exact references against current authorization and content.
+ * @param provider - caller-owned open database.
+ * @param project - requesting project.
+ * @param result - earlier budgeted response.
+ * @returns response with revoked, replaced or changed entries removed.
+ */
+export function revalidateRecall(provider: SqliteMemory, project: ProjectId, result: RetrievalResult): RetrievalResult {
+  const hits = result.hits.filter(hit => {
+    const memory = provider.knowledge.getMemory(project, hit.ref)
+    if (memory === null) return false
+    const document = vectorDocument(memory)
+    return provider.vectors.current(project, document) && document.text === hit.text
+  })
+  return { ...result, hits, text: renderRecall(hits) }
+}
+
 /** One worker owns indexing; online reads never silently omit missing vectors. */
 export class MemoryRetriever {
   private readonly queries = new Set<Promise<RetrievalResult>>()
@@ -246,13 +262,7 @@ export class MemoryRetriever {
    */
   revalidate(project: ProjectId, result: RetrievalResult): RetrievalResult {
     this.assertOpen()
-    const hits = result.hits.filter(hit => {
-      const memory = this.provider.knowledge.getMemory(project, hit.ref)
-      if (memory === null) return false
-      const document = vectorDocument(memory)
-      return this.provider.vectors.current(project, document) && document.text === hit.text
-    })
-    return { ...result, hits, text: renderRecall(hits) }
+    return revalidateRecall(this.provider, project, result)
   }
 
   /** Stop notifications and await every owned write before the parent closes SQLite. */

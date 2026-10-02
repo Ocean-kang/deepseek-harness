@@ -1,0 +1,14 @@
+# Optional Memorix tools; the L0–L3 sidebar reads the separate memory-l0 store.
+# Dot-source scripts/environment.ps1 first so cwd and all outputs stay in memory/.
+- insert:
+    - id: memory-memorix
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: memorix
+        transport: stdio
+        command: memorix
+        args: [serve]
+        cwd: !!js process.cwd()
+        env:
+          MEMORIX_DATA_DIR: !!js process.getBuiltinModule('node:path').resolve('data/memorix')
+          USERPROFILE: !!js process.getBuiltinModule('node:path').resolve('home/memorix')

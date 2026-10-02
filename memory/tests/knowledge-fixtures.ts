@@ -1,6 +1,5 @@
 /** Real SQLite knowledge lifecycle fixtures; no external model or production grant adapter. */
-import { resolveL1Config } from '../src/l1-config.ts'
-import { resolveKnowledgeConfig } from '../src/knowledge-validation.ts'
+import { resolveKnowledgeConfig, resolveL1Config } from '../src/l1-config.ts'
 import type { KnowledgeCandidate, KnowledgeConfig, KnowledgeLevel } from '../src/knowledge-types.ts'
 import type { MemoryRef } from '../src/l1-types.ts'
 import { batch, fixture, header } from './helpers.ts'

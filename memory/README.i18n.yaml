@@ -3,20 +3,20 @@
 # After editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write memory/README.md
 /:
-  en: 1687166ac8962cad
-  zh: a749c8ae6f1f5457
+  en: c0fea3d486aebff5
+  zh: 62498b9371ff06b9
 /layered-memory:
   en: 4a5d5335386ad846
   zh: 5f0ab513bf8735c2
 /layered-memory/summary:
-  en: 1f3574c63a8b77c1
-  zh: f671a451550bfb44
+  en: 5af51792163f2453
+  zh: c89587d8d21d23e1
 /layered-memory/table-of-contents:
   en: 7200de989da6a3a8
   zh: 8e84e23d89213c2d
 /layered-memory/use-this-plugin:
-  en: f8b725883d14884d
-  zh: 5522398e0ffbe6e9
+  en: 7ab5c46e41f30884
+  zh: d8f5f22089bb1e83
 /layered-memory/understand-the-implementation:
   en: ee4615a04fa6503d
   zh: ee2c5fb2204a43cf
@@ -24,20 +24,20 @@
   en: 74c3811e258f5302
   zh: a489e672358730eb
 /layered-memory/understand-the-implementation/independent-development:
-  en: d69c0f5cb6f39f82
-  zh: a0648a7a45de6e4c
+  en: 1f5523aef581af0b
+  zh: 66f670dd72f1c66f
 /layered-memory/understand-the-implementation/text-retrieval:
-  en: 5da5462d18981f7a
-  zh: ec7f31d273bd5f18
+  en: a887e770aea670b4
+  zh: 3dd6b3f45816543d
 /layered-memory/understand-the-implementation/semantic-retrieval:
-  en: f4c24a0b5674f8af
-  zh: c674956d7c8730d6
+  en: 47a7cfeffde73a9b
+  zh: 1619f5869fb069b4
 /layered-memory/further-exploration:
-  en: b8531b2f76996ba1
-  zh: 6259814b73192ede
+  en: 51592caec42d050d
+  zh: c2ef2ee45f6da1e7
 /layered-memory/model-experience:
-  en: 03764fc85a783959
-  zh: 1c778fa7cb14f326
+  en: 13a0f6447d2b4dee
+  zh: 91649a74c8c325a5
 /layered-memory/known-limitations-and-deferred-work:
-  en: e8d729f64d6e249f
-  zh: 64a8036edd2a34f0
+  en: ada577dc3e4bfa84
+  zh: 9c41d245f3e3d668

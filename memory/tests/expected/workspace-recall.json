@@ -1,0 +1,29 @@
+{
+  "transcript": [
+    {
+      "conversation": "manual",
+      "sameProject": true,
+      "recalls": 1,
+      "loggedInModelRequest": true,
+      "pending": 0
+    },
+    {
+      "conversation": "automatic",
+      "sameProject": true,
+      "recalls": 1,
+      "loggedInModelRequest": true,
+      "pending": 0
+    },
+    {
+      "conversation": "foreign",
+      "sameProject": false,
+      "recalls": 0,
+      "loggedInModelRequest": true,
+      "pending": 0
+    }
+  ],
+  "sharing": {
+    "kind": "error",
+    "text": "Cross-project sharing is disabled in workspace storage mode."
+  }
+}

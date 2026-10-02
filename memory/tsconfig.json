@@ -1,16 +1,7 @@
 {
-  "extends": "../tsconfig.base.json",
-  "compilerOptions": {
-    "noEmit": true,
-    "composite": false,
-    "incremental": false
-  },
-  "include": ["src/**/*.ts", "tests/**/*.ts"],
+  "files": [],
   "references": [
-    { "path": "../vendor/cordis" },
-    { "path": "../vendor/loader" },
-    { "path": "../vendor/include" },
-    { "path": "../vendor/cosmokit" },
-    { "path": "../vendor/schemastery" }
+    { "path": "./tsconfig.host.json" },
+    { "path": "./tsconfig.client.json" }
   ]
 }

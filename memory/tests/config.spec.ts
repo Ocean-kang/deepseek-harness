@@ -4,8 +4,7 @@ import { symlink, unlink } from 'node:fs/promises'
 import { join } from 'node:path'
 import { resolveConfig } from '../src/config.ts'
 import { fixture } from './helpers.ts'
-import { resolveL1Config } from '../src/l1-config.ts'
-import { resolveKnowledgeConfig } from '../src/knowledge-validation.ts'
+import { resolveKnowledgeConfig, resolveL1Config } from '../src/l1-config.ts'
 
 const owned: Array<Awaited<ReturnType<typeof fixture>>> = []
 afterEach(async () => { for (const item of owned.splice(0)) await item.close() })
@@ -22,6 +21,22 @@ it('resolves defaults once and rejects invalid deployment values', async () => {
   await expect(resolveConfig({ projectId: 'a', databasePath: '../escape.sqlite' })).rejects.toMatchObject({ code: 'config' })
   await expect(resolveConfig({ projectId: 'a', databasePath: 'data/test.sqlite', autoLearning: true })).rejects.toMatchObject({ code: 'config' })
   expect((await resolveConfig({ projectId: 'a', databasePath: 'data/test.sqlite', textSearch: {} })).textSearch).toMatchObject({ tokenizer: 'unicode61', limit: 5 })
+  await expect(resolveConfig({ projectId: 'a', databasePath: 'data/test.sqlite', injection: true })).rejects.toMatchObject({ code: 'config' })
+  expect((await resolveConfig({ projectId: 'a', databasePath: 'data/test.sqlite', textSearch: {}, injection: true })).injection).toBe(true)
+})
+
+it('selects central storage for direct mounts and accepts the explicit workspace mode', async () => {
+  expect((await resolveConfig({ projectId: 'stable', databasePath: 'data/test.sqlite' })).storageMode).toBe('central')
+  expect((await resolveConfig({ projectId: 'stable', databasePath: 'data/test.sqlite', storageMode: 'workspace' })).storageMode).toBe('workspace')
+})
+
+it('keeps portable storage beneath its explicit durable root', async () => {
+  const item = await fixture()
+  owned.push(item)
+  const dataRoot = join(item.root, 'durable')
+  expect((await resolveConfig({ projectId: 'portable', dataRoot, databasePath: 'memory.sqlite' })).databasePath).toBe(join(dataRoot, 'memory.sqlite'))
+  await expect(resolveConfig({ projectId: 'portable', dataRoot, databasePath: '../escape.sqlite' })).rejects.toMatchObject({ code: 'config' })
+  await expect(resolveConfig({ projectId: 'portable', dataRoot: 'relative', databasePath: 'memory.sqlite' })).rejects.toMatchObject({ code: 'config' })
 })
 
 it('refuses a directory junction before creating a database', async () => {

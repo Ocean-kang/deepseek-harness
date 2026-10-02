@@ -1,0 +1,4 @@
+# Explicit presentation mode for Web hosts serving a pre-default-fix Chat bundle.
+- id: ui-chat
+  config:
+    transcriptView: detailed

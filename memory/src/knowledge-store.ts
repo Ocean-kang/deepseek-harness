@@ -2,14 +2,14 @@
 import { randomUUID } from 'node:crypto'
 import type { DatabaseSync } from 'node:sqlite'
 import { isDeepStrictEqual } from 'node:util'
-import { l1Key } from './l1-config.ts'
+import { l1Key, resolveKnowledgeConfig } from './l1-config.ts'
 import type { L1Store } from './l1-store.ts'
 import { integer, json, object, textValue } from './l1-validation.ts'
 import { MemoryError } from './types.ts'
 import type { ProjectId } from './types.ts'
 import type { MemoryId, MemoryRef, OperationId } from './l1-types.ts'
 import type { KnowledgeInput, KnowledgeLevel, KnowledgeMemory, KnowledgeSpec, KnowledgeTask, OwnedMemory, ShareAction, SharedMemory } from './knowledge-types.ts'
-import { knowledgeKey, knowledgeRef, parseKnowledge, parseKnowledgeCandidates, resolveKnowledgeConfig } from './knowledge-validation.ts'
+import { knowledgeKey, knowledgeRef, parseKnowledge, parseKnowledgeCandidates } from './knowledge-validation.ts'
 
 /** Version-3 migration; the parent opens and commits the migration transaction. */
 export const KNOWLEDGE_SCHEMA = `
@@ -45,6 +45,23 @@ function refs(value: unknown): MemoryRef[] {
 function levelOf(value: unknown): KnowledgeLevel {
   if (value !== 'L2' && value !== 'L3') throw new MemoryError('corrupt', 'Invalid knowledge level')
   return value
+}
+
+/** Queue all current preceding-level versions without dispatching model work.
+ * @param store - open project knowledge store.
+ * @param project - source owner.
+ * @param level - target consolidation level.
+ * @param config - resolved settings retained by each task.
+ * @param pageSize - positive maximum candidates per page.
+ */
+export function enqueueCandidates(store: KnowledgeStore, project: ProjectId, level: KnowledgeLevel, config: KnowledgeSpec, pageSize: number): void {
+  let after = ''
+  for (;;) {
+    const records = store.listCandidates(project, level === 'L2' ? 'L1' : 'L2', after, pageSize)
+    for (const record of records) store.enqueue(project, level, [record], config)
+    if (records.length < pageSize) return
+    after = records.at(-1)!.id
+  }
 }
 
 /** Internal store; no model tools or user approval adapter are installed by this class. */
@@ -94,6 +111,46 @@ export class KnowledgeStore {
       title: memory.knowledge.title, body: memory.knowledge.body }
   }
 
+  /** Browse current owned records including unresolved evidence, plus approved shared L3.
+   * @param project - requesting project.
+   * @param level - requested level.
+   * @param after - exclusive memory identity.
+   * @param limit - bounded page size supplied by the browser.
+   * @param query - literal substring; no SQL wildcards.
+   * @returns visible records in identity order.
+   */
+  browse(project: ProjectId, level: 'L1' | KnowledgeLevel, after: string, limit: number, query: string): Array<OwnedMemory | SharedMemory> {
+    this.assertOpen()
+    const rows = level === 'L1'
+      ? this.db.prepare(`SELECT id,revision FROM l1_memories v WHERE project = ? AND id > ?
+          AND revision = (SELECT MAX(revision) FROM l1_memories latest WHERE latest.id = v.id)
+          AND instr(lower(summary),lower(?)) > 0
+          ORDER BY id LIMIT ?`).all(project, after, query, limit)
+      : this.db.prepare(`SELECT id,revision FROM knowledge_versions v WHERE state = 'active' AND level = ? AND id > ?
+          AND (project = ? OR (level = 'L3' AND json_extract(knowledge,'$.evidence') = 'supported'
+            AND EXISTS (SELECT 1 FROM knowledge_grants g WHERE g.id = v.id AND g.revision = v.revision)))
+          AND instr(lower(json_extract(knowledge,'$.title') || char(10) || json_extract(knowledge,'$.body')),lower(?)) > 0
+          ORDER BY id LIMIT ?`).all(level, after, project, query, limit)
+    return rows.flatMap(row => {
+      const visible = this.getMemory(project, knowledgeRef(row))
+      return visible === null ? [] : [visible]
+    })
+  }
+
+  /** History references never expand private sources of shared knowledge.
+   * @param project - requesting project.
+   * @param id - logical memory identity.
+   * @param before - exclusive descending revision cursor.
+   * @param limit - bounded page size supplied by the browser.
+   * @returns owned version references, newest first; foreign identities return an empty page.
+   */
+  revisions(project: ProjectId, id: MemoryId, before: number, limit: number): MemoryRef[] {
+    this.assertOpen()
+    return this.db.prepare(`SELECT id,revision FROM l1_memories WHERE project = ? AND id = ? AND revision < ?
+      UNION ALL SELECT id,revision FROM knowledge_versions WHERE project = ? AND id = ? AND revision < ?
+      ORDER BY revision DESC LIMIT ?`).all(project, id, before, project, id, before, limit).map(row => knowledgeRef(row))
+  }
+
   private owned(project: ProjectId, ref: MemoryRef): OwnedMemory {
     const record = this.getMemory(project, ref)
     if (record === null || 'shared' in record || record.projectId !== project) throw new MemoryError('source', 'Project-owned memory does not exist')
@@ -126,7 +183,7 @@ export class KnowledgeStore {
       if (memory.knowledge.evidence !== 'supported') return []
       const visible = this.getMemory(project, memory)
       return visible === null ? [] : [visible]
-    }).slice(0, limit)
+    })
   }
 
   private input(project: ProjectId, level: KnowledgeLevel, sources: readonly MemoryRef[]): KnowledgeInput {
@@ -193,9 +250,8 @@ export class KnowledgeStore {
     const snapshot = (ref: MemoryRef): OwnedMemory => ({ ...this.owned(project, ref), state: 'active' })
     const sourceRecords = refs(rawInput.sources).map(snapshot)
     const existingRecords = refs(rawInput.existing).map(snapshot)
-    const input: KnowledgeInput = { lineage: this.lineage(project, [...sourceRecords, ...existingRecords]), projectId: project, level: levelOf(rawInput.level), sources: refs(rawInput.sources).map(snapshot),
-      existing: refs(rawInput.existing).map(ref => {
-        const memory = snapshot(ref)
+    const input: KnowledgeInput = { lineage: this.lineage(project, [...sourceRecords, ...existingRecords]), projectId: project, level: levelOf(rawInput.level), sources: sourceRecords,
+      existing: existingRecords.map(memory => {
         if (memory.level === 'L1') throw new MemoryError('corrupt', 'Invalid existing knowledge')
         return memory
       }) }

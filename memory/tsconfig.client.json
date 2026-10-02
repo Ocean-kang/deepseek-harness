@@ -1,0 +1,13 @@
+{
+  "extends": "../tsconfig.base.client.json",
+  "compilerOptions": { "noEmit": true, "composite": false, "incremental": false },
+  "include": ["src/client/**/*.ts", "src/client/**/*.tsx", "src/panel-protocol.ts"],
+  "references": [
+    { "path": "../vendor/cordis" }, { "path": "../vendor/cosmokit" }, { "path": "../vendor/schemastery" },
+    { "path": "../packages/client/connection/tsconfig.client.json" },
+    { "path": "../packages/client/locale/tsconfig.client.json" },
+    { "path": "../packages/client/ui-primitives" }, { "path": "../packages/client/ui-sidebar-right" },
+    { "path": "../packages/client/ui-renderer" }, { "path": "../packages/client/ui-session" },
+    { "path": "../packages/client/ui-slots" }
+  ]
+}

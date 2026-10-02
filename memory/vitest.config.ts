@@ -9,7 +9,7 @@ export default defineConfig({
   cacheDir: '.cache/vite',
   plugins: [standardDecoratorPlugin(), tsconfigPaths({ projects: [fileURLToPath(new URL('../tsconfig.base.json', import.meta.url))] })],
   test: {
-    include: ['tests/**/*.spec.ts'],
+    include: ['tests/**/*.spec.ts', 'tests/**/*.spec.tsx'],
     pool: 'forks',
     execArgv: vitestExecArgv,
     coverage: { reportsDirectory: '.artifacts/coverage', include: ['src/**/*.ts'] },

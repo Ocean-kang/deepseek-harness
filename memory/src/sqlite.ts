@@ -15,9 +15,10 @@ import type { L1Spec } from './l1-types.ts'
 import { L1_SCHEMA, L1Store } from './l1-store.ts'
 import { KNOWLEDGE_SCHEMA, KnowledgeStore } from './knowledge-store.ts'
 import { VECTOR_SCHEMA, VectorStore } from './vector-store.ts'
+import { SELECTION_SCHEMA, SelectionStore } from './selection-store.ts'
 
 /** Physical L0 schema version; future migrations must increase it. */
-export const SCHEMA_VERSION = 4
+export const SCHEMA_VERSION = 5
 const APPLICATION_ID = 0x4453484d
 
 function parseJson(value: string): unknown {
@@ -48,6 +49,11 @@ function parseHeader(value: unknown): SessionHeader {
   return materializeCreateHeader(parsed as SessionHeader)
 }
 
+function sameHeader(left: SessionHeader, right: SessionHeader): boolean {
+  // SessionHeader defines an absent delegationDepth as zero; keep stored JSON intact.
+  return isDeepStrictEqual({ ...left, delegationDepth: left.delegationDepth ?? 0 }, { ...right, delegationDepth: right.delegationDepth ?? 0 })
+}
+
 function decodeEvent(value: unknown, header: SessionHeader, seq: number): SessionEvent {
   if (typeof value !== 'string') throw new MemoryError('corrupt', 'invalid stored event JSON')
   const event = parseJson(value)
@@ -69,6 +75,8 @@ export class SqliteMemory implements RawMemory {
 
   /** Version-bound vector storage. */
   readonly vectors: VectorStore
+  /** Pending selections share the parent connection and durability. */
+  readonly selections: SelectionStore
   private readonly changes = new Set<() => void>()
   private generation = 0
 
@@ -85,10 +93,11 @@ export class SqliteMemory implements RawMemory {
     for (const listener of this.changes) listener()
   }
 
-  private constructor(private readonly db: DatabaseSync) {
+  private constructor(private readonly db: DatabaseSync, private readonly excludeInheritedTurns = false) {
     this.l1 = new L1Store(db, () => this.assertOpen(), this.notify)
     this.knowledge = new KnowledgeStore(db, this.l1, () => this.assertOpen(), this.notify)
     this.vectors = new VectorStore(db, this.knowledge, () => this.assertOpen())
+    this.selections = new SelectionStore(db, () => this.assertOpen())
     this.generation = this.vectors.generation()
   }
 
@@ -125,16 +134,34 @@ export class SqliteMemory implements RawMemory {
       .map(row => ({ header: parseHeader(row.header), committedTo: this.offset(row.committed_to) }))
   }
 
+  /** Browse project-owned raw events with a literal substring and a stable composite cursor.
+   * @param project - requesting project.
+   * @param after - exclusive Session/event position, or null for the first page.
+   * @param limit - bounded page size supplied by the browser.
+   * @param query - literal substring in stored event JSON.
+   * @returns source headers and complete events in Session/sequence order.
+   */
+  browseRaw(project: ProjectId, after: { sessionId: SessionId; seq: number } | null, limit: number, query: string): Array<{ header: SessionHeader; event: SessionEvent }> {
+    this.assertOpen()
+    return this.db.prepare(`SELECT s.header,e.seq,e.body FROM events e JOIN sessions s ON s.id = e.session_id
+      WHERE s.project = ? AND (s.id > ? OR (s.id = ? AND e.seq > ?)) AND instr(lower(e.body),lower(?)) > 0
+      ORDER BY s.id,e.seq LIMIT ?`).all(project, after?.sessionId ?? '', after?.sessionId ?? '', after?.seq ?? -1, query, limit)
+      .map(row => {
+        const header = parseHeader(row.header)
+        return { header, event: decodeEvent(row.body, header, Number(row.seq)) }
+      })
+  }
+
   /**
    * Open a database without overwriting another database's schema.
    * @param spec - configuration already resolved by resolveConfig.
    * @returns ready provider; callers must await close before disposal completes.
    */
   static async open(spec: Spec): Promise<SqliteMemory> {
-    const path = await memoryPath(spec.databasePath)
+    const path = await memoryPath(spec.databasePath, spec.dataRoot)
     await mkdir(dirname(path), { recursive: true, mode: 0o700 })
-    await memoryPath(path)
-    for (const suffix of ['-wal', '-shm', '-journal']) await memoryPath(path + suffix)
+    await memoryPath(path, spec.dataRoot)
+    for (const suffix of ['-wal', '-shm', '-journal']) await memoryPath(path + suffix, spec.dataRoot)
     try {
       const file = await open(path, 'wx', 0o600)
       await file.close()
@@ -161,7 +188,7 @@ export class SqliteMemory implements RawMemory {
           ) STRICT;
           CREATE INDEX sessions_project ON sessions(project, id);
           PRAGMA application_id = ${APPLICATION_ID}; PRAGMA user_version = 1`)
-        } else if ((version !== 1 && version !== 2 && version !== 3 && version !== SCHEMA_VERSION) || identity !== APPLICATION_ID) {
+        } else if ((version !== 1 && version !== 2 && version !== 3 && version !== 4 && version !== SCHEMA_VERSION) || identity !== APPLICATION_ID) {
           throw new MemoryError('schema', 'unrecognized memory database identity or schema version')
         }
         // Prepare exact columns before accepting a stamped but malformed database.
@@ -173,7 +200,9 @@ export class SqliteMemory implements RawMemory {
         if (version === 0 || version === 1 || version === 2) {
           db.exec(KNOWLEDGE_SCHEMA)
         }
-        if (version !== SCHEMA_VERSION) { db.exec(VECTOR_SCHEMA); db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`) }
+        if (version !== 4 && version !== SCHEMA_VERSION) db.exec(VECTOR_SCHEMA)
+        if (version !== SCHEMA_VERSION) { db.exec(SELECTION_SCHEMA); db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`) }
+        db.prepare('SELECT session_id,project,token,refs,automatic FROM memory_selections LIMIT 0').all()
         db.prepare('SELECT space,id,revision,digest,vector FROM memory_vectors LIMIT 0').all()
         db.prepare('SELECT space,status,failure FROM memory_index_state LIMIT 0').all()
         db.prepare('SELECT generation FROM memory_generation WHERE singleton = 1').get()
@@ -191,7 +220,7 @@ export class SqliteMemory implements RawMemory {
         throw error
       }
       db.exec(`PRAGMA journal_mode = ${spec.journalMode}; PRAGMA synchronous = FULL`)
-      return new SqliteMemory(db)
+      return new SqliteMemory(db, spec.storageMode === 'workspace')
     } catch (error) {
       db.close()
       throw error
@@ -218,7 +247,7 @@ export class SqliteMemory implements RawMemory {
         this.db.prepare('INSERT INTO sessions VALUES (?, ?, ?, ?, 0)').run(header.id, request.projectId, JSON.stringify(header), request.inheritedEventCount)
         row = this.db.prepare('SELECT * FROM sessions WHERE id = ?').get(header.id)!
       }
-      if (row.project !== request.projectId || !isDeepStrictEqual(parseHeader(row.header), header)
+      if (row.project !== request.projectId || !sameHeader(parseHeader(row.header), header)
         || row.inherited_count !== request.inheritedEventCount) {
         throw new MemoryError('conflict', `Session ${header.id} already has different project or source metadata`)
       }
@@ -317,7 +346,7 @@ export class SqliteMemory implements RawMemory {
         const rows = this.db.prepare('SELECT body FROM events WHERE session_id = ? AND seq >= ? AND seq < ? ORDER BY seq').all(header.id, position, stop)
         if (rows.length !== stop - position) throw new MemoryError('gap', 'L1 source has missing committed events')
         const events = rows.map((event, i) => decodeEvent(event.body, header, position + i))
-        created += this.l1.scanPage(project, header.id, config, events)
+        created += this.l1.scanPage(project, header.id, config, events, this.excludeInheritedTurns)
         position = stop
       }
     }

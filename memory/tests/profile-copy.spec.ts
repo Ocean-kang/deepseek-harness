@@ -11,8 +11,10 @@ it.runIf(process.env.DSH_MEMORY_VERIFY_COPY === '1')('matches every copied event
   const ctx = new Context()
   const db = new DatabaseSync(await memoryPath(process.env.DSH_MEMORY_VERIFY_DB ?? 'data/l0.sqlite'), { readOnly: true })
   try {
-    await ctx.plugin(JsonlSessionPersistence, { root: await memoryPath('home/sessions') })
-    const sessions = db.prepare('SELECT id, committed_to FROM sessions').all()
+    await ctx.plugin(JsonlSessionPersistence, { root: await memoryPath(process.env.DSH_MEMORY_VERIFY_SOURCE_ROOT ?? 'home/sessions') })
+    const sessionId = process.env.DSH_MEMORY_VERIFY_COPY_SESSION
+    const sessions = sessionId === undefined ? db.prepare('SELECT id, committed_to FROM sessions').all()
+      : db.prepare('SELECT id, committed_to FROM sessions WHERE id = ?').all(sessionId)
     expect(sessions.length).toBeGreaterThan(0)
     for (const row of sessions) {
       if (typeof row.id !== 'string') throw new Error('invalid captured Session id')

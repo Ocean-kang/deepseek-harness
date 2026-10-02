@@ -41,6 +41,16 @@ it('deduplicates JSON values regardless of object property insertion order', asy
   expect((await provider.readRaw(read(spec.projectId, 2))).committedTo).toBe(1)
 })
 
+it('accepts the documented absent zero delegation depth without rewriting source metadata', async () => {
+  const { provider, spec } = await setup()
+  const initial = batch(spec, [event(0)])
+  await provider.appendRaw(initial)
+  expect(await provider.appendRaw({ ...initial, header: { ...initial.header, delegationDepth: 0 } })).toMatchObject({ duplicates: 1, committedTo: 1 })
+  await expect(provider.appendRaw({ ...initial, header: { ...initial.header, delegationDepth: 1 } })).rejects.toMatchObject({ code: 'conflict' })
+  const db = new DatabaseSync(spec.databasePath, { readOnly: true })
+  try { expect(JSON.parse(String(db.prepare('SELECT header FROM sessions WHERE id = ?').get(initial.header.id)?.header))).not.toHaveProperty('delegationDepth') } finally { db.close() }
+})
+
 it('rolls back inserted rows and position after a later statement fails', async () => {
   const { provider, spec } = await setup()
   const external = new DatabaseSync(spec.databasePath)

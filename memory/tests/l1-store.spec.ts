@@ -148,7 +148,7 @@ it('upgrades a populated schema 1 without rewriting its L0 events', async () => 
   await provider.appendRaw(batch(spec, events))
   await provider.close()
   const db = new DatabaseSync(spec.databasePath)
-  try { db.exec('DROP TRIGGER memory_l1_insert; DROP TRIGGER memory_knowledge_insert; DROP TRIGGER memory_knowledge_update; DROP TRIGGER memory_grant_insert; DROP TRIGGER memory_grant_delete; DROP INDEX memory_knowledge_candidates; DROP TABLE memory_vectors; DROP TABLE memory_index_state; DROP TABLE memory_generation; DROP TABLE knowledge_grants; DROP TABLE knowledge_share_actions; DROP TABLE knowledge_operations; DROP TABLE knowledge_tasks; DROP TABLE knowledge_versions; DROP TABLE l1_memories; DROP TABLE l1_tasks; DROP TABLE l1_scans; PRAGMA user_version = 1') } finally { db.close() }
+  try { db.exec('DROP TRIGGER memory_l1_insert; DROP TRIGGER memory_knowledge_insert; DROP TRIGGER memory_knowledge_update; DROP TRIGGER memory_grant_insert; DROP TRIGGER memory_grant_delete; DROP INDEX memory_knowledge_candidates; DROP TABLE memory_selections; DROP TABLE memory_vectors; DROP TABLE memory_index_state; DROP TABLE memory_generation; DROP TABLE knowledge_grants; DROP TABLE knowledge_share_actions; DROP TABLE knowledge_operations; DROP TABLE knowledge_tasks; DROP TABLE knowledge_versions; DROP TABLE l1_memories; DROP TABLE l1_tasks; DROP TABLE l1_scans; PRAGMA user_version = 1') } finally { db.close() }
   const migrated = await SqliteMemory.open(spec)
   try {
     expect((await migrated.readRaw({ projectId: project, sessionId: header().id, from: SessionLogOffset(0), to: SessionLogOffset(3), limit: 10 })).events).toEqual(events)
@@ -171,7 +171,7 @@ it('rolls back a failed schema migration without advancing its version or changi
   await provider.close()
   const db = new DatabaseSync(spec.databasePath)
   try {
-    db.exec('DROP TRIGGER memory_l1_insert; DROP TRIGGER memory_knowledge_insert; DROP TRIGGER memory_knowledge_update; DROP TRIGGER memory_grant_insert; DROP TRIGGER memory_grant_delete; DROP INDEX memory_knowledge_candidates; DROP TABLE memory_vectors; DROP TABLE memory_index_state; DROP TABLE memory_generation; DROP TABLE knowledge_grants; DROP TABLE knowledge_share_actions; DROP TABLE knowledge_operations; DROP TABLE knowledge_tasks; DROP TABLE knowledge_versions; DROP TABLE l1_memories; DROP TABLE l1_tasks; DROP TABLE l1_scans; CREATE TABLE l1_tasks (unrelated INTEGER); PRAGMA user_version = 1')
+    db.exec('DROP TRIGGER memory_l1_insert; DROP TRIGGER memory_knowledge_insert; DROP TRIGGER memory_knowledge_update; DROP TRIGGER memory_grant_insert; DROP TRIGGER memory_grant_delete; DROP INDEX memory_knowledge_candidates; DROP TABLE memory_selections; DROP TABLE memory_vectors; DROP TABLE memory_index_state; DROP TABLE memory_generation; DROP TABLE knowledge_grants; DROP TABLE knowledge_share_actions; DROP TABLE knowledge_operations; DROP TABLE knowledge_tasks; DROP TABLE knowledge_versions; DROP TABLE l1_memories; DROP TABLE l1_tasks; DROP TABLE l1_scans; CREATE TABLE l1_tasks (unrelated INTEGER); PRAGMA user_version = 1')
     await expect(SqliteMemory.open(spec)).rejects.toThrow()
     expect(db.prepare('PRAGMA user_version').get()?.user_version).toBe(1)
     expect(db.prepare('SELECT COUNT(*) AS n FROM events').get()?.n).toBe(3)

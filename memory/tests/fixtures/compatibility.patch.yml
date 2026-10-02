@@ -1,0 +1,7 @@
+- id: agent-default-model
+  config:
+    provider: memory-smoke
+    model: keyless
+- insert:
+    - id: memory-smoke-model
+      name: ./portable-web.mjs
