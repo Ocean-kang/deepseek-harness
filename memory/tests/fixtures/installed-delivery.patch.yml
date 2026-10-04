@@ -1,0 +1,9 @@
+# The current profile must already contain the independently installed memory bundle.
+- insert:
+    - id: memory-installed-delivery
+      name: ./installed-delivery.mjs
+      config:
+        mode: !!js process.env.DSH_MEMORY_DELIVERY_MODE ?? 'run'
+        evidencePath: !!js process.env.DSH_MEMORY_DELIVERY_EVIDENCE
+        expectedTokenizer: !!js process.env.DSH_MEMORY_DELIVERY_TOKENIZER ?? 'trigram'
+        expectedRefreshIntervalMs: !!js Number(process.env.DSH_MEMORY_DELIVERY_REFRESH_MS ?? 3000)

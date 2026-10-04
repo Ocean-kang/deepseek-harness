@@ -7,7 +7,7 @@
         projectId: !!js process.env.DSH_MEMORY_PROJECT
         databasePath: data/automatic.sqlite
         autoLearning: true
-        textSearch: {}
+        textSearch: { tokenizer: trigram }
         l1:
           provider: !!js ctx.agentDefaultModel.currentSelection().provider
           model: !!js ctx.agentDefaultModel.currentSelection().model

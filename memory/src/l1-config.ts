@@ -23,7 +23,7 @@ export function resolveL1Config(input: L1Config): L1Spec {
   }
   if (numbers.retryBaseMs > numbers.retryMaxMs) throw new MemoryError('config', 'L1 retryBaseMs exceeds retryMaxMs')
   if (!Number.isSafeInteger(numbers.timeoutMs * numbers.maxCalls + numbers.retryMaxMs)) throw new MemoryError('config', 'L1 maximum task duration exceeds safe integer range')
-  return Object.freeze({ provider: input.provider, model: input.model, promptVersion: 'l1-v1', ...numbers })
+  return Object.freeze({ provider: input.provider, model: input.model, promptVersion: 'l1-v2', ...numbers })
 }
 
 /** Resolve knowledge scoring and model settings before creating a task.
@@ -41,7 +41,7 @@ export function resolveKnowledgeConfig(input: KnowledgeConfig): KnowledgeSpec {
     || l2Threshold < scoreMin || l3Threshold < l2Threshold || l3Threshold > scoreMax) {
     throw new MemoryError('config', 'Invalid knowledge score range or thresholds')
   }
-  return Object.freeze({ ...base, promptVersion: 'knowledge-v2', scoreMin, scoreMax, l2Threshold, l3Threshold })
+  return Object.freeze({ ...base, promptVersion: 'knowledge-v3', scoreMin, scoreMax, l2Threshold, l3Threshold })
 }
 
 /**

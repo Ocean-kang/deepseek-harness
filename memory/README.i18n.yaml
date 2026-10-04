@@ -1,7 +1,7 @@
 # Bilingual-pair consistency record for README.md (docs/i18n/README.md): per heading
 # section, a hash of its English and Chinese blocks outside code blocks and generated regions.
 # After editing either side, bring the other along and re-record with:
-#   pnpm run verify-translation-pairing --write memory/README.md
+#   node --import tsx/esm scripts/check-docs.mjs --write-pairing
 /:
   en: c0fea3d486aebff5
   zh: 62498b9371ff06b9
@@ -12,32 +12,32 @@
   en: 5af51792163f2453
   zh: c89587d8d21d23e1
 /layered-memory/table-of-contents:
-  en: 7200de989da6a3a8
+  en: 9d051c0f55af3d04
   zh: 8e84e23d89213c2d
 /layered-memory/use-this-plugin:
-  en: 7ab5c46e41f30884
-  zh: d8f5f22089bb1e83
+  en: e47ad50ed1802d6e
+  zh: 6d5cd37cdf06806a
 /layered-memory/understand-the-implementation:
   en: ee4615a04fa6503d
   zh: ee2c5fb2204a43cf
 /layered-memory/understand-the-implementation/long-term-knowledge:
-  en: 74c3811e258f5302
-  zh: a489e672358730eb
+  en: 956a9d79454e4677
+  zh: 3274277c5c927b45
 /layered-memory/understand-the-implementation/independent-development:
-  en: 1f5523aef581af0b
-  zh: 66f670dd72f1c66f
+  en: 03f0640968105844
+  zh: 29197ba48a92a1d1
 /layered-memory/understand-the-implementation/text-retrieval:
-  en: a887e770aea670b4
-  zh: 3dd6b3f45816543d
+  en: 285abe2d9c07ba21
+  zh: 0ad89a9e09c9f7d2
 /layered-memory/understand-the-implementation/semantic-retrieval:
-  en: 228eeb0b9f36a631
-  zh: f0836d528c12941b
+  en: 7a6628fd90dbc836
+  zh: 654c00481eb28c1f
 /layered-memory/further-exploration:
-  en: 51592caec42d050d
-  zh: c2ef2ee45f6da1e7
+  en: eff6a2726cb9265f
+  zh: 8ef90391375597e0
 /layered-memory/model-experience:
   en: 13a0f6447d2b4dee
   zh: 91649a74c8c325a5
 /layered-memory/known-limitations-and-deferred-work:
-  en: ada577dc3e4bfa84
-  zh: 9c41d245f3e3d668
+  en: fc1f01b884e72d02
+  zh: dc52d44a5b044252

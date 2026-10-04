@@ -7,6 +7,7 @@ import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import { MemoryError } from './types.ts'
 import type { EventRef, L1Candidate, L1Task } from './l1-types.ts'
 import { json, parseCandidate } from './l1-validation.ts'
+import { summarizeVisual } from './visual-summary.ts'
 
 /** Exact model-visible options; the signal is deliberately not persisted. */
 export type L1Request = Pick<GenerateOptions, 'provider' | 'model' | 'system' | 'messages' | 'maxTokens' | 'sessionId'>
@@ -25,7 +26,7 @@ export class L1ModelError extends MemoryError {
    * @param retryable - whether a later identical attempt can succeed.
    */
   constructor(readonly failureCode: string, readonly retryable: boolean) {
-    super('model', `L1 model request failed (${failureCode})`)
+    super('model', `Memory model request failed (${failureCode})`)
   }
 }
 
@@ -112,7 +113,15 @@ export class L1Extractor {
         calls++
         const refs = [...new Map(items.flatMap(item => item.refs).map(ref => [JSON.stringify(ref), ref])).values()]
         const result = await this.call(task, frame(items, merge), refs, signal, reserveCall)
-        if (groups.length === 1) return result
+        if (groups.length === 1) {
+          if (result.kind === 'empty' || task.config.promptVersion === 'l1-v1') return result
+          if (calls >= task.config.maxCalls) throw new MemoryError('budget', 'L1 task has no remaining call for its display description')
+          const { sources: _sources, description: _description, ...content } = result.summary
+          const description = await summarizeVisual(this.llm, { provider: task.config.provider, model: task.config.model,
+            maxTokens: task.config.maxOutputTokens, sessionId: task.sessionId }, JSON.stringify(content), task.config, signal, reserveCall,
+          (request, requestSignal) => this.record(task, request, requestSignal))
+          return { kind: 'memory', summary: { ...result.summary, description } }
+        }
         if (result.kind === 'memory') next.push({ refs: result.summary.sources, text: JSON.stringify(result.summary) })
       }
       if (next.length === 0) return { kind: 'empty' }

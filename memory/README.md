@@ -19,6 +19,7 @@ Keep complete recorded Session events in project-owned SQLite, browse L0–L3 an
 - [Model Experience](#model-experience)
 - [Known Limitations and Deferred Work](#known-limitations-and-deferred-work)
 
+<a id="use-this-plugin"></a>
 ## Use this plugin
 
 This checkout targets DSH 0.2.0-rc.2. After building `memory/lib`, run the following from the repository root to enable capture, L1–L3 learning, recall and the right-sidebar Memory tab. The bundle uses the active DSH home and its configured model credentials; `profiles/web.patch.yml` enables L0 capture only. If the bundle is already installed in the Web profile, omit `--patch ./memory/cordis.patch.yml` to avoid mounting it twice. For archive installation, see the [portable instructions](distribution/README.md).
@@ -59,13 +60,13 @@ The portable bundle and full Web overlay default to Workspace storage: `<workspa
 | `autoLearning` | false | Enable background learning; requires L1/knowledge settings and `llm` in the plugin entry's inject list. |
 | `textSearch` | Absent | Explicit BM25 text search, mutually exclusive with `embedding`. |
 | `panel` | false | Mount the Web panel RPC; the plugin entry requires `connection` and `webServer`. |
-| `browser` | `{}` | Page size 50, query budget 8192 bytes, and combined recall limits of 5 records and 8192 rendered bytes. |
+| `browser` | `{}` | Page size 50, query budget 8192 bytes, combined recall limits of 5 records and 8192 rendered bytes; shared refresh interval 3000 ms and at most 32 cached Sessions (`stateCacheSessions`). |
 | `busyTimeoutMs` | 5000 | SQLite lock wait; zero disables waiting. |
 | `journalMode` | `wal` | `wal`, `delete`, `truncate`, or `persist`; synchronous mode is FULL. |
 | `l1` | Absent | Optional extraction configuration; enables task discovery and supplies L1 settings for `autoLearning`. |
 | `knowledge` | Absent | Optional L2/L3 model and scoring settings; `autoLearning` controls model dispatch. |
 
-Workspace capture resolves `SessionHeader.cwd` through the optional Workspace registry and uses its canonical root and UUID. A missing registry, cwd or matching Workspace selects the unassigned project. A directory lookup failure rejects capture and remains retryable. Loaded database ownership is retained. Central mode keeps its stored project ownership and optional path-derived fallback behavior.
+Workspace capture resolves `SessionHeader.cwd` through the optional Workspace registry and uses its canonical root and UUID. A missing registry, cwd or matching Workspace selects the unassigned project. Recovery scans registered project databases after the registry becomes active, including when memory starts first. A directory lookup failure rejects capture and remains retryable. Loaded database ownership is retained. Central mode keeps its stored project ownership and optional path-derived fallback behavior.
 
 The optional `l1` object requires explicit `provider` and `model` values. Its remaining fields are resolved once and saved on each task:
 
@@ -85,9 +86,12 @@ With `l1` configured and `autoLearning` disabled, the plugin reports `memory/int
 
 `ctx.memory.readRaw` accepts a project, Session ID, half-open interval, page limit and optional next-position cursor. The result reports event values, the next page cursor, the committed prefix, and missing ranges across the entire requested interval. A null cursor means there are no more stored pages, not that the requested interval is complete. Missing Sessions and Sessions belonging to another project are both invisible. Corrupt data rejects instead of becoming an empty successful page.
 
+<a id="understand-the-implementation"></a>
 ## Understand the implementation
 
 ### Long-term knowledge
+
+Recall and shared reads check the complete exact-version source chain. Replaced, invalidated, unsupported or missing sources pause derived recall; the panel labels the record “Needs rechecking” while retaining its JSON and history. Reconciliation queues an idempotent recheck from eligible current parents even when the original task is complete. Background learning rechecks the conclusion against those parents; publication retains only current ancestry. Without eligible parents, recall stays paused until new evidence is available. Rechecking does not imply successful extraction or approval of a new shared version.
 
 When `knowledge` is configured, the plugin queues one L2 task per current L1 version and one L3 task per supported current L2 version. It reconciles existing versions at startup and newly committed versions in the same process. Equivalent tasks are idempotent; commits from another process are discovered on restart. With `autoLearning`, the recoverable pipeline executes these tasks in the background.
 
@@ -97,11 +101,11 @@ Resolve explicit provider/model settings with `resolveKnowledgeConfig`, then cal
 |---|---|---|
 | `scoreMin` / `scoreMax` | 0 / 5 | Inclusive integer range; maximum 100. |
 | `l2Threshold` / `l3Threshold` | 3 / 4 | Ordered thresholds inside the score range. |
-| `promptVersion` | `knowledge-v2` | Fixed implementation version persisted with tasks; saved v1 tasks retain their original prompt. |
+| `promptVersion` | `knowledge-v3` | Persisted implementation version; v3 reads original L0 evidence and generates a separate display description. Historical v1/v2 tasks retain their prompts. |
 
-Knowledge uses the L1 model-budget defaults above. At the default scale, temporary information scores 0–1, local experience 2, reusable methods 3, stable constraints 4, and explicit decisions 5. Importance never establishes truth: evidence is separately supported, unverified, or conflict. Low scores do not delete sources; conflicts remain stored even below the threshold so an obsolete fact does not remain eligible. L3 accepts only supported stable categories. Original ancestry accompanies model input, and repeated summaries of the same event references do not establish additional successful evidence.
+Knowledge uses the L1 model-budget defaults above. At the default scale, temporary information scores 0–1, local experience 2, reusable methods 3, stable constraints 4, and explicit decisions 5. Importance never establishes truth: evidence is separately supported, unverified, or conflict. Low scores do not delete sources; conflicts remain stored even below the threshold. L3 accepts only supported stable categories. New L2/L3 tasks read the exact L0 events cited by their L1 ancestry. When the event set exceeds one request, bounded groups supply original evidence and a later model step merges their checked candidates without rereading all original events in one request. Optional `Knowledge.examinedEvents` records program-assigned event references supplied during these checks; it does not establish factual truth. `supported` remains a model judgment with structural and reference validation; historical tasks can rely only on summaries. Repeated summaries of the same events are not independent evidence.
 
-The [knowledge store](src/knowledge-store.ts) persists exact source versions, settings, prepared candidates, attempt/call counts and backoff. Same-project leases serialize aggregation across connections. A version conflict refreshes current knowledge and discards the stale candidate; storage retry retains it. `KnowledgeWorker.run` executes one due attempt explicitly. A caller with a durable auxiliary request recorder may use `watch(project, report)` for scheduled retries and must call `notify()` after enqueueing; `retire(project)` waits for in-flight work before releasing its request Session. Explicit retry resets attempts but retains the lifetime call budget; changed model settings create a distinct operation. Complete oversized inputs fail without truncation. Close all workers before closing their provider.
+The [knowledge store](src/knowledge-store.ts) persists source versions, settings, prepared candidates, attempt/call counts and backoff. Same-project leases serialize aggregation; each unprepared attempt refreshes existing knowledge and ancestry. New v3 requests contain direct memory content, original evidence and the number of omitted ancestor records; the full exact-version chain remains available for server validation. Sources and evidence are grouped by complete UTF-8 input size; each complete group selects existing knowledge by shared ancestry and literal term overlap until its input budget is full. Omitted records remain stored but cannot be merge targets; lexical selection can miss equivalent facts. Recheck targets are mandatory inputs. Groups and descriptions validate before one atomic publication; checked candidates use bounded model merges when needed. A required source, single original event, or checked candidate that cannot fit fails with `budget` without truncation; merges that do not shrink also fail. Version conflicts discard stale candidates; storage retries retain prepared candidates. Cancellation releases the lease and refunds the attempt while retaining charged calls. Explicit retry keeps the operation, prompt version and lifetime call count; old v1/v2 tasks with oversized ancestor chains require a new operation using current settings. Close workers before their provider.
 
 The [knowledge extractor](src/knowledge-extractor.ts) uses the real LLM service and requires an awaited Session-backed request recorder. With `autoLearning`, the capture plugin installs the auxiliary Session recorder and worker. Independent development can also use the pipeline below; controlled adapters do not establish real-provider quality.
 
@@ -109,13 +113,21 @@ When the interactive command registry is composed, `/memory-share show <id>@<rev
 
 ### Independent development
 
+This directory delivers an independently installable plugin for the declared DSH peer version. Its build, archive, upgrade instructions, recorded Session expectations and acceptance evidence belong under `memory/`; the [development rules](AGENTS.md) define the complete local workflow. Acceptance covers installation, supported-profile execution, model-visible logs, persistence and restart, and real Web interaction. A future DSH source-integration PR has separate repository registration, top-level snapshot, upgrade-guide, SDK and repository-wide check requirements; those artifacts do not replace or block this plugin's own verification.
+
 The Web and panel development patches select `ui-chat.transcriptView: detailed`. The [Chat presentation patch](profiles/chat-view.patch.yml) selects the same mode for a Memorix-only launch. A later overlay may choose another supported mode.
 
 The [Web panel patch](profiles/panel.patch.yml) mounts the built portable entry and Client through DSH's existing authenticated connection and right sidebar. It enables capture, background learning and logged recall, stores registered project databases in their Workspace directories, and declares `webServer` on the Connection provider. After environment setup and the build below, launch `node --import tsx/esm ../apps/cli/src/bin.ts web --patch ../apps/web/tests/pin-browse-picker.overlay.yml --patch ./profiles/panel.patch.yml --no-open --port 0`, then open the Memory tab for a conversation. Browsing is scoped to its captured project and supports L0–L3, literal search, exact-version detail and owned version history; Workspace mode disables shared L3; central mode omits private sources from approved projections. A capture failure blocks reads and selections rather than changing recorded metadata.
 
-Version details display the viewed revision and validity state. Load older versions when the history spans multiple pages; changing the viewed revision retains the loaded history pages. Search pagination uses the submitted query; editing the search field does not change it until submission starts a new result page. Saved selections survive a page refresh, while cancelling pending selections leaves the knowledge records available.
+The sidebar uses a DeepSeek-blue masthead, underlined level navigation and numbered entries separated by fine rules. Text and controls adapt to light and dark themes and narrow panes. Version details display the viewed revision and validity state. Load older versions when the history spans multiple pages; changing the viewed revision retains the loaded history pages. Search pagination uses the submitted query; editing the search field does not change it until submission starts a new result page. Saved selections survive a page refresh, while cancelling pending selections leaves the knowledge records available.
 
-L2/L3 selections persist for one admitted recall, with server-side version, sharing, count and rendered-text checks. Cancellation clears only pending references. With `injection: true`, the plugin combines manual selections and optional BM25 matches, logs exact admitted text and references through `user/message`, and consumes selections after commit. The portable bundle and panel patch enable injection; [web.patch.yml](profiles/web.patch.yml) remains capture-only. Official repository snapshots and SDK projections are separate, unverified integration surfaces.
+Previously captured conversations remain browsable after restart even when their Session is not loaded. The panel incrementally reads committed SQLite L0 events to display admitted memory text and reconcile pending selections; unchanged polls read no event bodies. Canonical events appear after capture commits. Saving selections does not start an Agent or append recovery markers.
+
+Cards show conversation and execution records at L0. New L1–L3 cards show a one-sentence description produced by a separate model step after extraction; old versions fall back to readable content. Detail retains full topics, actions, results, knowledge, sources, scores, evidence and folded original JSON. The second step adds one charged call per final memory and prevents partial publication if it fails. L0 recall cards show recorded text; auxiliary cards show requests and returned descriptions. Search filters the selected level and highlights literal matches. The panel displays project-wide task progress and failures. Short windows allow the whole panel to scroll while the memory list retains a minimum height. The sidebar and composer share one state poll per Session; refreshes retain the submitted query, loaded pages, detail and scroll. Set `browser.refreshIntervalMs` for the interval.
+
+L2/L3 selections persist for one admitted recall, with server-side version, sharing, count and rendered-text checks. Cancellation clears only pending references. With `injection: true`, the plugin combines manual selections and optional BM25 matches, logs exact admitted text and references through `user/message`, and consumes selections after commit. The portable bundle and panel patch enable injection; [web.patch.yml](profiles/web.patch.yml) remains capture-only.
+
+Select the checkbox at the start of each eligible L2/L3 card, then choose Add selected to next turn, or add one card directly. L0/L1 remain read-only. The pending area and composer show saved text, count and the rendered-byte budget, including while the sidebar is closed. Manual selection is consumed once after admission; automatic recall remains enabled until switched off. Its switch preserves pending references and their consumption receipt even when a version is stale. New selections still require eligibility and budget checks. After sending, the composer and panel show exact committed context and references; admission does not guarantee that the answer cites every memory.
 
 The sidebar reads this plugin's L0–L3 database. The optional [Memorix overlay](profiles/memorix.cordis.yml) exposes `mcp__memorix__...` tools; add `--patch ./profiles/memorix.cordis.yml` to the panel launch to use both. Install Memorix separately. Its data lives in `data/memorix`, and its Windows subprocess user directory is `home/memorix`, so its project marker and update cache also stay in this development directory. These paths do not import the user's existing Memorix store.
 
@@ -153,9 +165,9 @@ Set `DSH_MEMORY_VERIFY_LEARNING=1`, `DSH_MEMORY_VERIFY_LEARNING_SOURCE` to the e
 
 ### Text retrieval
 
-Set `textSearch: {}` to use SQLite FTS5/BM25 without an embedding model, key or network request. Results identify `method: 'bm25'`; hits carry a positive BM25 `score` and `similarity: null`. Vector results identify `method: 'vector'`. Configure one mode explicitly; neither replaces a failing query in the other mode. Private memories are removed before constructing the scoring corpus, and current revisions and grants are checked before return and admission. Each query builds and closes a capped in-memory corpus from SQLite records; the text corpus does not add durable tables.
+Set `textSearch: {}` to use SQLite FTS5/BM25 without an embedding model, key or network request. Results identify `method: 'bm25'`; ranked hits carry a positive BM25 `score`, short substring matches omit it, and `similarity` is null. Vector results identify `method: 'vector'`. Configure one mode explicitly; neither replaces a failing query in the other mode. Private memories are removed before constructing the scoring corpus, and current revisions and grants are checked before return and admission. Each query builds and closes a capped in-memory corpus from SQLite records; it adds no durable text tables. Corpus changes in the requested project require a fresh query; unrelated private commits do not affect ranking.
 
-Text defaults are `tokenizer: unicode61`, `limit: 5`, `maxBytes: 8192`, `maxCandidates: 10000`, `pageSize: 128`, `timeoutMs: 5000`, `maxQueryBytes: 8192`, and `maxTerms: 64`. Exceeding query or candidate limits rejects without truncation. The query treats letter/number runs as literal OR terms, so user text cannot inject FTS operators. `unicode61` matches complete words; optional `trigram` matches substrings of at least three Unicode characters, including Chinese. Neither tokenizer recognizes synonyms or guarantees relevance. The deadline is checked between pages and after synchronous SQLite ranking; it cannot interrupt one native statement. `getIndexStatus` reports current candidate capacity, and `rebuildIndex` has no retained text index to rebuild.
+Direct text-search defaults are `tokenizer: unicode61`, `limit: 5`, `maxBytes: 8192`, `maxCandidates: 10000`, `pageSize: 128`, `timeoutMs: 5000`, `maxQueryBytes: 8192` and `maxTerms: 64`. Portable and automatic/panel overlays select `trigram`. Queries use literal OR terms; Han-containing runs expand into consecutive three-character terms. One- and two-character terms use literal substring matching within the authorized corpus; these hits have no BM25 score. Over-budget queries reject without truncation. Portable memory also enables `expandQuery`: with no text hits and at least one eligible record, one recorded call to the configured L1 model supplies search paraphrases before one additional text query. Direct mounts default this option off; enabling it requires the L1 model and injected `llm` service. `expansionTimeoutMs` defaults to 15000; each corpus scan retains `timeoutMs`. Invalid or failed expansion rejects visibly. Model output supplies search terms only; returned memories remain stored, authorized versions. Relevance and semantic completeness are not guaranteed. Native SQLite statements cannot be interrupted. `getIndexStatus` reports candidate capacity; there is no retained text index to rebuild.
 
 <a id="semantic-retrieval"></a>
 ### Semantic retrieval
@@ -205,15 +217,25 @@ node scripts/link-profile.mjs
 node ../apps/cli/lib/bin.js --profile headless --patch ./profiles/headless-built.patch.yml 'Reply with OK without using tools.'
 ```
 
+Run `node --import tsx/esm scripts/check-docs.mjs` for directory-local links, bilingual structure and pairing records. After reviewing both languages, use the same command with `--write-pairing` to refresh the three local consistency records.
+
 `DSH_MEMORY_VERIFY_COPY=1` enables the opt-in `profile-copy` test, which compares SQLite with the canonical log through the real JSONL decoder. `DSH_MEMORY_VERIFY_DB` selects a memory-relative database and defaults to `data/l0.sqlite`. Run this verification immediately after the corresponding profile run; later activity collected into another database can extend the source log.
 
 For an isolated profile, `DSH_MEMORY_VERIFY_SOURCE_ROOT` selects its memory-relative Session directory instead of `home/sessions`. `DSH_MEMORY_VERIFY_COPY_SESSION` restricts comparison to one captured Session, so a learning database's SQLite-only auxiliary request Sessions are not mistaken for canonical profile logs. The `learning-live` check verifies those auxiliary request and result records separately.
 
 </details>
 
+<a id="further-exploration"></a>
 ## Further Exploration
 
 - [Verification scope](evaluation/workspace-storage-2026-10-02.md)
+- [Memory-card acceptance](evaluation/memory-cards-2026-10-03.md)
+- [Batch learning and sidebar acceptance](evaluation/batch-sidebar-2026-10-04.md)
+- [Knowledge growth and original-evidence acceptance](evaluation/knowledge-growth-2026-10-04.md)
+- [Panel polling and recall acceptance](evaluation/panel-recall-2026-10-04.md)
+- [0.1.8 delivery acceptance](evaluation/delivery-0.1.8-2026-10-04.md)
+- [Browser interaction and real-provider acceptance](evaluation/browser-live-2026-10-04.md)
+- [Standalone trigram upgrade](distribution/trigram-upgrade.md)
 - [Manual quality experiment inputs](evaluation/task4-cases.json), not yet executed
 - [Session persistence service](../packages/session/session-persistence/README.md)
 - [DSH profile composition](../packages/boot/app-boot/README.md)
@@ -233,5 +255,5 @@ The mounted plugin introduces no model tool. With `injection`, admitted memory t
 - L0 copies preserve recorded event data and file references; attachment and spill files are not copied. Missing referenced files cannot be reconstructed from these copies.
 - Direct mounting defaults `autoLearning` and `injection` off; the portable bundle enables both. Each conversation defaults automatic recall off. Real models use credentials already configured in DSH.
 - Keyless fixtures and a single real-model learning sample do not establish general memory quality. The fixed manual quality experiment has not been executed; vector thresholds require calibration for the chosen embedding model.
-- Source-provider replacement requires another profile lifecycle test. Directory-local tests do not replace required recorded-session snapshots.
-- Official persistence registration, recorded-session snapshots and both SDK projections remain unverified. Local checks do not replace repository-wide doc-sync or the platform matrix.
+- Source-provider replacement requires another profile lifecycle test. Directory-local recorded Session expectations cover this plugin's model-visible output; they do not establish compatibility with untested DSH or SDK versions.
+- Local acceptance does not establish a cross-platform matrix or repository-wide doc-sync result. DSH source integration has separate registration and CI requirements.

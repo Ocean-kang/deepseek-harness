@@ -1,10 +1,10 @@
 {
   "name": "@deepseek-ai/dsh-memory-l0",
-  "version": "0.1.5",
+  "version": "0.1.8",
   "private": true,
   "description": "Portable L0–L3 memory, next-turn recall and a DSH memory panel",
   "engines": { "node": "^22.19.0 || >=24.0.0" },
-  "files": ["lib", "cordis.patch.yml", "README.md", "README.zh.md", "persistence-source.json"],
+  "files": ["lib", "cordis.patch.yml", "README.md", "README.zh.md", "trigram-upgrade.md", "trigram-upgrade.zh.md", "persistence-source.json"],
   "scripts": {
     "build": "tsdown --config tsdown.config.ts --config-loader native",
     "pack:portable": "node scripts/pack.mjs"
@@ -22,7 +22,7 @@
     "bundle": { "patch": "./cordis.patch.yml" },
     "client": {
       "platform": "web",
-      "inject": ["@deepseek-ai/dsh-client-ui-sidebar-right", "@deepseek-ai/dsh-client-ui-session", "@deepseek-ai/dsh-client-locale", "@deepseek-ai/dsh-client-ui-renderer", "@deepseek-ai/dsh-client-connection"]
+      "inject": ["@deepseek-ai/dsh-client-ui-sidebar-right", "@deepseek-ai/dsh-client-ui-session", "@deepseek-ai/dsh-client-ui-conversation", "@deepseek-ai/dsh-client-locale", "@deepseek-ai/dsh-client-ui-renderer", "@deepseek-ai/dsh-client-connection"]
     }
   },
   "dependencies": { "zod": "^4.4.3" },

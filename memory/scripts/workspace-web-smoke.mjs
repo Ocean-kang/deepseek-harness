@@ -1,20 +1,31 @@
 /** Start an isolated keyless acceptance server only through the supported dsh Web profile. */
 import { spawn } from 'node:child_process'
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
-import { join, resolve } from 'node:path'
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs'
+import { isAbsolute, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 const memory = fileURLToPath(new URL('../', import.meta.url))
 const repo = resolve(memory, '..')
 const parent = join(memory, '.artifacts')
-const run = mkdtempSync(join(parent, 'workspace-web-'))
-for (const path of ['home', 'agents', 'tmp', 'cache', 'project-a', 'project-b', 'frames']) mkdirSync(join(run, path))
+const args = process.argv.slice(2)
+if (args.length !== 0 && ((args.length !== 2 && args.length !== 4) || args[0] !== '--reuse-run' || (args.length === 4 && args[2] !== '--patch'))) throw new Error('Use workspace-web-smoke.mjs [--reuse-run absolute-path [--patch absolute-path]]')
+if (realpathSync(parent) !== resolve(parent)) throw new Error('Refusing redirected acceptance directory')
+const run = args.length === 0 ? mkdtempSync(join(parent, 'workspace-web-')) : resolve(args[1])
+if (args.length > 0 && (!isAbsolute(args[1]) || !run.startsWith(resolve(parent) + sep) || realpathSync(run) !== run)) throw new Error('Acceptance run must remain inside memory/.artifacts/')
+const patch = args.length === 4 ? resolve(args[3]) : undefined
+if (patch !== undefined && (!isAbsolute(args[3]) || !patch.startsWith(resolve(memory) + sep) || realpathSync(patch) !== patch)) throw new Error('Acceptance patch must remain inside memory/')
+for (const path of ['home', 'agents', 'tmp', 'cache', 'project-a', 'project-b', 'frames']) {
+  const target = join(run, path)
+  if (existsSync(target) && (lstatSync(target).isSymbolicLink() || realpathSync(target) !== target)) throw new Error('Refusing redirected acceptance output')
+  mkdirSync(target, { recursive: true })
+}
 const overlay = join(run, 'workspace.patch.yml')
 writeFileSync(overlay, '- id: workspace-controller\n  config:\n    documentsDirectory: ' + JSON.stringify(join(run, 'documents')) + '\n')
 const log = []
 const child = spawn(process.execPath, ['--import', 'tsx/esm', join(repo, 'apps/cli/src/bin.ts'), 'web',
   '--patch', join(repo, 'apps/web/tests/pin-browse-picker.overlay.yml'),
   '--patch', join(memory, 'cordis.patch.yml'), '--patch', join(memory, 'profiles/chat-view.patch.yml'),
-  '--patch', join(memory, 'tests/fixtures/compatibility.patch.yml'), '--patch', overlay, '--no-open', '--port', '0'], {
+  '--patch', join(memory, 'tests/fixtures/compatibility.patch.yml'), '--patch', overlay,
+  ...patch === undefined ? [] : ['--patch', patch], '--no-open', '--port', '0'], {
   cwd: join(run, 'project-a'),
   env: { ...process.env, DSH_HOME: join(run, 'home'), DSH_AGENTS_HOME: join(run, 'agents'),
     TMP: join(run, 'tmp'), TEMP: join(run, 'tmp'), TMPDIR: join(run, 'tmp'),

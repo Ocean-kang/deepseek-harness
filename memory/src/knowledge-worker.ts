@@ -94,7 +94,7 @@ export class KnowledgeWorker {
     if (task === null) return
     try {
       if (task.candidates === null) {
-        const candidates = await this.extractor.consolidate(task, signal, () => this.store.reserveCall(project, operation, this.owner))
+        const candidates = await this.extractor.consolidate(task, signal, () => this.store.reserveCall(project, operation, this.owner, this.now()))
         signal.throwIfAborted()
         this.store.prepare(project, operation, this.owner, candidates)
       }

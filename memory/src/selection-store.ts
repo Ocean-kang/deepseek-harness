@@ -55,6 +55,21 @@ export class SelectionStore {
       }) }
   }
 
+  /** Update recall preference while retaining the pending references and consumption token.
+   * @param project - authoritative Session owner.
+   * @param sessionId - captured Session.
+   * @param automatic - explicit automatic recall preference.
+   * @returns saved preference and unchanged pending selection.
+   */
+  setAutomatic(project: ProjectId, sessionId: SessionId, automatic: boolean): MemorySelection {
+    this.owner(project, sessionId)
+    this.db.prepare(`INSERT INTO memory_selections VALUES (?, ?, ?, '[]', ?)
+      ON CONFLICT(session_id) DO UPDATE SET automatic = excluded.automatic`).run(sessionId, project, randomUUID(), Number(automatic))
+    const saved = this.get(project, sessionId)
+    if (saved === null) throw new MemoryError('corrupt', 'Saved memory preference is missing')
+    return saved
+  }
+
   /** Replace the pending versions; empty refs cancel selection without deleting memories.
    * @param project - authoritative Session owner.
    * @param sessionId - captured Session.

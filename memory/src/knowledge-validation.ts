@@ -1,5 +1,6 @@
 /** Explicit knowledge scoring configuration and model-output validation. */
 import { integer, object, textValue } from './l1-validation.ts'
+import { SessionId, SessionSeq } from '@deepseek-ai/dsh-session'
 import { MemoryError } from './types.ts'
 import type { MemoryId, MemoryRef } from './l1-types.ts'
 import type { Knowledge, KnowledgeCandidate, KnowledgeInput, KnowledgeSpec, OwnedMemory } from './knowledge-types.ts'
@@ -24,14 +25,14 @@ export function sameRef(left: MemoryRef, right: MemoryRef): boolean {
   return left.id === right.id && left.revision === right.revision
 }
 
-/** Decode content without accepting model-owned metadata.
+/** Decode content and stored inspection references; model requests separately reject inspection fields.
  * @param value - external or durable knowledge body.
  * @param config - allowed score range.
  * @returns validated content and deduplicated exact sources.
  */
 export function parseKnowledge(value: unknown, config: KnowledgeSpec): Knowledge {
   const item = object(value)
-  const keys = ['title', 'body', 'category', 'score', 'rationale', 'evidence', 'sources']
+  const keys = ['title', 'body', 'description', 'examinedEvents', 'category', 'score', 'rationale', 'evidence', 'sources']
   if (Object.keys(item).some(key => !keys.includes(key))) throw new MemoryError('output', 'Unexpected knowledge field')
   const category = textValue(item.category)
   const evidence = textValue(item.evidence)
@@ -44,7 +45,16 @@ export function parseKnowledge(value: unknown, config: KnowledgeSpec): Knowledge
     if (source.kind !== 'memory' || Object.keys(source).some(key => key !== 'kind' && key !== 'ref')) throw new MemoryError('output', 'Invalid source kind')
     return { kind: 'memory' as const, ref: knowledgeRef(source.ref) }
   })
-  return { title: textValue(item.title), body: textValue(item.body), category: category as Knowledge['category'],
+  const description = item.description === undefined ? undefined : textValue(item.description).trim()
+  if (description !== undefined && (/[\r\n]/u.test(description) || Array.from(description).length > 240)) throw new MemoryError('output', 'Knowledge description must be one short line')
+  if (item.examinedEvents !== undefined && (!Array.isArray(item.examinedEvents) || item.examinedEvents.length === 0)) throw new MemoryError('output', 'Knowledge examined events must be a nonempty array')
+  const examinedEvents = item.examinedEvents === undefined ? undefined : item.examinedEvents.map((value: unknown) => {
+    const ref = object(value)
+    if (Object.keys(ref).some(key => key !== 'sessionId' && key !== 'seq')) throw new MemoryError('output', 'Invalid examined event reference')
+    return { sessionId: SessionId(textValue(ref.sessionId)), seq: SessionSeq(integer(ref.seq)) }
+  })
+  return { title: textValue(item.title), body: textValue(item.body), ...description === undefined ? {} : { description },
+    ...examinedEvents === undefined ? {} : { examinedEvents: [...new Map(examinedEvents.map(ref => [JSON.stringify(ref), ref])).values()] }, category: category as Knowledge['category'],
     score: item.score, rationale: textValue(item.rationale), evidence: evidence as Knowledge['evidence'],
     sources: [...new Map(sources.map(source => [JSON.stringify(source.ref), source])).values()] }
 }
@@ -58,6 +68,7 @@ export function parseKnowledge(value: unknown, config: KnowledgeSpec): Knowledge
 export function parseKnowledgeCandidates(value: unknown, input: KnowledgeInput, config: KnowledgeSpec): KnowledgeCandidate[] {
   if (!Array.isArray(value)) throw new MemoryError('output', 'Expected a knowledge candidate array')
   const targets = new Set<string>()
+  const allRecords = new Map([...input.sources, ...input.existing, ...input.lineage].map(record => [JSON.stringify([record.id, record.revision]), record]))
   return value.map((value: unknown) => {
     const item = object(value)
     if (Object.keys(item).some(key => key !== 'knowledge' && key !== 'target')) throw new MemoryError('output', 'Unexpected candidate field')
@@ -89,11 +100,15 @@ export function parseKnowledgeCandidates(value: unknown, input: KnowledgeInput, 
         if (previous === undefined || record.summary.outcome !== 'success') roots.set(origin, record)
       } else {
         for (const source of record.knowledge.sources) {
-          const parent = [...input.sources, ...input.existing, ...input.lineage].find(parent => sameRef(parent, source.ref))
+          const parent = allRecords.get(JSON.stringify([source.ref.id, source.ref.revision]))
           if (parent === undefined) throw new MemoryError('source', 'Missing knowledge ancestry')
           pending.push(parent)
         }
       }
+    }
+    if (knowledge.examinedEvents?.some(ref => ![...roots.values()].some(root => root.level === 'L1'
+      && root.summary.sources.some(source => source.sessionId === ref.sessionId && source.seq === ref.seq)))) {
+      throw new MemoryError('source', 'Examined event is outside the candidate ancestry')
     }
     if (knowledge.evidence === 'supported' && knowledge.category === 'method'
       && ![...roots.values()].some(record => record.level === 'L1' && record.summary.outcome === 'success')) {

@@ -55,13 +55,13 @@ export function json(value: unknown): unknown {
  */
 export function storedSpec(value: unknown): L1Spec {
   const row = object(value)
-  if (row.promptVersion !== 'l1-v1') throw new MemoryError('schema', 'unsupported L1 prompt version')
-  return resolveL1Config({
+  if (row.promptVersion !== 'l1-v1' && row.promptVersion !== 'l1-v2') throw new MemoryError('schema', 'unsupported L1 prompt version')
+  return { ...resolveL1Config({
     provider: textValue(row.provider), model: textValue(row.model),
     maxInputBytes: integer(row.maxInputBytes), maxOutputTokens: integer(row.maxOutputTokens),
     timeoutMs: integer(row.timeoutMs), maxCalls: integer(row.maxCalls), maxAttempts: integer(row.maxAttempts),
     retryBaseMs: integer(row.retryBaseMs), retryMaxMs: integer(row.retryMaxMs),
-  })
+  }), promptVersion: row.promptVersion }
 }
 
 /**
@@ -92,7 +92,7 @@ export function parseCandidate(value: unknown, allowed: readonly EventRef[] | ((
   if (row.kind !== 'memory') throw new MemoryError('output', 'L1 invalid result kind')
   exact(row, ['kind', 'summary'])
   const summary = object(row.summary)
-  exact(summary, ['goal', 'actions', 'outcome', 'result', 'solution', 'sources'])
+  exact(summary, ['goal', 'actions', 'outcome', 'result', 'solution', 'sources', ...('description' in summary ? ['description'] : [])])
   if (!Array.isArray(summary.actions) || !Array.isArray(summary.sources) || summary.sources.length === 0) throw new MemoryError('output', 'L1 requires actions and nonempty sources')
   const outcome = summary.outcome
   if (outcome !== 'success' && outcome !== 'failure' && outcome !== 'incomplete' && outcome !== 'unknown') throw new MemoryError('output', 'L1 invalid outcome')
@@ -111,5 +111,8 @@ export function parseCandidate(value: unknown, allowed: readonly EventRef[] | ((
     seen.add(key)
     return { sessionId, seq }
   })
-  return { kind: 'memory', summary: { goal: textValue(summary.goal), actions: summary.actions.map(textValue), outcome, result: textValue(summary.result), solution, sources } }
+  const description = summary.description === undefined ? undefined : textValue(summary.description).trim()
+  if (description !== undefined && (/[\r\n]/u.test(description) || Array.from(description).length > 240)) throw new MemoryError('output', 'L1 description must be one short line')
+  return { kind: 'memory', summary: { goal: textValue(summary.goal), actions: summary.actions.map(textValue), outcome, result: textValue(summary.result), solution, sources,
+    ...description === undefined ? {} : { description } } }
 }

@@ -39,16 +39,27 @@ async function setup() {
   } catch (error) { await ctx.fiber.dispose(); await item.close(); throw error }
 }
 
-it.each([undefined, true, false])('honors panel=%s while defaulting to BM25 and logged injection', async panel => {
+it.each([undefined, true, false])('honors panel=%s while defaulting to trigram BM25 and logged injection', async panel => {
   const item = await setup()
   try {
     const plugin = await item.ctx.plugin(Portable, { ...item.config, ...(panel === undefined ? {} : { panel }) })
     expect(await item.ctx.memory.getIndexStatus(item.spec.projectId)).toMatchObject({ method: 'bm25', ready: true })
+    expect(item.ctx.memory.recallMethod(item.spec.projectId)).toBe('trigram')
+    expect(item.ctx.memory.browser.spec.refreshIntervalMs).toBe(3000)
     expect(item.ctx.memory.browser.injectionReady).toBe(true)
     if (panel === false) expect(item.transport.channels.has('/memory')).toBe(false)
     else await vi.waitFor(() => expect(item.transport.channels.has('/memory')).toBe(true))
     await plugin.dispose()
     expect(item.transport.channels.has('/memory')).toBe(false)
+  } finally { await item.close() }
+})
+
+it('preserves an explicit tokenizer and refresh interval over portable defaults', async () => {
+  const item = await setup()
+  try {
+    await item.ctx.plugin(Portable, { ...item.config, textSearch: { tokenizer: 'unicode61' }, browser: { refreshIntervalMs: 7000 }, panel: false })
+    expect(item.ctx.memory.recallMethod(item.spec.projectId)).toBe('unicode61')
+    expect(item.ctx.memory.browser.spec.refreshIntervalMs).toBe(7000)
   } finally { await item.close() }
 })
 

@@ -22,6 +22,8 @@ import { batch, fixture, header } from './helpers.ts'
 import { turnEvents } from './l1-fixtures.ts'
 import { candidate } from './l1-fixtures.ts'
 import { knowledgeCandidate } from './knowledge-fixtures.ts'
+import { z } from 'zod'
+import type { MemoryId } from '../src/l1-types.ts'
 
 class Adapter extends LlmAdapter {
   constructor(private readonly run: (options: GenerateOptions) => AsyncIterable<StreamChunk>) { super() }
@@ -35,8 +37,110 @@ async function* response(text: string): AsyncIterable<StreamChunk> {
   yield { type: 'finish', reason: { kind: 'stop' } }
 }
 
-const settings = { l1: resolveL1Config({ provider: 'test', model: 'test' }),
-  knowledge: resolveKnowledgeConfig({ provider: 'test', model: 'test' }), pageSize: 2, learningConcurrency: 2, learningQueueCapacity: 128 }
+// Persisted older task versions keep their recorded extraction behavior after an upgrade.
+const settings = { l1: { ...resolveL1Config({ provider: 'test', model: 'test' }), promptVersion: 'l1-v1' as const },
+  knowledge: { ...resolveKnowledgeConfig({ provider: 'test', model: 'test' }), promptVersion: 'knowledge-v2' as const }, pageSize: 2, learningConcurrency: 2, learningQueueCapacity: 128 }
+
+it('persists two model steps per layer and supplies original L0 evidence to L2 and L3 after restart', async () => {
+  const item = await fixture()
+  const provider = await item.open()
+  const ctx = new Context()
+  let pipeline: MemoryPipeline | undefined
+  const observed: Array<{ stage: string; level: string | null; rawEvidence: boolean }> = []
+  const description = '该项目要求使用严格的 TypeScript。'
+  const parseInput = z.object({ input: z.object({ level: z.enum(['L2', 'L3']),
+    sources: z.array(z.object({ id: z.string().transform(value => value as MemoryId), revision: z.number().int().positive() })) }) })
+  try {
+    await ctx.plugin(LlmRuntime)
+    ctx.llm.registerAdapter(['test'], new Adapter(async function* (options) {
+      const block = options.messages[0]!.content[0]!
+      if (block.type !== 'text') throw new Error('Expected recorded model input')
+      if (options.system?.startsWith('Write one short sentence')) {
+        observed.push({ stage: 'visualize', level: null, rawEvidence: false })
+        yield* response(JSON.stringify({ description }))
+      } else if (options.system?.startsWith('Summarize')) {
+        observed.push({ stage: 'extract', level: 'L1', rawEvidence: true })
+        yield* response(JSON.stringify(candidate({ sessionId: header().id })))
+      } else {
+        const input = parseInput.parse(JSON.parse(block.text)).input
+        const rawEvidence = block.text.includes('原文约束：必须启用 strict TypeScript')
+        expect(rawEvidence).toBe(true)
+        observed.push({ stage: 'extract', level: input.level, rawEvidence })
+        yield* response(JSON.stringify([knowledgeCandidate(input.sources[0]!, 'Use strict TypeScript')]))
+      }
+    }))
+    pipeline = new MemoryPipeline(provider, { ...settings, l1: resolveL1Config({ provider: 'test', model: 'test' }),
+      knowledge: resolveKnowledgeConfig({ provider: 'test', model: 'test' }) }, ctx.llm, error => { throw error })
+    await pipeline.learn(batch(item.spec, turnEvents({ kind: 'completed' }, '原文约束：必须启用 strict TypeScript')))
+    const memories = (['L1', 'L2', 'L3'] as const).map(level => provider.knowledge.browse(item.spec.projectId, level, '', 10, '')[0]!)
+    expect(memories).toHaveLength(3)
+    const refs = memories.map(memory => ({ id: memory.id, revision: memory.revision }))
+    expect(memories.map(memory => memory.level === 'L1' ? memory.summary.description : 'shared' in memory ? null : memory.knowledge.description)).toEqual([description, description, description])
+    const auxiliary = provider.listSessions(item.spec.projectId).filter(source => source.header.id !== header().id)
+    expect(auxiliary).toHaveLength(6)
+    expect(auxiliary.every(source => source.committedTo === 2)).toBe(true)
+    await expect(JSON.stringify(observed, null, 2) + '\n').toMatchFileSnapshot('./expected/layered-summary.json')
+    await pipeline.close()
+    pipeline = undefined
+    await provider.close()
+    const reopened = await item.open()
+    for (const ref of refs) {
+      const memory = reopened.knowledge.getMemory(item.spec.projectId, ref)!
+      if ('shared' in memory) throw new Error('Expected owned memory')
+      expect(memory.level === 'L1' ? memory.summary.description : memory.knowledge.description).toBe(description)
+    }
+  } finally { await pipeline?.close(); await ctx.fiber.dispose(); await item.close() }
+})
+
+it('records fresh existing knowledge for every task of a four-conversation learning batch', async () => {
+  const item = await fixture()
+  const provider = await item.open()
+  const ctx = new Context()
+  let pipeline: MemoryPipeline | undefined
+  const requests: Array<{ level: string; existing: number; sources: number }> = []
+  const errors: string[] = []
+  const knowledgeInput = z.object({ input: z.object({ level: z.enum(['L2', 'L3']), existing: z.array(z.object({ id: z.string() })),
+    sources: z.array(z.object({ id: z.string().transform(value => value as MemoryId), revision: z.number().int().positive() })) }) })
+  const sourceInput = z.object({ input: z.array(z.object({ sources: z.array(z.object({ sessionId: z.string().transform(SessionId) })) })) })
+  try {
+    await ctx.plugin(LlmRuntime)
+    ctx.llm.registerAdapter(['test'], new Adapter(async function* (options) {
+      const block = options.messages[0]!.content[0]!
+      if (block.type !== 'text') throw new Error('Expected auxiliary request text')
+      if (options.system?.startsWith('Summarize')) {
+        const input = sourceInput.parse(JSON.parse(block.text))
+        yield* response(JSON.stringify(candidate({ sessionId: input.input[0]!.sources[0]!.sessionId })))
+      } else {
+        const input = knowledgeInput.parse(JSON.parse(block.text))
+        requests.push({ level: input.input.level, existing: input.input.existing.length, sources: input.input.sources.length })
+        yield* response(JSON.stringify([knowledgeCandidate(input.input.sources[0]!, `${input.input.level} constraint ${requests.length}`)]))
+      }
+    }))
+    for (let index = 0; index < 4; index++) await provider.appendRaw({ projectId: item.spec.projectId, header: header(`batch-session-${index}`),
+      inheritedEventCount: SessionLogOffset(0), events: turnEvents() })
+    pipeline = new MemoryPipeline(provider, settings, ctx.llm, (error) => { errors.push(error.code) })
+    await pipeline.flush(item.spec.projectId)
+    const sessions = provider.listSessions(item.spec.projectId, '', 100)
+    const logs = (await Promise.all(sessions.map(async session => (await provider.readRaw({ projectId: item.spec.projectId,
+      sessionId: session.header.id, from: SessionLogOffset(0), to: session.committedTo, limit: 100 })).events))).flat()
+    const recorded = logs.filter(event => event.type === 'memory/extraction-request' && event.data.level !== 'L1').map((event) => {
+      if (event.type !== 'memory/extraction-request') throw new Error('Expected recorded request')
+      const block = event.data.request.messages[0]!.content[0]!
+      if (block.type !== 'text') throw new Error('Expected recorded JSON text')
+      const input = knowledgeInput.parse(JSON.parse(block.text)).input
+      return { level: input.level, existing: input.existing.length, sources: input.sources.length }
+    })
+    const order = (a: { level: string; existing: number }, b: { level: string; existing: number }) =>
+      a.level.localeCompare(b.level) || a.existing - b.existing
+    expect(recorded.sort(order)).toEqual(requests.sort(order))
+    expect(errors).toEqual([])
+    expect(requests).toHaveLength(8)
+    const tasks = provider.knowledge.listTasks(item.spec.projectId)
+      .map(task => ({ level: task.input.level, status: task.status, attempts: task.attempts, calls: task.calls }))
+      .sort((a, b) => a.level.localeCompare(b.level))
+    await expect(JSON.stringify({ requests, tasks }, null, 2) + '\n').toMatchFileSnapshot('./expected/knowledge-batch.json')
+  } finally { await pipeline?.close(); await ctx.fiber.dispose(); await item.close() }
+})
 
 it('shares execution and queued capacity across separate databases and cancels a waiting drain', async () => {
   const items = await Promise.all([fixture(), fixture()])
@@ -301,7 +405,7 @@ it('retries a watched project in the background and continues from L1 through L3
         yield* response(JSON.stringify([knowledgeCandidate(JSON.parse(block.text).input.sources[0])]))
       }
     }))
-    const retrySettings = { ...settings, l1: resolveL1Config({ provider: 'test', model: 'test', retryBaseMs: 100, retryMaxMs: 100 }) }
+    const retrySettings = { ...settings, l1: { ...settings.l1, retryBaseMs: 100, retryMaxMs: 100 } }
     pipeline = new MemoryPipeline(provider, retrySettings, ctx.llm, () => {})
     await provider.appendRaw(batch(item.spec, turnEvents()))
     await pipeline.watch(item.spec.projectId)
@@ -344,7 +448,7 @@ it('recovers a watched project after restart and schedules due L2 retry before c
         yield* response(JSON.stringify([knowledgeCandidate(JSON.parse(block.text).input.sources[0])]))
       }
     }))
-    const retrySettings = { ...settings, knowledge: resolveKnowledgeConfig({ provider: 'test', model: 'test', retryBaseMs: 100, retryMaxMs: 100 }) }
+    const retrySettings = { ...settings, knowledge: { ...settings.knowledge, retryBaseMs: 100, retryMaxMs: 100 } }
     pipeline = new MemoryPipeline(provider, retrySettings, ctx.llm, () => {})
     await pipeline.learn(batch(item.spec, turnEvents()))
     expect(calls).toBe(2)

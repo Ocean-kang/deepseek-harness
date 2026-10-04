@@ -1,13 +1,15 @@
 /** Scoring, immutable sources, transactional recovery and grant visibility against SQLite. */
 import { afterEach, expect, it } from 'vitest'
 import { DatabaseSync } from 'node:sqlite'
-import { SessionLogOffset } from '@deepseek-ai/dsh-session'
+import { SessionLogOffset, SessionSeq } from '@deepseek-ai/dsh-session'
 import { resolveKnowledgeConfig } from '../src/l1-config.ts'
 import { enqueueCandidates } from '../src/knowledge-store.ts'
 import { parseKnowledgeCandidates } from '../src/knowledge-validation.ts'
 import type { MemoryId, OperationId } from '../src/l1-types.ts'
 import type { ProjectId } from '../src/types.ts'
 import type { KnowledgeMemory, ShareAction } from '../src/knowledge-types.ts'
+import { MemoryBrowser, resolveBrowserConfig } from '../src/browser.ts'
+import { vectorDocument } from '../src/vector-store.ts'
 import { knowledgeFixture, knowledgeCandidate, commitKnowledge } from './knowledge-fixtures.ts'
 import { header } from './helpers.ts'
 
@@ -15,6 +17,100 @@ const owned: Array<Awaited<ReturnType<typeof knowledgeFixture>>> = []
 afterEach(async () => { for (const item of owned.splice(0)) await item.close() })
 async function setup() { const item = await knowledgeFixture(); owned.push(item); return item }
 const other = 'other-project' as ProjectId
+
+it.each([{ examinedEvents: [] }, { examinedEvents: [{ sessionId: 'unrelated-session', seq: 1 }] },
+  { examinedEvents: [{ sessionId: 'unrelated-session', seq: -1 }] }])('rejects invalid durable examined-event references $examinedEvents', async ({ examinedEvents }) => {
+  const item = await setup()
+  const ref = commitKnowledge(item, 'L2', [item.source], [knowledgeCandidate(item.source)])[0]!
+  const database = new DatabaseSync(item.spec.databasePath)
+  try {
+    const row = database.prepare('SELECT knowledge FROM knowledge_versions WHERE id = ? AND revision = ?').get(ref.id, ref.revision)!
+    if (typeof row.knowledge !== 'string') throw new Error('Expected stored JSON')
+    const value: unknown = JSON.parse(row.knowledge)
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) throw new Error('Expected knowledge object')
+    database.prepare('UPDATE knowledge_versions SET knowledge = ? WHERE id = ? AND revision = ?').run(JSON.stringify({ ...value, examinedEvents }), ref.id, ref.revision)
+  } finally { database.close() }
+  expect(() => item.provider.knowledge.getMemory(item.project, ref)).toThrow()
+})
+
+it('retains valid examined events in owned history and excludes them from shared projections', async () => {
+  const item = await setup()
+  const value = knowledgeCandidate(item.source)
+  const examinedEvents = [{ sessionId: header().id, seq: SessionSeq(1) }]
+  const l2 = commitKnowledge(item, 'L2', [item.source], [{ ...value, knowledge: { ...value.knowledge, examinedEvents } }])[0]!
+  const stable = knowledgeCandidate(l2)
+  const l3 = commitKnowledge(item, 'L3', [l2], [{ ...stable, knowledge: { ...stable.knowledge, examinedEvents } }])[0]!
+  item.provider.knowledge.approveShare(action(item, l3, 'inspected-grant'), () => true, 10)
+  const reopened = await item.open()
+  expect(reopened.knowledge.getMemory(item.project, l3)).toMatchObject({ knowledge: { examinedEvents } })
+  expect(reopened.knowledge.getMemory(other, l3)).toEqual({ ...l3, projectId: item.project, level: 'L3', shared: true,
+    title: stable.knowledge.title, body: stable.knowledge.body })
+})
+
+it('pauses derived recall and sharing after source invalidation while retaining owned history across reopen', async () => {
+  const item = await setup()
+  const store = item.provider.knowledge
+  const l2 = commitKnowledge(item, 'L2', [item.source], [knowledgeCandidate(item.source)])[0]!
+  const l3 = commitKnowledge(item, 'L3', [l2], [knowledgeCandidate(l2)])[0]!
+  store.approveShare(action(item, l3, 'derived-grant'), () => true, 10)
+  const browser = new MemoryBrowser(item.provider, resolveBrowserConfig({}))
+  const document = vectorDocument(store.getMemory(item.project, l3)!)
+  browser.select(item.project, header().id, [l3], true)
+  const queued = store.enqueue(item.project, 'L3', [l2], { ...item.config, model: 'queued-before-invalidation' })
+  store.invalidateMemory(item.project, l2, 'Constraint withdrawn', 'invalidate-parent' as OperationId)
+  expect(store.sourcesCurrent(item.project, l3)).toBe(false)
+  expect(store.listCandidates(item.project, 'L3')).toEqual([])
+  expect(store.getMemory(other, l3)).toBeNull()
+  expect(item.provider.vectors.current(item.project, document)).toBe(false)
+  expect(() => browser.manual(item.project, [l3])).toThrow(/eligible/)
+  expect(() => store.approveShare(action(item, l3, 'stale-derived-grant'), () => true, 12)).toThrow(/supported/)
+  expect(store.claim(item.project, queued, 'worker', 20)).toBeNull()
+  expect(store.getTask(item.project, queued)).toMatchObject({ status: 'failed', failure: 'SOURCE_CHANGED', calls: 0 })
+  enqueueCandidates(store, item.project, 'L3', item.config, 1)
+  expect(store.listTasks(item.project).filter(task => task.status === 'pending')).toEqual([])
+  const reopened = await item.open()
+  expect(reopened.knowledge.getMemory(item.project, l3)).toMatchObject({ state: 'active', knowledge: { sources: [{ ref: l2 }] } })
+  expect(reopened.knowledge.sourcesCurrent(item.project, l3)).toBe(false)
+  expect(reopened.selections.get(item.project, header().id)).toMatchObject({ refs: [l3], automatic: true })
+})
+
+it('requeues completed derived memory for rechecking and publishes a new version with current ancestry', async () => {
+  const item = await setup()
+  const store = item.provider.knowledge
+  const old = commitKnowledge(item, 'L2', [item.source], [knowledgeCandidate(item.source)])[0]!
+  const derived = commitKnowledge(item, 'L3', [old], [knowledgeCandidate(old)])[0]!
+  const current = commitKnowledge(item, 'L2', [item.source], [{ ...knowledgeCandidate(item.source, 'Updated TypeScript constraint'), target: old }], 'new-parent')[0]!
+  expect(store.listCandidates(item.project, 'L3')).toEqual([])
+  enqueueCandidates(store, item.project, 'L3', item.config, 1)
+  const tasks = store.listTasks(item.project)
+  enqueueCandidates(store, item.project, 'L3', item.config, 1)
+  expect(store.listTasks(item.project)).toEqual(tasks)
+  const recovery = tasks.find(task => task.status === 'pending' && task.input.existing.some(record => record.id === derived.id))!
+  expect(recovery.input.sources).toMatchObject([current])
+  store.claim(item.project, recovery.operationId, 'recheck', 20)
+  const candidate = knowledgeCandidate(current, 'Updated stable TypeScript constraint')
+  store.prepare(item.project, recovery.operationId, 'recheck', [{ ...candidate, target: derived,
+    knowledge: { ...candidate.knowledge, sources: [...candidate.knowledge.sources, { kind: 'memory', ref: derived }] } }])
+  const result = store.commit(item.project, recovery.operationId, 'recheck', 21)
+  expect(result).toEqual([{ id: derived.id, revision: 2 }])
+  expect(store.getMemory(item.project, result[0]!)).toMatchObject({ knowledge: { sources: [{ kind: 'memory', ref: current }] } })
+  expect(store.sourcesCurrent(item.project, result[0]!)).toBe(true)
+  expect(store.getMemory(item.project, derived)).toMatchObject({ state: 'superseded', knowledge: { sources: [{ ref: old }] } })
+})
+
+it('fills browse and recall pages past shared records whose sources have expired', async () => {
+  const item = await setup()
+  const store = item.provider.knowledge
+  const parents = commitKnowledge(item, 'L2', [item.source], [knowledgeCandidate(item.source, 'Constraint A'), knowledgeCandidate(item.source, 'Constraint B')])
+  const derived = parents.map((parent, index) => commitKnowledge(item, 'L3', [parent], [knowledgeCandidate(parent, `Stable constraint ${index}`)], `derived-${index}`)[0]!)
+  for (const [index, ref] of derived.entries()) store.approveShare(action(item, ref, `grant-${index}`), () => true, 10)
+  const order = [...derived].sort((a, b) => a.id.localeCompare(b.id))
+  const expiredParent = parents[derived.findIndex(ref => ref.id === order[0]!.id)]!
+  store.invalidateMemory(item.project, expiredParent, 'Withdrawn source', 'page-invalidate' as OperationId)
+  expect(store.browse(other, 'L3', '', 1, 'Stable')).toMatchObject([order[1]!])
+  expect(store.listCandidates(other, 'L3', '', 1)).toMatchObject([order[1]!])
+  expect(store.browse(other, 'L3', order[1]!.id, 1, 'Stable')).toEqual([])
+})
 
 it('queues all candidate pages on memory changes and retains one task per source after repeated notifications', async () => {
   const item = await setup()
@@ -194,12 +290,13 @@ it('serializes projects across connections and discards stale merges after a ver
   const another = await item.open()
   expect(another.knowledge.claim(item.project, second, 'two', 10)).toBeNull()
   store.prepare(item.project, first, 'one', [knowledgeCandidate(item.source)])
-  store.commit(item.project, first, 'one', 11)
-  another.knowledge.claim(item.project, second, 'two', 12)
+  const refs = store.commit(item.project, first, 'one', 11)
+  expect(another.knowledge.claim(item.project, second, 'two', 12)?.input.existing).toMatchObject([refs[0]!])
   another.knowledge.prepare(item.project, second, 'two', [knowledgeCandidate(item.source)])
+  store.invalidateMemory(item.project, refs[0]!, 'Withdrawn during extraction', 'external-change' as OperationId)
   expect(() => another.knowledge.commit(item.project, second, 'two', 13)).toThrow(/revisions/)
   another.knowledge.fail(item.project, second, 'two', 'conflict', true, 14)
-  expect(another.knowledge.getTask(item.project, second)).toMatchObject({ status: 'retry', candidates: null, input: { existing: [{ revision: 1 }] } })
+  expect(another.knowledge.getTask(item.project, second)).toMatchObject({ status: 'retry', candidates: null, input: { existing: [] } })
 })
 
 function action(item: Awaited<ReturnType<typeof setup>>, ref: { id: MemoryId; revision: number }, name: string, kind: 'approve' | 'revoke' = 'approve'): ShareAction {

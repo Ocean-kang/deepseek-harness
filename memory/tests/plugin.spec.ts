@@ -57,7 +57,9 @@ it('automatically learns captured turns using the mounted LLM and serves text re
       async *stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
         calls++
         let text: string
-        if (options.system?.startsWith('Summarize')) {
+        if (options.system?.startsWith('Write one short sentence')) {
+          text = JSON.stringify({ description: 'The project requires strict TypeScript.' })
+        } else if (options.system?.startsWith('Summarize')) {
           entered.resolve()
           await release.promise
           text = JSON.stringify(candidate({ sessionId: session.id }))
@@ -85,7 +87,7 @@ it('automatically learns captured turns using the mounted LLM and serves text re
     expect((await ctx.memory.readRaw({ projectId: item.spec.projectId, sessionId: session.id, from: SessionLogOffset(0), to: session.seq, limit: 10 })).events).toHaveLength(3)
     release.resolve()
     await ctx.memory.flushLearning(item.spec.projectId)
-    expect(calls).toBe(3)
+    expect(calls).toBe(6)
     expect(await ctx.memory.listCandidates(item.spec.projectId, 'L3')).toHaveLength(1)
     const recall = await ctx.memory.retrieve({ projectId: item.spec.projectId, text: 'TypeScript', levels: ['L3'] })
     expect(recall).toMatchObject({ method: 'bm25', hits: [{ similarity: null }] })
@@ -93,7 +95,7 @@ it('automatically learns captured turns using the mounted LLM and serves text re
     await plugin.dispose()
     const reopened = await ctx.plugin({ ...MemoryPlugin, inject: [...MemoryPlugin.inject, 'llm'] }, options)
     await ctx.memory.flushLearning(item.spec.projectId)
-    expect(calls).toBe(3)
+    expect(calls).toBe(6)
     await reopened.dispose()
     await writer.close()
   } finally {

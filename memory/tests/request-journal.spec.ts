@@ -1,6 +1,6 @@
 /** Durable request guards and result-commit failure preserve recoverable extraction work. */
 import { expect, it, vi } from 'vitest'
-import type { StreamChunk } from '@deepseek-ai/dsh-llm'
+import type { GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm'
 import { SessionLogOffset } from '@deepseek-ai/dsh-session'
 import { MemoryRequestJournal } from '../src/request-journal.ts'
 import { L1Extractor } from '../src/l1-extractor.ts'
@@ -60,7 +60,8 @@ it('retains a retryable task and unknown request outcome when the result transac
     await provider.appendRaw(batch(item.spec, turnEvents()))
     provider.scanTurns(project, resolveL1Config({ provider: 'test', model: 'test' }), 10)
     const task = provider.l1.listTasks(project, '', 10)[0]!
-    const calls = vi.fn(() => response(JSON.stringify(candidate(task))))
+    const calls = vi.fn((options: GenerateOptions) => response(JSON.stringify(options.system?.startsWith('Write one short sentence')
+      ? { description: 'A parser fix was requested.' } : candidate(task))))
     const journal = new MemoryRequestJournal(provider, { stream: calls })
     worker = new L1Worker(provider, new L1Extractor(journal, journal.recordL1), project, 2, () => {})
     const append = provider.appendRaw.bind(provider)
@@ -74,8 +75,8 @@ it('retains a retryable task and unknown request outcome when the result transac
     expect(auxiliary.committedTo).toBe(1)
     provider.l1.rerun(project, task.operationId, 'retry', task.config)
     await worker.flush(task.sessionId)
-    expect(calls).toHaveBeenCalledTimes(2)
+    expect(calls).toHaveBeenCalledTimes(3)
     expect(provider.l1.getTask(project, task.operationId)?.status).toBe('done')
-    expect(provider.listSessions(project).filter(session => session.header.id !== header().id).map(session => session.committedTo).sort()).toEqual([1, 2])
+    expect(provider.listSessions(project).filter(session => session.header.id !== header().id).map(session => session.committedTo).sort()).toEqual([1, 2, 2])
   } finally { await worker?.close(); await item.close() }
 })

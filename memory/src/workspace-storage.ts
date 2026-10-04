@@ -18,6 +18,7 @@ import { enqueueCandidates } from './knowledge-store.ts'
 import { MemoryRetriever } from './retrieval.ts'
 import { SqliteMemory } from './sqlite.ts'
 import { TextMemoryRetriever } from './text-retrieval.ts'
+import { queryExpander } from './query-expansion.ts'
 import { MemoryError } from './types.ts'
 import type { ProjectId } from './types.ts'
 
@@ -146,9 +147,10 @@ export class WorkspaceMemory implements MemoryRoutes {
     try {
       if (provider.listProjects().some(owner => owner !== project)) throw new MemoryError('conflict', 'Workspace database contains another project')
       const embedder = this.spec.embedding === undefined ? undefined : new HttpEmbedder(this.spec.embedding, process.env[this.spec.embedding.apiKeyEnv] ?? '')
-      retriever = this.spec.textSearch !== undefined ? new TextMemoryRetriever(provider, this.spec.textSearch)
-        : this.spec.embedding === undefined || embedder === undefined ? undefined : new MemoryRetriever(provider, this.spec.embedding, embedder, this.report)
       const llm = this.ctx.get('llm')
+      retriever = this.spec.textSearch !== undefined ? new TextMemoryRetriever(provider, this.spec.textSearch,
+        this.spec.textSearch.expandQuery ? queryExpander(provider, llm!, this.spec.l1!, this.spec.textSearch) : undefined)
+        : this.spec.embedding === undefined || embedder === undefined ? undefined : new MemoryRetriever(provider, this.spec.embedding, embedder, this.report)
       pipeline = this.spec.autoLearning && llm !== undefined ? new MemoryPipeline(provider, this.spec, llm, this.report, retriever, this.budget) : undefined
       const runtime: MemoryRuntime = { provider, ...(retriever === undefined ? {} : { retriever }), ...(pipeline === undefined ? {} : { pipeline }) }
       const recoveredSessions: SessionId[] = []
@@ -276,6 +278,8 @@ export async function installWorkspaceMemory(ctx: Context, spec: Spec): Promise<
         handler: () => ({ kind: 'error', text: 'Cross-project sharing is disabled in workspace storage mode.' }) })
     })
     ctx.effect(() => dispose, 'memory.workspace-databases')
+    // oxlint-disable-next-line typescript/no-misused-promises -- Cordis awaits injected plugin setup and disposal.
+    ctx.inject(['workspaceRegistry'], async () => { await routes.recover() })
   } catch (error) {
     try { await dispose() } catch (cleanupError) { throw new AggregateError([error, cleanupError], 'Workspace memory startup and cleanup failed') }
     throw error

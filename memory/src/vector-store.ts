@@ -86,6 +86,7 @@ export class VectorStore {
     this.assertOpen()
     const memory = this.knowledge.getMemory(project, document.memory)
     return memory !== null && ('shared' in memory || (memory.state === 'active' && (memory.level === 'L1' || memory.knowledge.evidence === 'supported')))
+      && ('shared' in memory || this.knowledge.sourcesCurrent(project, memory))
       && vectorDocument(memory).digest === document.digest
   }
 

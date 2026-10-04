@@ -1,5 +1,5 @@
 /** Library composition for recoverable L0-to-L3 learning without registering an agent plugin. */
-import { SessionId } from '@deepseek-ai/dsh-session'
+import { SessionId, SessionLogOffset } from '@deepseek-ai/dsh-session'
 import type { LlmRuntime } from '@deepseek-ai/dsh-llm'
 import type { Spec } from './config.ts'
 import type { SqliteMemory } from './sqlite.ts'
@@ -50,7 +50,14 @@ export class MemoryPipeline {
     llm: Pick<LlmRuntime, 'stream'>, private readonly report: (error: MemoryError) => void, private readonly retriever?: MemorySearch, private readonly budget = new LearningBudget()) {
     if (spec.l1 === undefined || spec.knowledge === undefined) throw new MemoryError('config', 'Independent learning requires L1 and knowledge model configurations')
     this.journal = new MemoryRequestJournal(memory, llm)
-    const extractor = new KnowledgeExtractor(this.journal, this.journal.recordKnowledge, SessionId('memory-knowledge'))
+    const extractor = new KnowledgeExtractor(this.journal, this.journal.recordKnowledge, SessionId('memory-knowledge'),
+      (project, ref) => memory.knowledge.sourcesCurrent(project, ref), async (project, ref, signal) => {
+        const page = await memory.readRaw({ projectId: project, sessionId: ref.sessionId, from: SessionLogOffset(ref.seq),
+          to: SessionLogOffset(ref.seq + 1), limit: 1, signal })
+        const event = page.events[0]
+        if (event?.seq !== ref.seq) throw new MemoryError('source', 'Knowledge source event is unavailable in L0')
+        return event
+      })
     this.knowledge = new KnowledgeWorker(memory.knowledge, extractor)
     this.budget.available.add(this.resumeOverloaded)
     this.unsubscribe = memory.onMemoryChange(() => {

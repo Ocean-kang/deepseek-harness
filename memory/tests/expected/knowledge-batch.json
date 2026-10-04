@@ -1,0 +1,94 @@
+{
+  "requests": [
+    {
+      "level": "L2",
+      "existing": 0,
+      "sources": 1
+    },
+    {
+      "level": "L2",
+      "existing": 1,
+      "sources": 1
+    },
+    {
+      "level": "L2",
+      "existing": 2,
+      "sources": 1
+    },
+    {
+      "level": "L2",
+      "existing": 3,
+      "sources": 1
+    },
+    {
+      "level": "L3",
+      "existing": 0,
+      "sources": 1
+    },
+    {
+      "level": "L3",
+      "existing": 1,
+      "sources": 1
+    },
+    {
+      "level": "L3",
+      "existing": 2,
+      "sources": 1
+    },
+    {
+      "level": "L3",
+      "existing": 3,
+      "sources": 1
+    }
+  ],
+  "tasks": [
+    {
+      "level": "L2",
+      "status": "done",
+      "attempts": 1,
+      "calls": 1
+    },
+    {
+      "level": "L2",
+      "status": "done",
+      "attempts": 1,
+      "calls": 1
+    },
+    {
+      "level": "L2",
+      "status": "done",
+      "attempts": 1,
+      "calls": 1
+    },
+    {
+      "level": "L2",
+      "status": "done",
+      "attempts": 1,
+      "calls": 1
+    },
+    {
+      "level": "L3",
+      "status": "done",
+      "attempts": 1,
+      "calls": 1
+    },
+    {
+      "level": "L3",
+      "status": "done",
+      "attempts": 1,
+      "calls": 1
+    },
+    {
+      "level": "L3",
+      "status": "done",
+      "attempts": 1,
+      "calls": 1
+    },
+    {
+      "level": "L3",
+      "status": "done",
+      "attempts": 1,
+      "calls": 1
+    }
+  ]
+}

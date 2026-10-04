@@ -14,6 +14,7 @@ import { MemoryRetriever } from './retrieval.ts'
 import type { RetrievalRequest, MemorySearch } from './retrieval.ts'
 import { TextMemoryRetriever } from './text-retrieval.ts'
 import { MemoryPipeline } from './pipeline.ts'
+import { queryExpander } from './query-expansion.ts'
 import { enqueueCandidates } from './knowledge-store.ts'
 import type {} from '@deepseek-ai/dsh-llm'
 import { RawCollector } from './collector.ts'
@@ -61,13 +62,15 @@ export const Config: z<Config> = z.object({
   dataRoot: z.string(), projectByPath: z.boolean(), storageMode: z.union(['central', 'workspace'] as const),
   injection: z.boolean(),
   panel: z.boolean(),
-  browser: z.object({ pageSize: z.number(), maxQueryBytes: z.number(), limit: z.number(), maxBytes: z.number() }),
+  browser: z.object({ pageSize: z.number(), maxQueryBytes: z.number(), limit: z.number(), maxBytes: z.number(),
+    refreshIntervalMs: z.number(), stateCacheSessions: z.number() }),
   autoLearning: z.boolean(),
   projectId: z.string().required(), databasePath: z.string().required(),
   queueCapacity: z.number(), batchSize: z.number(), pageSize: z.number(), busyTimeoutMs: z.number(),
   learningConcurrency: z.number(), learningQueueCapacity: z.number(),
   textSearch: z.union([z.object({ tokenizer: z.union(['unicode61', 'trigram'] as const), limit: z.number(), maxBytes: z.number(),
     maxCandidates: z.number(), pageSize: z.number(), timeoutMs: z.number(), maxQueryBytes: z.number(), maxTerms: z.number(),
+    expandQuery: z.boolean(), expansionTimeoutMs: z.number(),
   }), z.const(undefined)]),
   journalMode: z.union(['wal', 'delete', 'truncate', 'persist'] as const),
   embedding: z.union([z.object({ endpoint: z.string().required(), model: z.string().required(), dimensions: z.number().required(), apiKeyEnv: z.string().required(),
@@ -156,13 +159,26 @@ export class MemoryService extends Service implements RawMemory {
   }
 
   /** Whether capture and recall are enabled for this Session.
-   * @param session - live Session metadata.
+   * @param session - live or persisted Session metadata.
    * @returns false for Sessions predating Workspace storage activation.
    */
-  acceptsSession(session: import('@deepseek-ai/dsh-session').Session): boolean { return this.routes?.accepts(session) ?? true }
+  acceptsSession(session: Pick<import('@deepseek-ai/dsh-session').Session, 'header'>): boolean { return this.routes?.accepts(session) ?? true }
 
   private providerFor(project: ProjectId): SqliteMemory { return this.routes === undefined ? this.provider : this.routes.get(project).provider }
   private pipelineFor(project: ProjectId): MemoryPipeline | undefined { return this.routes === undefined ? this.pipeline : this.routes.get(project).pipeline }
+
+  /** @param project - captured owner.
+   * @returns whether background extraction is configured for this project's database.
+   */
+  learningEnabled(project: ProjectId): boolean { return this.pipelineFor(project) !== undefined }
+
+  /** @param project - captured owner.
+   * @returns configured retrieval method for user-facing limitations.
+   */
+  recallMethod(project: ProjectId): 'disabled' | 'vector' | 'unicode61' | 'trigram' {
+    const retriever = this.routes === undefined ? this.retriever : this.routes.get(project).retriever
+    return retriever === undefined ? 'disabled' : retriever instanceof TextMemoryRetriever ? retriever.spec.tokenizer : 'vector'
+  }
 
   private search(project?: ProjectId): MemorySearch {
     if (this.routes !== undefined && project === undefined) throw new MemoryError('config', 'Workspace search requires a project')
@@ -330,6 +346,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   const llm = ctx.get('llm')
   if (spec.autoLearning && !Object.hasOwn(ctx.fiber.inject, 'llm')) throw new MemoryError('config', 'autoLearning requires llm in this plugin entry\'s inject list')
   if (spec.autoLearning && llm === undefined) throw new MemoryError('config', 'autoLearning requires the configured DSH LLM service')
+  if (spec.textSearch?.expandQuery && (!Object.hasOwn(ctx.fiber.inject, 'llm') || llm === undefined)) throw new MemoryError('config', 'Query expansion requires llm in this plugin entry\'s inject list')
   if (spec.storageMode === 'workspace') {
     const { installWorkspaceMemory } = await import('./workspace-storage.ts')
     await installWorkspaceMemory(ctx, spec)
@@ -338,7 +355,8 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   const embedder = spec.embedding === undefined ? undefined : new HttpEmbedder(spec.embedding, process.env[spec.embedding.apiKeyEnv] ?? '')
   const provider = await SqliteMemory.open(spec)
   const report = (error: MemoryError) => ctx.logger.warn(`[memory/${error.code}] ${error.message}`)
-  const retriever = spec.textSearch !== undefined ? new TextMemoryRetriever(provider, spec.textSearch)
+  const retriever = spec.textSearch !== undefined ? new TextMemoryRetriever(provider, spec.textSearch,
+    spec.textSearch.expandQuery ? queryExpander(provider, llm!, spec.l1!, spec.textSearch) : undefined)
     : spec.embedding === undefined || embedder === undefined ? undefined : new MemoryRetriever(provider, spec.embedding, embedder, report)
   const pipeline = spec.autoLearning && llm !== undefined ? new MemoryPipeline(provider, spec, llm, report, retriever) : undefined
   let panelDispose: (() => Promise<void>) | undefined

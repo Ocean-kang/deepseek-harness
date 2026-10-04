@@ -11,14 +11,16 @@ import { vectorDocument } from './vector-store.ts'
 import type { MemorySelection } from './selection-store.ts'
 
 /** Deployment limits for browsing and combined manual/automatic admission. */
-export interface BrowserConfig { pageSize?: number; maxQueryBytes?: number; limit?: number; maxBytes?: number }
+export interface BrowserConfig { pageSize?: number; maxQueryBytes?: number; limit?: number; maxBytes?: number; refreshIntervalMs?: number; stateCacheSessions?: number }
 /** Resolved browser settings. */
 export type BrowserSpec = Readonly<Required<BrowserConfig>>
 /** @param input - deployment limits.
  * @returns complete validated settings.
  */
 export function resolveBrowserConfig(input: BrowserConfig): BrowserSpec {
-  const spec = { pageSize: input.pageSize ?? 50, maxQueryBytes: input.maxQueryBytes ?? 8192, limit: input.limit ?? 5, maxBytes: input.maxBytes ?? 8192 }
+  const spec = { pageSize: input.pageSize ?? 50, maxQueryBytes: input.maxQueryBytes ?? 8192, limit: input.limit ?? 5,
+    maxBytes: input.maxBytes ?? 8192,
+    refreshIntervalMs: input.refreshIntervalMs ?? 3000, stateCacheSessions: input.stateCacheSessions ?? 32 }
   for (const [key, value] of Object.entries(spec)) {
     if (!Number.isSafeInteger(value) || value < 1 || value > 2147483647) throw new MemoryError('config', `memory browser ${key} must be a positive bounded integer`)
   }
@@ -82,6 +84,19 @@ export class MemoryBrowser {
   detail(project: ProjectId, ref: MemoryRef): OwnedMemory | SharedMemory | null { return this.providerFor(project).knowledge.getMemory(project, ref) }
 
   /** @param project - requester.
+   * @param item - visible owned or shared version.
+   * @returns whether every private source remains current; shared authorization already checks ancestry.
+   */
+  sourcesCurrent(project: ProjectId, item: OwnedMemory | SharedMemory): boolean {
+    return 'shared' in item || item.level === 'L1' || item.knowledge.sources.every(source => this.providerFor(project).knowledge.sourcesCurrent(project, source.ref))
+  }
+
+  /** @param project - owner.
+   * @returns committed revision and project-wide durable extraction counters.
+   */
+  status(project: ProjectId) { return this.providerFor(project).learningStatus(project) }
+
+  /** @param project - requester.
    * @param id - memory identity.
    * @param before - exclusive revision, initially the maximum safe integer.
    * @returns owned history page; foreign memory history is never disclosed.
@@ -115,10 +130,20 @@ export class MemoryBrowser {
    * @returns pending versions and automatic preference; null when none is saved.
    */
   selection(project: ProjectId, session: Session): MemorySelection | null {
-    const pending = this.providerFor(project).selections.get(project, session.id)
+    return this.selectionFromEvents(project, session.id, session.snapshotEvents())
+  }
+
+  /** Recover a pending selection from a persisted Session without creating an Agent.
+   * @param project - authoritative captured owner.
+   * @param sessionId - Session whose committed events were read.
+   * @param events - committed log from that same Session.
+   * @returns pending versions and automatic preference; null when none is saved.
+   */
+  selectionFromEvents(project: ProjectId, sessionId: SessionId, events: readonly SessionEvent[]): MemorySelection | null {
+    const pending = this.providerFor(project).selections.get(project, sessionId)
     if (pending === null) return null
-    for (const event of session.snapshotEvents()) this.committed(project, session.id, event)
-    return this.providerFor(project).selections.get(project, session.id)
+    for (const event of events) this.committed(project, sessionId, event)
+    return this.providerFor(project).selections.get(project, sessionId)
   }
 
   /** @param project - authoritative Session owner.
@@ -131,6 +156,16 @@ export class MemoryBrowser {
     const unique = [...new Map(refs.map(ref => [JSON.stringify([ref.id, ref.revision]), { id: ref.id, revision: ref.revision }])).values()]
     this.manual(project, unique)
     return this.providerFor(project).selections.replace(project, sessionId, unique, automatic)
+  }
+
+  /** Save recall preference independently of stale pending versions.
+   * @param project - authoritative Session owner.
+   * @param sessionId - captured Session.
+   * @param automatic - explicit automatic recall preference.
+   * @returns unchanged pending receipt with the saved preference.
+   */
+  setAutomatic(project: ProjectId, sessionId: SessionId, automatic: boolean): MemorySelection {
+    return this.providerFor(project).selections.setAutomatic(project, sessionId, automatic)
   }
 
   /** Observe a committed recall; never consumes a newer pending receipt.

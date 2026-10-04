@@ -38,7 +38,9 @@ class LearningAdapter extends LlmAdapter {
     const block = options.messages[0]?.content[0]
     if (block?.type !== 'text') throw new Error('Expected recorded input')
     const input: unknown = JSON.parse(block.text)
-    const text = options.system?.startsWith('Summarize')
+    const text = options.system?.startsWith('Write one short sentence')
+      ? JSON.stringify({ description: 'The project requires ESM modules.' })
+      : options.system?.startsWith('Summarize')
       ? JSON.stringify({ kind: 'memory', summary: { goal: 'Project ESM constraint', actions: [], outcome: 'unknown', result: 'Use ESM', solution: null,
         sources: inputL1.parse(input).input.flatMap(piece => piece.sources) } })
       : JSON.stringify([{ target: null, knowledge: { title: 'ESM', body: 'Use ESM in this project', category: 'constraint', score: 4,
@@ -62,7 +64,7 @@ async function setup(learning = false) {
     const facility = new DomainFacility(ctx, { backend: 'memory', routes: {} })
     ctx.storage.mount('domain', facility)
     ctx.provide('storageDomain', facility)
-    await ctx.plugin(WorkspaceRegistry)
+    const registry = await ctx.plugin(WorkspaceRegistry)
     const paths = [join(item.root, 'project-a'), join(item.root, 'project-b')]
     await Promise.all(paths.map(path => mkdir(path)))
     const workspaces = await Promise.all(paths.map(path => ctx.workspaceRegistry.create(path)))
@@ -78,7 +80,7 @@ async function setup(learning = false) {
       writers.push(await ctx.sessionPersistence.create(session.header))
       return session
     }
-    return { ...item, ctx, workspaces, config, adapter, plugin, create,
+    return { ...item, ctx, registry, workspaces, config, adapter, plugin, create,
       async close() { await ctx.fiber.dispose(); await Promise.all(writers.map(writer => writer.close())); await item.close() } }
   } catch (error) { await ctx.fiber.dispose(); await Promise.all(writers.map(writer => writer.close())); await item.close(); throw error }
 }
@@ -140,7 +142,7 @@ it('learns L1–L3 in the project database, browses exact versions, persists sel
     await item.ctx.sessions.flush(session)
     const project = item.ctx.memory.projectOfSession(session.id)!
     await item.ctx.memory.flushLearning(project)
-    expect(item.adapter.calls).toBe(3)
+    expect(item.adapter.calls).toBe(6)
     for (const level of ['L1', 'L2', 'L3'] as const) expect(await item.ctx.memory.listCandidates(project, level)).toHaveLength(1)
     const l3 = (await item.ctx.memory.listCandidates(project, 'L3'))[0]!
     const ref = { id: l3.id, revision: l3.revision }
@@ -156,7 +158,7 @@ it('learns L1–L3 in the project database, browses exact versions, persists sel
     await first.dispose()
     await item.plugin()
     await item.ctx.memory.flushLearning(project)
-    expect(item.adapter.calls).toBe(3)
+    expect(item.adapter.calls).toBe(6)
     expect(item.ctx.memory.browser.selection(project, another)).toMatchObject({ refs: [ref], automatic: true })
   } finally { await item.close() }
 })
@@ -257,6 +259,37 @@ it('recovers existing project L0 without a live source conversation', async () =
     await item.ctx.memory.flushLearning(project)
     expect(await item.ctx.memory.listCandidates(project, 'L3')).toHaveLength(1)
   } finally { await item.close() }
+})
+
+it('recovers project learning when the Workspace registry becomes ready after memory', async () => {
+  const item = await setup(true)
+  const started = Promise.withResolvers<undefined>()
+  const release = Promise.withResolvers<undefined>()
+  let registryLoad: PromiseLike<unknown> | undefined
+  const list = item.ctx.sessionPersistence.list.bind(item.ctx.sessionPersistence)
+  const listing = vi.spyOn(item.ctx.sessionPersistence, 'list')
+  try {
+    const workspace = item.workspaces[0]!
+    const project = workspace.id as string as ProjectId
+    const spec = await resolveConfig({ ...item.config, projectId: project, dataRoot: workspace.path, databasePath: `memory_${project}/memory.sqlite` })
+    const provider = await SqliteMemory.open(spec)
+    try { await provider.appendRaw({ projectId: project, header: { ...header('late-registry'), createdAt: 101 }, inheritedEventCount: SessionLogOffset(0), events: turnEvents() }) }
+    finally { await provider.close() }
+    await item.registry.dispose()
+    listing.mockImplementationOnce(async () => { started.resolve(undefined); await release.promise; return list() })
+    registryLoad = item.ctx.plugin(WorkspaceRegistry)
+    await started.promise
+    await item.plugin()
+    expect(item.ctx.get('workspaceRegistry')).toBeUndefined()
+    await expect(item.ctx.memory.listCandidates(project, 'L3')).rejects.toMatchObject({ code: 'source' })
+    release.resolve(undefined)
+    await registryLoad
+    await vi.waitFor(async () => {
+      await item.ctx.memory.flushLearning(project)
+      expect(await item.ctx.memory.listCandidates(project, 'L3')).toHaveLength(1)
+    })
+    expect(item.adapter.calls).toBe(6)
+  } finally { release.resolve(undefined); await registryLoad; listing.mockRestore(); await item.close() }
 })
 
 it('does not extract a partially inherited turn in workspace mode', async () => {

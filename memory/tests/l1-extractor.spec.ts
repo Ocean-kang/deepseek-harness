@@ -40,7 +40,7 @@ async function setup(overrides: Partial<L1Config> = {}, reason: TurnEndReason = 
   const provider = await item.open()
   const events = turnEvents(reason, text)
   await provider.appendRaw(batch(item.spec, events))
-  const config = resolveL1Config({ provider: 'test', model: 'test', ...overrides })
+  const config = { ...resolveL1Config({ provider: 'test', model: 'test', ...overrides }), promptVersion: 'l1-v1' as const }
   provider.scanTurns(item.spec.projectId, config, 2)
   const task = provider.l1.listTasks(item.spec.projectId, '', 10)[0]!
   const ctx = new Context()
@@ -167,7 +167,7 @@ it('routes a terminal provider failure without persisting provider text', async 
   ctx.llm.registerAdapter(['test'], new Adapter(async function* () {
     yield { type: 'finish', reason: { kind: 'error', failure: { code: 'RATE_LIMIT', message: 'sensitive provider text' } } }
   }))
-  await expect(extractor.extractTurn(task, events, new AbortController().signal, () => {})).rejects.toMatchObject({ failureCode: 'RATE_LIMIT', retryable: true, message: 'L1 model request failed (RATE_LIMIT)' })
+  await expect(extractor.extractTurn(task, events, new AbortController().signal, () => {})).rejects.toMatchObject({ failureCode: 'RATE_LIMIT', retryable: true, message: 'Memory model request failed (RATE_LIMIT)' })
 })
 
 it.each(['tool-calls', 'max-tokens'] as const)('rejects the non-final %s terminal state', async kind => {
@@ -206,3 +206,38 @@ it('preserves recall attribution and the instruction to distinguish historical c
   const result = await extractor.extractTurn({ ...task, to: SessionLogOffset(4) }, withRecall, new AbortController().signal, () => {})
   expect(result).toMatchObject({ kind: 'memory', summary: { outcome: 'unknown', solution: null } })
 })
+
+it('records a separate display-summary request after validating the extracted L1 content', async () => {
+  const { ctx, task, events, records, extractor } = await setup()
+  const current = { ...task, config: { ...task.config, promptVersion: 'l1-v2' as const } }
+  let calls = 0
+  ctx.llm.registerAdapter(['test'], new Adapter(options => {
+    calls++
+    expect(records).toHaveLength(calls)
+    expect(options.messages).toEqual(records.at(-1)!.messages)
+    if (calls === 1) return response(JSON.stringify(candidate(task)))
+    expect(options.system).toContain('Preserve uncertainty, conflict and failed outcomes')
+    const block = options.messages[0]!.content[0]!
+    if (block.type !== 'text') throw new Error('Expected display-summary text')
+    expect(JSON.parse(block.text)).toMatchObject({ stage: 'visualize' })
+    expect(block.text).toContain('no verified result')
+    return response(JSON.stringify({ description: 'A parser fix was requested, with no verified result.' }))
+  }))
+  const charged = vi.fn()
+  expect(await extractor.extractTurn(current, events, new AbortController().signal, charged)).toMatchObject({
+    kind: 'memory', summary: { description: 'A parser fix was requested, with no verified result.', outcome: 'unknown' },
+  })
+  expect(charged).toHaveBeenCalledTimes(2)
+  expect(records).toHaveLength(2)
+})
+
+it.each([{ description: '' }, { description: 'a\nb' }, { description: 'x'.repeat(241) }, { description: 'Fine.', sources: [] }])(
+  'rejects invalid display descriptions without publishing a partial L1', async output => {
+    const { ctx, task, events, extractor, provider, project } = await setup()
+    const current = { ...task, config: { ...task.config, promptVersion: 'l1-v2' as const } }
+    ctx.llm.registerAdapter(['test'], new Adapter(options => response(JSON.stringify(
+      options.system?.startsWith('Summarize') ? candidate(task) : output))))
+    await expect(extractor.extractTurn(current, events, new AbortController().signal, () => {})).rejects.toMatchObject({ code: 'output' })
+    expect(provider.l1.byOperation(project, task.operationId)).toBeNull()
+  },
+)

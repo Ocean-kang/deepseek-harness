@@ -7,6 +7,7 @@ import { commitKnowledge, knowledgeCandidate, knowledgeFixture } from './knowled
 import { header } from './helpers.ts'
 import { SessionSeq } from '@deepseek-ai/dsh-session'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
+import type { OperationId } from '../src/l1-types.ts'
 
 const cleanup: Array<() => Promise<void>> = []
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close() })
@@ -64,6 +65,20 @@ it('persists pending selections and preferences; old receipts cannot consume a n
   expect(reopened.selections.get(item.project, header().id)).toEqual(newer)
   item.browser.committed(item.project, header().id, { ...event, data: { ...event.data, source: { ...event.data.source, selectionId: newer.token } } })
   expect(reopened.selections.get(item.project, header().id)).toMatchObject({ refs: [], automatic: false })
+})
+
+it('disables automatic recall with stale selections and retains their original consumption receipt', async () => {
+  const item = await setup()
+  const ref = commitKnowledge(item, 'L2', [item.source], [knowledgeCandidate(item.source)])[0]!
+  const receipt = item.browser.select(item.project, header().id, [ref], true)
+  item.provider.knowledge.invalidateMemory(item.project, ref, 'Withdrawn', 'toggle-invalidated' as OperationId)
+  expect(() => item.browser.select(item.project, header().id, [ref], false)).toThrow(/eligible/)
+  expect(item.browser.setAutomatic(item.project, header().id, false)).toEqual({ ...receipt, automatic: false })
+  const reopened = await item.open()
+  expect(reopened.selections.get(item.project, header().id)).toEqual({ ...receipt, automatic: false })
+  reopened.selections.consume(item.project, header().id, receipt.token)
+  expect(reopened.selections.get(item.project, header().id)).toMatchObject({ refs: [], automatic: false })
+  expect(() => item.browser.setAutomatic('foreign' as ProjectId, header().id, true)).toThrow(/project/)
 })
 
 it('enforces the exact rendered byte budget and leaves prior choices on validation failure', async () => {

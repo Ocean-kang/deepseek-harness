@@ -30,11 +30,11 @@ CREATE TABLE knowledge_grants (id TEXT NOT NULL, revision INTEGER NOT NULL, acti
 
 function storedConfig(value: unknown): KnowledgeSpec {
   const item = object(value)
-  if (item.promptVersion !== 'knowledge-v1' && item.promptVersion !== 'knowledge-v2') throw new MemoryError('corrupt', 'Unsupported knowledge prompt version')
+  if (!['knowledge-v1', 'knowledge-v2', 'knowledge-v3'].includes(textValue(item.promptVersion))) throw new MemoryError('corrupt', 'Unsupported knowledge prompt version')
   return { ...resolveKnowledgeConfig({ provider: textValue(item.provider), model: textValue(item.model),
     maxInputBytes: integer(item.maxInputBytes), maxOutputTokens: integer(item.maxOutputTokens), timeoutMs: integer(item.timeoutMs),
     maxCalls: integer(item.maxCalls), maxAttempts: integer(item.maxAttempts), retryBaseMs: integer(item.retryBaseMs), retryMaxMs: integer(item.retryMaxMs),
-    scoreMin: integer(item.scoreMin), scoreMax: integer(item.scoreMax), l2Threshold: integer(item.l2Threshold), l3Threshold: integer(item.l3Threshold) }), promptVersion: item.promptVersion }
+    scoreMin: integer(item.scoreMin), scoreMax: integer(item.scoreMax), l2Threshold: integer(item.l2Threshold), l3Threshold: integer(item.l3Threshold) }), promptVersion: item.promptVersion as KnowledgeSpec['promptVersion'] }
 }
 
 function refs(value: unknown): MemoryRef[] {
@@ -59,9 +59,10 @@ export function enqueueCandidates(store: KnowledgeStore, project: ProjectId, lev
   for (;;) {
     const records = store.listCandidates(project, level === 'L2' ? 'L1' : 'L2', after, pageSize)
     for (const record of records) store.enqueue(project, level, [record], config)
-    if (records.length < pageSize) return
+    if (records.length < pageSize) break
     after = records.at(-1)!.id
   }
+  store.enqueueRechecks(project, level, config)
 }
 
 /** Internal store; no model tools or user approval adapter are installed by this class. */
@@ -82,14 +83,37 @@ export class KnowledgeStore {
     return result
   }
 
-  private decode(value: unknown): KnowledgeMemory {
+  private decode(value: unknown, validateExamined = true): KnowledgeMemory {
     const row = object(value)
     const config = storedConfig(json(row.config))
     const state = textValue(row.state)
     if (!['active', 'superseded', 'invalidated'].includes(state)) throw new MemoryError('corrupt', 'Invalid knowledge state')
-    return { id: textValue(row.id) as MemoryId, revision: integer(row.revision), projectId: textValue(row.project) as ProjectId,
+    const memory: KnowledgeMemory = { id: textValue(row.id) as MemoryId, revision: integer(row.revision), projectId: textValue(row.project) as ProjectId,
       operationId: textValue(row.operation_id) as OperationId, level: levelOf(row.level), knowledge: parseKnowledge(json(row.knowledge), config),
       config, createdAt: integer(row.created_at), state: state as KnowledgeMemory['state'] }
+    if (validateExamined && memory.knowledge.examinedEvents !== undefined) {
+      const allowed = this.ancestralEvents(memory.projectId, memory.knowledge.sources.map(source => source.ref))
+      if (memory.knowledge.examinedEvents.some(ref => !allowed.has(JSON.stringify(ref)))) throw new MemoryError('source', 'Stored examined event is outside knowledge ancestry')
+    }
+    return memory
+  }
+
+  private ancestralEvents(project: ProjectId, refs: readonly MemoryRef[]): Set<string> {
+    const allowed = new Set<string>()
+    const seen = new Set<string>()
+    const pending = [...refs]
+    while (pending.length > 0) {
+      const ref = pending.pop()!
+      const key = JSON.stringify([ref.id, ref.revision])
+      if (seen.has(key)) continue
+      seen.add(key)
+      const l1 = this.l1.getMemory(project, ref)
+      if (l1 !== null) { for (const event of l1.summary.sources) allowed.add(JSON.stringify(event)); continue }
+      const parent = this.db.prepare('SELECT * FROM knowledge_versions WHERE id = ? AND revision = ? AND project = ?').get(ref.id, ref.revision, project)
+      if (parent === undefined) throw new MemoryError('source', 'Missing examined-event ancestry')
+      pending.push(...this.decode(parent, false).knowledge.sources.map(source => source.ref))
+    }
+    return allowed
   }
 
   /** Read private history or the minimal currently authorized L3 projection.
@@ -106,9 +130,32 @@ export class KnowledgeStore {
     if (row.project === project) return this.decode(row)
     if (row.level !== 'L3' || row.state !== 'active' || this.db.prepare('SELECT 1 FROM knowledge_grants WHERE id = ? AND revision = ?').get(ref.id, ref.revision) === undefined) return null
     const memory = this.decode(row)
-    if (memory.knowledge.evidence !== 'supported') return null
+    if (memory.knowledge.evidence !== 'supported' || !this.sourcesCurrent(memory.projectId, memory)) return null
     return { id: memory.id, revision: memory.revision, projectId: memory.projectId, level: 'L3', shared: true,
       title: memory.knowledge.title, body: memory.knowledge.body }
+  }
+
+  /** Check exact source revisions recursively without rewriting historical content.
+   * @param project - owning project.
+   * @param ref - exact version to inspect.
+   * @returns false for missing, retired, unsupported or cyclic ancestry.
+   */
+  sourcesCurrent(project: ProjectId, ref: MemoryRef): boolean {
+    const seen = new Set<string>()
+    const checked = new Set<string>()
+    const visit = (reference: MemoryRef): boolean => {
+      const key = JSON.stringify([reference.id, reference.revision])
+      if (seen.has(key)) return false
+      if (checked.has(key)) return true
+      const record = this.getMemory(project, reference)
+      if (record === null || 'shared' in record || record.state !== 'active') return false
+      seen.add(key)
+      const valid = record.level === 'L1' || (record.knowledge.evidence === 'supported' && record.knowledge.sources.every(source => visit(source.ref)))
+      seen.delete(key)
+      if (valid) checked.add(key)
+      return valid
+    }
+    return visit(ref)
   }
 
   /** Browse current owned records including unresolved evidence, plus approved shared L3.
@@ -121,20 +168,28 @@ export class KnowledgeStore {
    */
   browse(project: ProjectId, level: 'L1' | KnowledgeLevel, after: string, limit: number, query: string): Array<OwnedMemory | SharedMemory> {
     this.assertOpen()
-    const rows = level === 'L1'
+    const statement = level === 'L1'
       ? this.db.prepare(`SELECT id,revision FROM l1_memories v WHERE project = ? AND id > ?
           AND revision = (SELECT MAX(revision) FROM l1_memories latest WHERE latest.id = v.id)
           AND instr(lower(summary),lower(?)) > 0
-          ORDER BY id LIMIT ?`).all(project, after, query, limit)
+          ORDER BY id LIMIT ?`)
       : this.db.prepare(`SELECT id,revision FROM knowledge_versions v WHERE state = 'active' AND level = ? AND id > ?
           AND (project = ? OR (level = 'L3' AND json_extract(knowledge,'$.evidence') = 'supported'
             AND EXISTS (SELECT 1 FROM knowledge_grants g WHERE g.id = v.id AND g.revision = v.revision)))
           AND instr(lower(json_extract(knowledge,'$.title') || char(10) || json_extract(knowledge,'$.body')),lower(?)) > 0
-          ORDER BY id LIMIT ?`).all(level, after, project, query, limit)
-    return rows.flatMap(row => {
-      const visible = this.getMemory(project, knowledgeRef(row))
-      return visible === null ? [] : [visible]
-    })
+          ORDER BY id LIMIT ?`)
+    const result: Array<OwnedMemory | SharedMemory> = []
+    let cursor = after
+    for (;;) {
+      const rows = level === 'L1' ? statement.all(project, cursor, query, limit) : statement.all(level, cursor, project, query, limit)
+      for (const row of rows) {
+        const visible = this.getMemory(project, knowledgeRef(row))
+        if (visible !== null) result.push(visible)
+        if (result.length === limit) return result
+      }
+      if (rows.length < limit) return result
+      cursor = textValue(rows.at(-1)?.id)
+    }
   }
 
   /** History references never expand private sources of shared knowledge.
@@ -176,22 +231,29 @@ export class KnowledgeStore {
       return this.db.prepare('SELECT id, MAX(revision) AS revision FROM l1_memories WHERE project = ? AND id > ? GROUP BY id ORDER BY id LIMIT ?').all(project, after, limit)
         .map(row => this.owned(project, knowledgeRef(row)))
     }
-    const rows = this.db.prepare(`SELECT * FROM knowledge_versions v WHERE state = 'active' AND level = ? AND id > ? AND json_extract(knowledge, '$.evidence') = 'supported'
-      AND (project = ? OR (level = 'L3' AND EXISTS (SELECT 1 FROM knowledge_grants g WHERE g.id = v.id AND g.revision = v.revision))) ORDER BY id LIMIT ?`).all(level, after, project, limit)
-    return rows.flatMap(row => {
-      const memory = this.decode(row)
-      if (memory.knowledge.evidence !== 'supported') return []
-      const visible = this.getMemory(project, memory)
-      return visible === null ? [] : [visible]
-    })
+    const result: Array<OwnedMemory | SharedMemory> = []
+    let cursor = after
+    const statement = this.db.prepare(`SELECT * FROM knowledge_versions v WHERE state = 'active' AND level = ? AND id > ? AND json_extract(knowledge, '$.evidence') = 'supported'
+      AND (project = ? OR (level = 'L3' AND EXISTS (SELECT 1 FROM knowledge_grants g WHERE g.id = v.id AND g.revision = v.revision))) ORDER BY id LIMIT ?`)
+    for (;;) {
+      const rows = statement.all(level, cursor, project, limit)
+      for (const row of rows) {
+        const memory = this.decode(row)
+        if (!this.sourcesCurrent(memory.projectId, memory)) continue
+        const visible = this.getMemory(project, memory)
+        if (visible !== null) result.push(visible)
+        if (result.length === limit) return result
+      }
+      if (rows.length < limit) return result
+      cursor = textValue(rows.at(-1)?.id)
+    }
   }
 
   private input(project: ProjectId, level: KnowledgeLevel, sources: readonly MemoryRef[]): KnowledgeInput {
     const unique = [...new Map(sources.map(ref => [JSON.stringify(ref), ref])).values()]
     if (unique.length === 0) throw new MemoryError('source', 'Consolidation requires source versions')
     const records = unique.map(ref => this.owned(project, ref))
-    if (records.some(record => record.state !== 'active' || record.level !== (level === 'L2' ? 'L1' : 'L2')
-      || (level === 'L3' && record.level !== 'L1' && record.knowledge.evidence !== 'supported'))) throw new MemoryError('source', 'Invalid consolidation source level or state')
+    if (records.some(record => !this.sourcesCurrent(project, record) || record.level !== (level === 'L2' ? 'L1' : 'L2'))) throw new MemoryError('source', 'Invalid consolidation source level or state')
     const existing = this.current(project, level)
     return { projectId: project, level, sources: records.sort((a, b) => a.id.localeCompare(b.id)), existing, lineage: this.lineage(project, [...records, ...existing]) }
   }
@@ -213,22 +275,45 @@ export class KnowledgeStore {
     return [...found.values()].sort((a, b) => a.id.localeCompare(b.id) || a.revision - b.revision)
   }
 
-  /** Freeze same-project sources and settings; repeated equivalent enqueue is idempotent.
+  /** Freeze same-project source versions and settings; repeated equivalent enqueue is idempotent.
    * @param project - owning project.
    * @param level - L2 or L3.
    * @param sources - exact previous-level versions.
    * @param config - resolved scoring and model settings.
+   * @param recheck - optional affected version; gives recovery its own idempotent operation.
    * @returns durable task identity.
    */
-  enqueue(project: ProjectId, level: KnowledgeLevel, sources: readonly MemoryRef[], config: KnowledgeSpec): OperationId {
+  enqueue(project: ProjectId, level: KnowledgeLevel, sources: readonly MemoryRef[], config: KnowledgeSpec,
+    recheck?: MemoryRef): OperationId {
     return this.transaction(() => {
       const input = this.input(project, level, sources)
-      const operationId = l1Key('knowledge', project, level, input.sources.map(({ id, revision }) => ({ id, revision })), config) as OperationId
+      const operationId = l1Key(recheck === undefined ? 'knowledge' : 'knowledge-recheck', project, level,
+        input.sources.map(({ id, revision }) => ({ id, revision })), config, ...recheck === undefined ? [] : [recheck]) as OperationId
       if (this.getTask(project, operationId) !== null) return operationId
-      this.save({ operationId, input, config, status: 'pending', attempts: 0, calls: 0, nextRetryAt: 0, failure: null,
+      this.save({ operationId, ...recheck === undefined ? {} : { recheck }, input, config, status: 'pending', attempts: 0, calls: 0, nextRetryAt: 0, failure: null,
         candidates: null, result: null, owner: null, leaseUntil: 0 })
       return operationId
     })
+  }
+
+  /** Queue rechecking from eligible current parents; unavailable sources leave history paused.
+   * @param project - owner.
+   * @param level - target level.
+   * @param config - resolved model settings.
+   */
+  enqueueRechecks(project: ProjectId, level: KnowledgeLevel, config: KnowledgeSpec): void {
+    for (const record of this.current(project, level)) {
+      if (record.knowledge.sources.every(source => this.sourcesCurrent(project, source.ref))) continue
+      const sources = record.knowledge.sources.flatMap((source) => {
+        const rows = this.db.prepare(`SELECT id,revision FROM l1_memories WHERE project = ? AND id = ?
+          UNION ALL SELECT id,revision FROM knowledge_versions WHERE project = ? AND id = ? AND state = 'active'
+          ORDER BY revision DESC LIMIT 1`).all(project, source.ref.id, project, source.ref.id)
+        if (rows.length === 0) return []
+        const current = this.owned(project, knowledgeRef(rows[0]))
+        return current.level === (level === 'L2' ? 'L1' : 'L2') && this.sourcesCurrent(project, current) ? [current] : []
+      })
+      if (sources.length > 0) this.enqueue(project, level, sources, config, { id: record.id, revision: record.revision })
+    }
   }
 
   private save(task: KnowledgeTask): void {
@@ -236,7 +321,7 @@ export class KnowledgeStore {
     this.db.prepare('INSERT INTO knowledge_tasks VALUES (?, ?, ?) ON CONFLICT(id) DO UPDATE SET body = excluded.body').run(task.operationId, task.input.projectId, JSON.stringify({ ...task, input }))
   }
 
-  /** Read task state and the immutable input contents retained by source versions.
+  /** Read task state and exact input versions retained for its latest attempt.
    * @param project - owner.
    * @param operation - operation identity.
    * @returns task or null for invisible identities.
@@ -258,7 +343,7 @@ export class KnowledgeStore {
     const config = storedConfig(item.config)
     const status = textValue(item.status)
     if (!['pending', 'running', 'prepared', 'retry', 'failed', 'done'].includes(status)) throw new MemoryError('corrupt', 'Invalid task status')
-    return { operationId: operation, input, config, status: status as KnowledgeTask['status'], attempts: integer(item.attempts), calls: integer(item.calls),
+    return { operationId: operation, ...item.recheck === undefined ? {} : { recheck: knowledgeRef(item.recheck) }, input, config, status: status as KnowledgeTask['status'], attempts: integer(item.attempts), calls: integer(item.calls),
       nextRetryAt: integer(item.nextRetryAt), failure: item.failure === null ? null : textValue(item.failure),
       candidates: item.candidates === null ? null : parseKnowledgeCandidates(item.candidates, input, config),
       result: item.result === null ? null : refs(item.result), owner: item.owner === null ? null : textValue(item.owner), leaseUntil: integer(item.leaseUntil) }
@@ -295,7 +380,7 @@ export class KnowledgeStore {
     return row === undefined ? null : { operationId: textValue(row.id) as OperationId, at: integer(row.at) }
   }
 
-  /** Claim one task with a project-wide lease, including across SQLite connections.
+  /** Claim with a project-wide lease and refresh unprepared input before model dispatch.
    * @param project - owner.
    * @param operation - task.
    * @param owner - worker identity.
@@ -308,8 +393,18 @@ export class KnowledgeStore {
       if (task === null || task.status === 'done' || task.status === 'failed' || task.nextRetryAt > now || task.leaseUntil > now) return null
       const active = this.db.prepare("SELECT 1 FROM knowledge_tasks WHERE project = ? AND json_extract(body, '$.leaseUntil') > ? LIMIT 1").get(project, now)
       if (active !== undefined) return null
+      if (task.input.sources.some(source => !this.sourcesCurrent(project, source))) {
+        this.save({ ...task, status: 'failed', failure: 'SOURCE_CHANGED', candidates: null, owner: null, leaseUntil: 0 })
+        return null
+      }
       if (task.attempts >= task.config.maxAttempts) { this.save({ ...task, status: 'failed', failure: 'ATTEMPTS_EXHAUSTED', owner: null, leaseUntil: 0 }); return null }
-      const claimed: KnowledgeTask = { ...task, status: task.candidates === null ? 'running' : 'prepared', attempts: task.attempts + 1,
+      const input = task.candidates === null ? this.input(project, task.input.level, task.input.sources) : task.input
+      const recheck = task.recheck
+      if (recheck !== undefined && !input.existing.some(record => record.id === recheck.id && record.revision === recheck.revision)) {
+        this.save({ ...task, status: 'failed', failure: 'TARGET_CHANGED', candidates: null, owner: null, leaseUntil: 0 })
+        return null
+      }
+      const claimed: KnowledgeTask = { ...task, input, status: task.candidates === null ? 'running' : 'prepared', attempts: task.attempts + 1,
         owner, leaseUntil: now + task.config.timeoutMs + task.config.retryMaxMs }
       this.save(claimed)
       return claimed
@@ -325,12 +420,13 @@ export class KnowledgeStore {
    * @param project - owner.
    * @param operation - task.
    * @param owner - lease identity.
+   * @param now - dispatch timestamp used to renew the lease for this call and its settlement.
    */
-  reserveCall(project: ProjectId, operation: OperationId, owner: string): void {
+  reserveCall(project: ProjectId, operation: OperationId, owner: string, now = Date.now()): void {
     this.transaction(() => {
       const task = this.held(this.getTask(project, operation), owner)
       if (task.calls >= task.config.maxCalls) throw new MemoryError('budget', 'Knowledge call budget exhausted')
-      this.save({ ...task, calls: task.calls + 1 })
+      this.save({ ...task, calls: task.calls + 1, leaseUntil: Math.max(task.leaseUntil, now + task.config.timeoutMs + task.config.retryMaxMs) })
     })
   }
 
@@ -371,8 +467,17 @@ export class KnowledgeStore {
         if (candidate.target !== null && duplicate !== undefined && duplicate.id !== candidate.target.id) throw new MemoryError('output', 'Merge target collides with another knowledge identity')
         const target = candidate.target === null ? duplicate : this.owned(project, candidate.target)
         if (target?.level === 'L1') throw new MemoryError('source', 'Cannot replace L1 with knowledge')
-        const sources = [...new Map([...(target?.knowledge.sources ?? []), ...candidate.knowledge.sources].map(source => [JSON.stringify(source.ref), source])).values()]
-        const knowledge = { ...candidate.knowledge, sources }
+        const cited = candidate.knowledge.sources.flatMap(source => source.ref.id === target?.id
+          ? target.knowledge.sources.filter(parent => this.sourcesCurrent(project, parent.ref)) : [source])
+        if (cited.some(source => !this.sourcesCurrent(project, source.ref))) {
+          throw new MemoryError('source', 'Knowledge source changed or would retire during publication')
+        }
+        const retained = target?.knowledge.sources.filter(source => this.sourcesCurrent(project, source.ref)) ?? []
+        const sources = [...new Map([...retained, ...cited].map(source => [JSON.stringify(source.ref), source])).values()]
+        const allowedEvents = candidate.knowledge.examinedEvents === undefined ? undefined : this.ancestralEvents(project, sources.map(source => source.ref))
+        const examinedEvents = candidate.knowledge.examinedEvents?.filter(ref => allowedEvents!.has(JSON.stringify(ref)))
+        if (examinedEvents?.length === 0) throw new MemoryError('source', 'Published knowledge requires examined events from retained ancestry')
+        const knowledge = { ...candidate.knowledge, sources, ...examinedEvents === undefined ? {} : { examinedEvents } }
         if (target !== undefined && isDeepStrictEqual(target.knowledge, knowledge)) { result.push({ id: target.id, revision: target.revision }); continue }
         const ref = { id: target?.id ?? randomUUID() as MemoryId, revision: (target?.revision ?? 0) + 1 }
         if (target !== undefined) this.retire(target, 'superseded')
@@ -389,7 +494,7 @@ export class KnowledgeStore {
     this.db.prepare('DELETE FROM knowledge_grants WHERE id = ? AND revision = ?').run(ref.id, ref.revision)
   }
 
-  /** Preserve candidates on storage failures; discard stale merges on revision conflicts.
+  /** Preserve storage retries, discard stale merges, and refund cancelled attempts without refunding calls.
    * @param project - owner.
    * @param operation - task.
    * @param owner - lease identity.
@@ -403,8 +508,11 @@ export class KnowledgeStore {
       let input = task.input
       let candidates = task.candidates
       if (failure === 'conflict') { input = this.input(project, task.input.level, task.input.sources); candidates = null }
-      this.save({ ...task, input, candidates, status: (failure === null || retryable) && task.attempts < task.config.maxAttempts ? 'retry' : 'failed',
-        failure, owner: null, leaseUntil: 0, nextRetryAt: now + Math.min(task.config.retryMaxMs, task.config.retryBaseMs * 2 ** (task.attempts - 1)) })
+      const attempts = failure === null ? Math.max(0, task.attempts - 1) : task.attempts
+      this.save({ ...task, input, candidates, attempts,
+        status: (failure === null || retryable) && attempts < task.config.maxAttempts ? 'retry' : 'failed',
+        failure, owner: null, leaseUntil: 0,
+        nextRetryAt: failure === null ? now : now + Math.min(task.config.retryMaxMs, task.config.retryBaseMs * 2 ** (attempts - 1)) })
     })
   }
 
@@ -465,7 +573,7 @@ export class KnowledgeStore {
       const prior = this.db.prepare('SELECT request FROM knowledge_share_actions WHERE id = ?').get(action.operationId)
       if (prior !== undefined) { if (!isDeepStrictEqual(json(prior.request), action)) throw new MemoryError('conflict', 'Share operation identity was reused'); return }
       const memory = this.owned(action.projectId, action.ref)
-      if (memory.level !== 'L3' || (action.action === 'approve' && (memory.state !== 'active' || memory.knowledge.evidence !== 'supported'))) throw new MemoryError('source', 'Only current supported L3 can be approved')
+      if (memory.level !== 'L3' || (action.action === 'approve' && !this.sourcesCurrent(action.projectId, memory))) throw new MemoryError('source', 'Only current supported L3 can be approved')
       if (this.db.prepare('SELECT 1 FROM knowledge_share_actions WHERE receipt_id = ?').get(action.receiptId) !== undefined) throw new MemoryError('conflict', 'User receipt already consumed')
       this.db.prepare('INSERT INTO knowledge_share_actions VALUES (?, ?, ?)').run(action.operationId, action.receiptId, JSON.stringify(action))
       if (action.action === 'approve') this.db.prepare('INSERT INTO knowledge_grants VALUES (?, ?, ?) ON CONFLICT(id,revision) DO UPDATE SET action_id = excluded.action_id').run(action.ref.id, action.ref.revision, action.operationId)

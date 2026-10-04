@@ -23,16 +23,18 @@ Browse L0–L3, select L2/L3 for one conversation turn, or enable BM25 automatic
 This bundle targets the Web profile of DSH 0.2.0-rc.2. Its DSH peer declarations reject other runtime versions. Download the built archive and install it through DSH; source compilation and changes to DSH code are unnecessary.
 
 ```sh
-dsh plugin --profile web add ./deepseek-ai-dsh-memory-l0-0.1.5.tgz
+dsh plugin --profile web add ./deepseek-ai-dsh-memory-l0-0.1.8.tgz
 dsh --profile web
 ```
 
-Open a conversation and choose Memory in the right sidebar. Browse L0–L3 and inspect exact bodies, sources and historical versions. Select L2/L3 and save the next-turn selection; it is consumed after recall commits to the Session log. Automatic recall defaults off for each conversation: enable its switch and save to use BM25. Both paths share version and permission checks, deduplication, and a default budget of five records and 8192 rendered bytes. Reload the panel after a turn to inspect the exact memories used.
+Open a conversation and choose Memory in the right sidebar. New L1–L3 cards show a separately generated one-sentence description; detail keeps full content, sources, scores, evidence and folded JSON. Select eligible L2/L3 with the checkbox at the start of each card, then add selected records to the next turn. The pending area and composer show saved text, count and budget. Selections are consumed after recall commits; automatic recall defaults off and its switch persists independently. Both paths check versions, ancestry, permissions and a default budget of five records and 8192 rendered bytes. Shared polling preserves search and reading position. Inspect the committed context receipt after sending. Obsolete sources pause recall and trigger eligible rechecks while history stays readable.
+
+Reopen a previously captured conversation after restart to browse memory, inspect admitted text and save next-turn selections. The panel reads its captured SQLite L0 prefix incrementally even before the Session is loaded. These operations do not start an Agent, append recovery markers or repeatedly read the canonical log.
 
 <a id="data-and-configuration"></a>
 ## Data and configuration
 
-The bundle enables capture, background learning and next-turn injection without a custom patch. The model route is read from the DSH default when the plugin loads. Background learning makes model calls using existing DSH credentials; automatic retrieval itself makes no embedding calls.
+The bundle enables capture, background learning and next-turn injection without a custom patch. Its model route is read from the DSH default at load. New L1–L3 memories require extraction followed by one display-description call per final memory, within the same task budget. New L2/L3 extraction includes the original L0 evidence cited by its ancestry; `supported` remains a model judgment and reference validation. Existing versions remain readable. Bounded input selection and source grouping avoid failures caused solely by accumulated knowledge; an individual source or original event that cannot fit still fails explicitly.
 
 With the default `storageMode: workspace`, all project L0–L3 records, versions, learning tasks and pending selections live in `<workspace>/memory_<workspaceUUID>/memory.sqlite`. The UUID is the registered DSH Workspace ID. Conversations in the same Workspace share that database. A conversation without a matching Workspace uses `$DSH_HOME/memory/workspace-memory.sqlite`, or `~/.dsh/memory/workspace-memory.sqlite` when `DSH_HOME` is absent. Stop every DSH process using a database before copying its directory, including SQLite sidecars.
 
@@ -43,9 +45,9 @@ Overrides target entry `memory-l0` in the profile patch. `storageMode: central` 
 Workspace mode disables `/memory-share` and all cross-project recall. A missing or unwritable Workspace directory, a redirected memory path, or a failed database open reports an error and retains the canonical Session log for retry; project data is never redirected to the global store. Directory checks reject existing links but cannot prevent another process replacing a directory concurrently.
 
 
-The panel is enabled when Web services are available; `panel: false` disables its RPC registration. BM25 is the default retrieval mode. Supplying `embedding` selects vector retrieval without adding BM25; supplying both `embedding` and `textSearch` is rejected. Vector retrieval requires an explicit `endpoint`, `model`, `dimensions` and `apiKeyEnv`; the named environment variable supplies its credential.
+The panel is enabled when Web services exist; `panel: false` disables its RPC. The bundle uses BM25 with `trigram`: Chinese text expands into three-character OR terms and one- or two-character terms use literal substring matching. Portable `textSearch.expandQuery` defaults on: when text has no hits and eligible records exist, one logged call to the existing L1 model supplies paraphrases before one additional search. Model output supplies search terms, never memory facts; errors remain visible. Set `expandQuery: false` for text-only recall, and use `expansionTimeoutMs` to change the 15000 ms deadline. Explicit `textSearch` objects retain direct-mount defaults, including expansion off. See the [upgrade instructions](./trigram-upgrade.md). Panel search remains literal browsing of one level. `embedding` selects vector retrieval and requires `endpoint`, `model`, `dimensions` and `apiKeyEnv`; supplying both retrieval modes rejects.
 
 <a id="known-limitations"></a>
 ## Known limitations
 
-Verification covers Windows installation, upgrade, restart, learning and manual/automatic recall with a keyless synthetic model fixture. Real-model learning has a separate single-sample check; neither demonstrates general memory quality. Other operating systems and both SDK projections remain unverified. Only Sessions loaded while the plugin is active are captured. No L4, synchronization, retention or bulk history import is provided.
+This is an independent plugin archive for the declared DSH version; installing it requires no DSH source changes. Its acceptance evidence and recorded Session expectations remain with the plugin source. Verification covers Windows installation, upgrade, restart, learning and manual/automatic recall with a keyless synthetic model fixture. Real-model learning has a separate single-sample check; neither demonstrates general memory quality. Other operating systems and untested DSH or SDK versions remain unverified. Only Sessions loaded while the plugin is active are captured. No L4, synchronization, retention or bulk history import is provided.

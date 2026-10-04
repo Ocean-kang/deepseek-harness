@@ -121,6 +121,30 @@ export class SqliteMemory implements RawMemory {
     return this.db.prepare('SELECT DISTINCT project FROM sessions ORDER BY project').all().map(row => parseProject(row.project))
   }
 
+  /** Aggregate project learning state without decoding all historical task inputs.
+   * @param project - authoritative owner.
+   * @returns generation and counts; retries count as pending, failures remain visible after partial success.
+   */
+  learningStatus(project: ProjectId) {
+    this.assertOpen()
+    const counts = { pending: 0, running: 0, failed: 0, generated: 0 }
+    const rows = this.db.prepare(`SELECT status, count(*) AS count FROM (
+      SELECT status FROM l1_tasks WHERE project = ? UNION ALL SELECT json_extract(body,'$.status') AS status FROM knowledge_tasks WHERE project = ?
+    ) GROUP BY status`).all(project, project)
+    for (const row of rows) {
+      const status = String(row.status)
+      if (status === 'pending' || status === 'retry') counts.pending += Number(row.count)
+      if (status === 'running' || status === 'prepared') counts.running += Number(row.count)
+      if (status === 'failed') counts.failed += Number(row.count)
+    }
+    const generated = this.db.prepare(`SELECT
+      (SELECT count(*) FROM l1_memories WHERE project = ?) +
+      (SELECT count(*) FROM knowledge_versions WHERE project = ?) AS count`).get(project, project)
+    if (generated === undefined) throw new MemoryError('corrupt', 'Memory generation count is unavailable')
+    counts.generated = Number(generated.count)
+    return { generation: this.vectors.generation(), ...counts }
+  }
+
   /** Page stored source and auxiliary Session metadata within one project.
    * @param project - owning project.
    * @param after - exclusive Session id, empty for the first page.

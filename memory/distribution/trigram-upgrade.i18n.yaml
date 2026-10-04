@@ -1,0 +1,16 @@
+# Bilingual-pair consistency record for trigram-upgrade.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
+#   node --import tsx/esm scripts/check-docs.mjs --write-pairing
+/:
+  en: caaecffd4fc67446
+  zh: a5c09eb3ba274b7c
+/portable-memory-recall-and-learning:
+  en: 4a982204684293ce
+  zh: d959dbdf5382fbff
+/portable-memory-recall-and-learning/change:
+  en: adcb04f5bfaccdf9
+  zh: b528142964f4c066
+/portable-memory-recall-and-learning/migration:
+  en: f40555f3fdae4836
+  zh: 5ae08c8e406de520

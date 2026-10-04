@@ -12,4 +12,4 @@
         projectId: !!js process.env.DSH_MEMORY_PROJECT
         databasePath: data/l0.sqlite
         panel: true
-        textSearch: {}
+        textSearch: { tokenizer: trigram }

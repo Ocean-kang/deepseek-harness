@@ -9,6 +9,8 @@ import { FileTypeIcon, GuideArtworkFiles } from '@deepseek-ai/dsh-client-ui-prim
 import { panelResponse } from '../panel-protocol.ts'
 import { MemoryPanel } from './MemoryPanel.tsx'
 import type { PanelCall } from './MemoryPanel.tsx'
+import { PendingMemory } from './PendingMemory.tsx'
+import { createPanelStateObserver } from './state-observer.ts'
 import { en, zh } from './locales.ts'
 import { cssText } from './MemoryPanel.module.css'
 
@@ -27,7 +29,7 @@ export function apply(ctx: ClientContext): void {
     return () => { style.remove() }
   }, 'memory.panel.styles')
   const t = ctx.locale.bind('memoryPanel')
-  const call: PanelCall = async (request, signal) => {
+  const transport: PanelCall = async (request, signal) => {
     const result = await connection.rpc.call('/memory', 'panel', request, signal)
     signal.throwIfAborted()
     if (!result.ok) throw new Error(result.error.code)
@@ -35,14 +37,20 @@ export function apply(ctx: ClientContext): void {
     if (response.action !== request.action) throw new Error('protocol')
     return response
   }
+  const { call, watch, refresh, dispose } = createPanelStateObserver(transport,
+    (error) => { ctx.logger.error('Memory state subscriber failed', error) })
+  ctx.effect(() => dispose, 'memory.panel.state')
   ctx.effect(() => ctx.locale.register('memoryPanel', { zh, en }), 'memory.panel.locale')
   ctx.effect(() => ctx.sidebarRightTabs.register({ id: ID, kind: 'memory', priority: 'extension',
     title: () => t('title'), guide: [{ id: 'memory', order: 15, title: () => t('title'), description: () => t('description'), icon: GuideArtworkFiles }],
   }), 'memory.panel.tab')
   ctx.effect(() => ctx.slots.inject('sidebar.right.pane.tab', () => ctx.slots.register(
-    { name: 'sidebar.right.pane.tab', key: ID, locale: 'memoryPanel', inject: () => ({ call }) }, MemoryPanel,
+    { name: 'sidebar.right.pane.tab', key: ID, locale: 'memoryPanel', inject: () => ({ call, watch, refresh }) }, MemoryPanel,
   )), 'memory.panel.body')
   ctx.effect(() => ctx.slots.inject('sidebar.right.pane.tab.title', () => ctx.slots.register(
     { name: 'sidebar.right.pane.tab.title', key: ID }, ({ useTabInfo }) => <><FileTypeIcon kind="folder" size={16} />{useTabInfo().tab.title}</>,
   )), 'memory.panel.title')
+  ctx.effect(() => ctx.slots.inject('conversation.composer.dock', () => ctx.slots.register(
+    { name: 'conversation.composer.dock', id: ID, order: 10, locale: 'memoryPanel', inject: () => ({ watch }) }, PendingMemory,
+  )), 'memory.composer.pending')
 }

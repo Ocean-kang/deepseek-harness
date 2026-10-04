@@ -114,6 +114,7 @@ export async function resolveConfig(input: Config): Promise<Spec> {
   if (input.autoLearning !== undefined && typeof input.autoLearning !== 'boolean') throw new MemoryError('config', 'autoLearning must be boolean')
   if (input.autoLearning === true && (input.l1 === undefined || input.knowledge === undefined)) throw new MemoryError('config', 'autoLearning requires L1 and knowledge model configurations')
   if (input.textSearch !== undefined && input.embedding !== undefined) throw new MemoryError('config', 'Choose text search or vector search explicitly; simultaneous modes are not supported')
+  if (input.textSearch?.expandQuery && input.l1 === undefined) throw new MemoryError('config', 'Query expansion requires an explicit L1 model configuration')
   if (typeof input.projectId !== 'string' || input.projectId.trim() === '' || input.projectId !== input.projectId.trim()) {
     throw new MemoryError('config', 'projectId must be an explicit nonempty identifier without surrounding whitespace')
   }

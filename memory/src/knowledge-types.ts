@@ -1,5 +1,5 @@
 /** Versioned project knowledge and durable consolidation inputs. */
-import type { L1Config, L1Memory, L1Spec, MemoryRef, OperationId } from './l1-types.ts'
+import type { EventRef, L1Config, L1Memory, L1Spec, MemoryRef, OperationId } from './l1-types.ts'
 import type { ProjectId } from './types.ts'
 
 /** Project knowledge levels; L3 remains private until an exact-version approval. */
@@ -8,10 +8,14 @@ export type KnowledgeLevel = 'L2' | 'L3'
 export type Evidence = 'supported' | 'unverified' | 'conflict'
 /** Immutable parent version, resolved only inside its owning project. */
 export interface MemorySource { readonly kind: 'memory'; readonly ref: MemoryRef }
-/** Model-owned content; identities and revisions are assigned by the store. */
+/** Knowledge content and program-owned inspection metadata; the store assigns identities and revisions. */
 export interface Knowledge {
   readonly title: string
   readonly body: string
+  /** Single-sentence display text generated after content validation; older versions omit it. */
+  readonly description?: string
+  /** L0 events supplied to the contributing verification steps; this records inspection, not independent factual proof. */
+  readonly examinedEvents?: readonly EventRef[]
   readonly category: 'temporary' | 'local' | 'method' | 'constraint' | 'decision'
   readonly score: number
   readonly rationale: string
@@ -22,7 +26,7 @@ export interface Knowledge {
 export interface KnowledgeConfig extends L1Config { scoreMin?: number; scoreMax?: number; l2Threshold?: number; l3Threshold?: number }
 /** Complete, persisted model and scoring settings. */
 export interface KnowledgeSpec extends Omit<L1Spec, 'promptVersion'> {
-  readonly promptVersion: 'knowledge-v1' | 'knowledge-v2'
+  readonly promptVersion: 'knowledge-v1' | 'knowledge-v2' | 'knowledge-v3'
   readonly scoreMin: number
   readonly scoreMax: number
   readonly l2Threshold: number
@@ -61,6 +65,8 @@ export interface KnowledgeInput {
 /** Durable task, including prepared results and exhausted budgets. */
 export interface KnowledgeTask {
   readonly operationId: OperationId
+  /** Exact affected version for a recheck; ordinary and legacy tasks omit it. */
+  readonly recheck?: MemoryRef
   readonly input: KnowledgeInput
   readonly config: KnowledgeSpec
   readonly status: 'pending' | 'running' | 'prepared' | 'retry' | 'failed' | 'done'

@@ -29,7 +29,7 @@ export interface L1Config {
 export interface L1Spec {
   readonly provider: string
   readonly model: string
-  readonly promptVersion: 'l1-v1'
+  readonly promptVersion: 'l1-v1' | 'l1-v2'
   readonly maxInputBytes: number
   readonly maxOutputTokens: number
   readonly timeoutMs: number
@@ -41,6 +41,8 @@ export interface L1Spec {
 
 /** Model content only; task identity and end reason are supplied by the manager. */
 export interface L1Summary {
+  /** Separately generated display sentence; absent from historical summaries. */
+  readonly description?: string
   readonly goal: string
   readonly actions: readonly string[]
   readonly outcome: 'success' | 'failure' | 'incomplete' | 'unknown'

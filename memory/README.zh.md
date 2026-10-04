@@ -60,13 +60,13 @@ node --import tsx/esm ../apps/cli/src/bin.ts --profile headless --patch ./profil
 | `autoLearning` | false | 开启后台学习；要求 L1/knowledge 配置，并在插件条目的 inject 列表声明 `llm`。 |
 | `textSearch` | 未配置 | 明确选择 BM25 文本检索，与 `embedding` 互斥。 |
 | `panel` | false | 注册 Web 面板 RPC；插件条目需要 `connection` 和 `webServer`。 |
-| `browser` | `{}` | 分页大小 50、搜索词预算 8192 字节、合并注入预算 5 条及完整正文 8192 字节。 |
+| `browser` | `{}` | 分页大小 50，查询预算 8192 字节，合并召回上限为 5 条及 8192 个渲染字节；共享刷新间隔 3000 ms，最多缓存 32 个 Session（`stateCacheSessions`）。 |
 | `busyTimeoutMs` | 5000 | SQLite 锁等待时间；零表示不等待。 |
 | `journalMode` | `wal` | 可选 `wal`、`delete`、`truncate` 或 `persist`；同步模式为 FULL。 |
 | `l1` | 不配置 | 可选提炼配置；启用任务发现，并为 `autoLearning` 提供 L1 设置。 |
 | `knowledge` | 不配置 | 可选 L2/L3 模型与评分设置；由 `autoLearning` 控制模型派发。 |
 
-工作区采集通过可选的 Workspace 注册表解析 `SessionHeader.cwd`，使用其规范化根目录和 UUID。缺少注册表、cwd 或匹配的 Workspace 时使用无项目归属。目录查询失败会拒绝采集，并允许重试。已加载数据库中的项目归属保持不变。集中模式保留已存项目归属和可选的路径派生后备行为。
+工作区采集通过可选的 Workspace 注册表解析 `SessionHeader.cwd`，使用其规范化根目录和 UUID。缺少注册表、cwd 或匹配的 Workspace 时使用无项目归属。恢复在注册表激活后扫描已注册项目库，支持 memory 先启动的顺序。目录查询失败会拒绝采集，并允许重试。已加载数据库中的项目归属保持不变。集中模式保留已存项目归属和可选的路径派生后备行为。
 
 可选的 `l1` 对象要求明确填写 `provider` 和 `model`。其余字段统一解析后随任务保存：
 
@@ -91,6 +91,8 @@ node --import tsx/esm ../apps/cli/src/bin.ts --profile headless --patch ./profil
 
 ### 长期知识
 
+召回和共享读取检查完整的具体版本来源链。来源被替代、失效、缺少支持或丢失时，暂停派生记忆召回；面板将其标为“待重新核实”，保留 JSON 和历史。任务核对从仍可用的当前父版本排队幂等重核，即使原任务已经完成。后台学习对照这些父版本重新检查结论，发布时仅保留仍有效的来源。没有可用父版本时，召回保持暂停，直到出现新证据。重核不代表提炼成功，也不批准新版本共享。
+
 配置 `knowledge` 后，插件为每个当前 L1 版本排队一个 L2 任务，并为每个有支持证据的当前 L2 版本排队一个 L3 任务。启动时补排已有版本，本进程提交新版本后继续排队。同一任务幂等；其他进程的提交在重启后发现。开启 `autoLearning` 后，可恢复流水线在后台执行这些任务。
 
 先通过 `resolveKnowledgeConfig` 解析明确的 provider/model 设置，再调用 `ctx.memory.consolidate(project, level, sourceRefs, spec)` 持久化 L2 或 L3 任务；排队不发起模型调用。通过 `getKnowledgeTask` / `listKnowledgeTasks` 检查任务，使用 `retryKnowledgeTask` 重排失败任务。`listCandidates(project, level, after, limit)` 返回有支持证据的当前记录，`invalidateMemory(project, ref, reason, operation)` 使所属项目的当前 L2/L3 失效。精确 `getMemory` 读取保留所属项目的历史；共享结果是带 `shared: true`、标题和正文的独立投影，不包含来源或生成元数据。
@@ -99,11 +101,11 @@ node --import tsx/esm ../apps/cli/src/bin.ts --profile headless --patch ./profil
 |---|---|---|
 | `scoreMin` / `scoreMax` | 0 / 5 | 整数闭区间，最大值不超过 100。 |
 | `l2Threshold` / `l3Threshold` | 3 / 4 | 评分区间内按顺序排列的阈值。 |
-| `promptVersion` | `knowledge-v2` | 随任务保存的固定实现版本；已有 v1 任务保留原提示词。 |
+| `promptVersion` | `knowledge-v3` | 随任务保存的实现版本；v3 读取 L0 原文证据并单独生成展示描述。历史 v1/v2 任务保留原提示词。 |
 
-知识沿用上表的 L1 模型预算默认值。默认评分中，临时信息为 0–1，局部经验为 2，可复用方法为 3，稳定约束为 4，明确决策为 5。重要性不证明真实性：证据另分为 supported、unverified 和 conflict。低分不删除来源；冲突即使低于阈值也保留，避免旧事实继续进入候选。L3 只接受有支持证据的稳定类别。模型输入包含原始证据链；同一事件引用的重复摘要不能提供额外的成功证据。
+知识沿用上表的 L1 模型预算默认值。默认评分中，临时信息为 0–1，局部经验为 2，可复用方法为 3，稳定约束为 4，明确决策为 5。重要性不证明真实性：证据另分为 supported、unverified 和 conflict。低分不删除来源；冲突即使低于阈值也保留。L3 只接受有支持证据的稳定类别。新 L2/L3 任务读取 L1 祖先引用的具体 L0 原始事件。事件集合超过一次请求时，按预算分组提供原文，再由模型合并已检查的候选，不在最终一次请求里重读全部原文。可选的 `Knowledge.examinedEvents` 保存程序填写的已送入检查请求的事件引用，不证明事实真实性。`supported` 仍是经过结构及引用校验的模型判断；历史任务可能仅依赖摘要。同一事件的重复摘要不构成独立证据。
 
-[知识存储](src/knowledge-store.ts) 持久化具体来源版本、设置、已准备候选、尝试及调用次数和退避时间。同项目租约在不同连接间串行化聚合。版本冲突重新读取当前知识并丢弃过时候选，存储重试保留候选。`KnowledgeWorker.run` 显式执行一次到期尝试。持有持久化辅助请求记录器的调用方可通过 `watch(project, report)` 启用定时重试，排队后须调用 `notify()`；释放请求 Session 前须等待 `retire(project)` 完成。显式重试重置尝试次数，但保留操作整个生命周期的调用预算；模型设置变化创建不同操作。完整输入超预算时明确失败，不截断。必须先关闭全部 worker，再关闭 Provider。
+[知识存储](src/knowledge-store.ts) 保存来源版本、设置、候选检查点、尝试和调用计数及退避。同项目租约串行化聚合；每次尚无候选的尝试刷新现有知识及祖先。新 v3 请求包含直接记忆正文、原始证据及省略的祖先记录数量；完整的具体版本来源链仍供服务端校验。来源和证据按完整 UTF-8 输入大小分组；每个完整组按共享祖先及字面词项重合选择现有知识，直到输入预算满。未选记录仍保留，但不能作为该请求的合并目标；字面选择可能漏掉等价事实。待核查目标为必选输入。全部组和描述校验后原子发布；必要时由模型分批合并已检查的候选。必要来源、单条原始事件或已检查候选无法容纳时以 `budget` 明确失败，不截断；不能缩小的合并也明确失败。版本冲突丢弃旧候选；存储重试保留候选检查点。取消释放租约并退还尝试次数，保留已计费调用。显式重试保留操作、提示词版本及总调用计数；祖先链过大的旧 v1/v2 任务须用当前设置创建新操作。先关闭 worker，再关闭 Provider。
 
 [知识提炼器](src/knowledge-extractor.ts) 使用真实 LLM 服务，要求先等待 Session 请求记录器完成。开启 `autoLearning` 后，采集插件安装辅助 Session 记录器及 worker。独立开发也可使用下述流水线；受控 adapter 不证明真实 Provider 的质量。
 
@@ -111,13 +113,21 @@ node --import tsx/esm ../apps/cli/src/bin.ts --profile headless --patch ./profil
 
 ### 独立开发
 
+本目录交付可独立安装到所声明 DSH peer 版本的插件。构建、安装包、升级说明、录制 Session 预期输出和验收依据均位于 `memory/` 内；[开发规则](AGENTS.md)定义完整的目录内流程。验收覆盖安装、受支持 profile 运行、模型可见日志、持久化与重启，以及真实 Web 交互。未来 DSH 源码集成 PR 另有仓库登记、顶层快照、升级指南、SDK 和仓库级检查要求；这些材料不替代也不阻塞本插件自身的验证。
+
 Web 和面板开发 patch 选择 `ui-chat.transcriptView: detailed`。[Chat 展示 patch](profiles/chat-view.patch.yml) 可为仅加载 Memorix 的运行选择相同模式。后续 overlay 可选择其他受支持模式。
 
 [Web 面板 patch](profiles/panel.patch.yml) 通过 DSH 现有认证连接及右侧栏加载构建后的独立入口与 Client，开启采集、后台学习及带日志的召回，将已注册项目的数据库保存在各自工作区目录，并为 Connection Provider 声明 `webServer`。完成环境设置及下述构建后，运行 `node --import tsx/esm ../apps/cli/src/bin.ts web --patch ../apps/web/tests/pin-browse-picker.overlay.yml --patch ./profiles/panel.patch.yml --no-open --port 0`，在会话中打开记忆标签页。浏览按已捕获的项目归属限制范围，支持 L0–L3、字面搜索、具体版本详情及自有历史版本；工作区模式禁用共享 L3；集中模式的获批共享投影不显示私有来源。捕获失败会阻止读取及选择，不会改写已记录的元数据。
 
-版本详情显示正在查看的版本号与有效状态。历史记录跨页时可以加载更早版本，切换查看版本会保留已加载的历史页。搜索分页使用已提交的查询词；编辑搜索框不会改变它，提交后才开始新的结果页。已保存的待选项在刷新页面后恢复，取消待选项仍保留知识记录。
+侧栏采用 DeepSeek 蓝色页眉、下划线层级导航和细线分隔的编号条目；文字及控件适配明暗主题和窄面板。版本详情显示正在查看的版本号与有效状态。历史记录跨页时可以加载更早版本，切换查看版本会保留已加载的历史页。搜索分页使用已提交的查询词；编辑搜索框不会改变它，提交后才开始新的结果页。已保存的待选项在刷新页面后恢复，取消待选项仍保留知识记录。
 
-L2/L3 待选项保留到一次参考正文被接受，服务端检查版本、共享、数量及完整正文预算。取消仅清除待选引用。开启 `injection` 后，插件合并手选和可选 BM25 结果，经 `user/message` 记录完整正文与引用，并在提交后消费选择。独立 bundle 与面板 patch 开启注入；[web.patch.yml](profiles/web.patch.yml) 仍仅采集。官方仓库快照和 SDK 投影属于独立且尚未验证的集成范围。
+已捕获的历史对话在重启后仍可浏览，即使其 Session 尚未加载。面板增量读取 SQLite 中已提交的 L0 事件，展示已接纳正文并核对待用选择；未变化的轮询不读取事件正文。原日志新增事件在采集提交后显示。保存选择不会启动 Agent，也不会追加恢复标记。
+
+L0 卡片展示对话和执行记录。新 L1–L3 卡片展示提炼后由独立模型步骤生成的一句话描述；旧版本回退到可读正文。详情保留完整主题、动作、结果、知识、来源、评分、证据及折叠原始 JSON。第二步为每条最终记忆增加一次计费调用；失败时不发布部分结果。L0 召回卡片展示记录正文，辅助卡片展示请求及返回描述。搜索按所选层级筛选并突出字面匹配。面板显示项目任务进度及失败；短窗口中整个面板可滚动，记忆列表保留最小高度。侧栏和输入框共享每个 Session 的一条状态轮询，刷新保留已提交查询、分页、详情和滚动位置。通过 `browser.refreshIntervalMs` 设置间隔。
+
+L2/L3 待选项保留到一次参考正文被接受，服务端检查版本、共享、数量及完整正文预算。取消仅清除待选引用。开启 `injection` 后，插件合并手选和可选 BM25 结果，经 `user/message` 记录完整正文与引用，并在提交后消费选择。独立 bundle 与面板 patch 开启注入；[web.patch.yml](profiles/web.patch.yml) 仍仅采集。
+
+勾选每条可用 L2/L3 卡片行首的选择框，然后点击“将所选加入下一轮”；也可直接加入单条卡片。L0/L1 保持只读。待用区及输入框展示已保存正文、数量和渲染字节预算，侧栏关闭时仍可见。手选记忆在接纳后消费一次；自动召回持续生效直到关闭。开关保留待用引用及原消费收据，即使版本已经失效。新选择仍需通过有效性及预算校验。发送后，输入框和面板展示准确的已提交上下文及引用；接纳不保证回答引用每条记忆。
 
 侧栏读取本插件的 L0–L3 数据库。[可选 Memorix overlay](profiles/memorix.cordis.yml) 提供 `mcp__memorix__...` 工具；在面板启动命令后添加 `--patch ./profiles/memorix.cordis.yml` 即可同时加载。Memorix 需要单独安装。其数据存于 `data/memorix`，Windows 子进程用户目录为 `home/memorix`，项目标记和更新缓存也保留在开发目录内。这些路径不会导入用户已有的 Memorix 数据。
 
@@ -155,9 +165,9 @@ try {
 
 ### 文本检索
 
-设置 `textSearch: {}` 即可使用 SQLite FTS5/BM25，无需 embedding 模型、密钥或网络请求。结果标明 `method: 'bm25'`；条目带正值 BM25 `score` 和 `similarity: null`。向量结果标明 `method: 'vector'`。必须明确选择一种模式；任一模式的失败不会触发另一种模式。先移除私有记忆，再构建评分语料；返回及接纳前复查当前版本与批准。每次查询从 SQLite 记录构建并关闭有上限的内存语料，文本评分语料不增加持久表。
+设置 `textSearch: {}` 即可使用 SQLite FTS5/BM25，无需 embedding 模型、密钥或网络请求。结果标明 `method: 'bm25'`；排名条目带正值 BM25 `score`，短子串命中省略该字段，`similarity` 为 null。向量结果标明 `method: 'vector'`。须明确选择一种模式；任一模式的失败不会触发另一种模式。构建评分语料前排除私有记忆，返回及接纳前复查当前版本与批准。每次查询从 SQLite 记录构建并关闭有上限的内存语料，不增加持久文本表。请求项目的语料变化要求重新查询；无关的私有提交不影响排名。
 
-文本默认值为 `tokenizer: unicode61`、`limit: 5`、`maxBytes: 8192`、`maxCandidates: 10000`、`pageSize: 128`、`timeoutMs: 5000`、`maxQueryBytes: 8192` 和 `maxTerms: 64`。超过查询或候选上限直接拒绝，不截断。查询将字母及数字连续串作为字面 OR 词项，用户文本不能注入 FTS 操作符。`unicode61` 匹配完整词；可选 `trigram` 匹配至少三个 Unicode 字符的子串，包括中文。两种分词器均不识别同义词，也不保证相关性。在分页间及同步 SQLite 排序后检查时限，不能中断单条原生语句。`getIndexStatus` 报告当前候选容量；`rebuildIndex` 没有需要重建的持久文本索引。
+直挂文本检索默认值为 `tokenizer: unicode61`、`limit: 5`、`maxBytes: 8192`、`maxCandidates: 10000`、`pageSize: 128`、`timeoutMs: 5000`、`maxQueryBytes: 8192` 和 `maxTerms: 64`。独立 bundle 与 automatic/panel overlay 选择 `trigram`。查询使用字面 OR 词项；含中文的连续串展开为连续三字词项。一字及两字词项在同一授权语料中使用字面子串匹配，这些命中没有 BM25 分数。超过预算直接拒绝，不截断。独立插件还开启 `expandQuery`：文本无命中且至少有一条可用记录时，通过配置的 L1 模型进行一次带日志的查询改写，再检索一次。直挂默认关闭，开启时要求 L1 模型及注入的 `llm` 服务。`expansionTimeoutMs` 默认 15000；每次语料扫描保留 `timeoutMs`。扩展格式错误或调用失败时明确报错。模型仅提供搜索词；返回的记忆仍是已存储、已授权的具体版本。不保证相关性或语义完整性。无法中断单条原生 SQLite 语句。`getIndexStatus` 报告候选容量；没有需重建的持久文本索引。
 
 <a id="semantic-retrieval"></a>
 ### 语义检索
@@ -207,6 +217,8 @@ node scripts/link-profile.mjs
 node ../apps/cli/lib/bin.js --profile headless --patch ./profiles/headless-built.patch.yml 'Reply with OK without using tools.'
 ```
 
+运行 `node --import tsx/esm scripts/check-docs.mjs` 检查目录内链接、双语结构和配对记录。审阅两种语言后，在同一命令后添加 `--write-pairing`，更新三组本地一致性记录。
+
 设置 `DSH_MEMORY_VERIFY_COPY=1` 可启用可选的 `profile-copy` 测试，通过真实 JSONL 解码器比较 SQLite 和原日志。`DSH_MEMORY_VERIFY_DB` 指定 memory 相对路径的数据库，默认为 `data/l0.sqlite`。应紧接相应 profile 运行后执行比较；之后若活动被采集到其他数据库，原日志可能继续增长。
 
 对于独立 profile，`DSH_MEMORY_VERIFY_SOURCE_ROOT` 指定 memory 相对路径的 Session 目录，替代 `home/sessions`。`DSH_MEMORY_VERIFY_COPY_SESSION` 将比较限定到一个已采集 Session，避免把学习数据库中仅存于 SQLite 的辅助请求 Session 当成 profile 的原日志。`learning-live` 检查单独验证这些辅助请求和结果记录。
@@ -217,6 +229,13 @@ node ../apps/cli/lib/bin.js --profile headless --patch ./profiles/headless-built
 ## 进一步阅读
 
 - [验证范围](evaluation/workspace-storage-2026-10-02.md)
+- [记忆卡片验收](evaluation/memory-cards-2026-10-03.md)
+- [批量学习与侧栏验收](evaluation/batch-sidebar-2026-10-04.md)
+- [知识增长与原始证据验收](evaluation/knowledge-growth-2026-10-04.md)
+- [面板轮询与召回验收](evaluation/panel-recall-2026-10-04.md)
+- [0.1.8 交付验收](evaluation/delivery-0.1.8-2026-10-04.md)
+- [浏览器交互及真实 Provider 验收](evaluation/browser-live-2026-10-04.md)
+- [独立插件 trigram 升级说明](distribution/trigram-upgrade.zh.md)
 - [手工质量实验输入](evaluation/task4-cases.json)，尚未执行
 - [Session 持久化服务](../packages/session/session-persistence/README.zh.md)
 - [DSH profile 组合](../packages/boot/app-boot/README.zh.md)
@@ -236,5 +255,5 @@ node ../apps/cli/lib/bin.js --profile headless --patch ./profiles/headless-built
 - L0 副本保留已记录的事件数据和文件引用，不复制附件及 spill 文件；引用文件丢失后无法从副本重建。
 - 直接挂载默认关闭 `autoLearning` 和 `injection`，独立 bundle 开启两者。每个对话默认关闭自动注入。真实模型使用 DSH 已配置的凭据。
 - 无密钥夹具和单条真实模型学习样例不证明一般记忆质量。固定手工质量实验尚未执行；向量阈值需要按所选 embedding 模型校准。
-- 来源 Provider 替换需要另行执行 profile 生命周期测试；目录内测试不能替代必需的录制会话快照。
-- 正式持久化登记、录制会话快照和两套 SDK 投影尚未验证。局部检查不替代仓库级 doc-sync 或平台矩阵。
+- 来源 Provider 替换需要另行执行 profile 生命周期测试。目录内录制 Session 预期输出覆盖本插件的模型可见输出，不证明未测试的 DSH 或 SDK 版本兼容性。
+- 目录内验收不证明跨平台矩阵或仓库级 doc-sync 结果。DSH 源码集成另有登记及 CI 要求。

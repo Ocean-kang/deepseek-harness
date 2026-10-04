@@ -19,7 +19,7 @@ declare module '@deepseek-ai/dsh-session/types' {
     'memory/extraction-request': {
       operationId: OperationId
       projectId: ProjectId
-      level: 'L1' | 'L2' | 'L3'
+      level: 'L1' | 'L2' | 'L3' | 'recall'
       request: L1Request
     }
     /** Settled auxiliary stream; absence after a crash means its outcome is unknown. */
@@ -63,7 +63,16 @@ export class MemoryRequestJournal implements Pick<LlmRuntime, 'stream'> {
   recordKnowledge = (task: KnowledgeTask, request: L1Request, signal: AbortSignal): Promise<void> =>
     this.record(task.input.projectId, task.operationId, task.input.level, request, signal)
 
-  private async record(project: ProjectId, operation: OperationId, level: 'L1' | 'L2' | 'L3', request: L1Request, signal: AbortSignal): Promise<void> {
+  /** Persist one query-expansion request before dispatch.
+   * @param project - authorized query owner.
+   * @param request - exact search-only request.
+   * @param signal - caller cancellation.
+   * @returns settlement of the auxiliary L0 write.
+   */
+  recordQuery = (project: ProjectId, request: L1Request, signal: AbortSignal): Promise<void> =>
+    this.record(project, randomUUID() as OperationId, 'recall', request, signal)
+
+  private async record(project: ProjectId, operation: OperationId, level: 'L1' | 'L2' | 'L3' | 'recall', request: L1Request, signal: AbortSignal): Promise<void> {
     signal.throwIfAborted()
     const header: SessionHeader = { id: SessionId(`memory-request-${operation}-${randomUUID()}`),
       version: SESSION_FORMAT_VERSION, createdAt: Date.now(), isSeeded: false }
