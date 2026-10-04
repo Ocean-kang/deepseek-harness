@@ -106,17 +106,15 @@ export class L1Extractor {
       }
       if (group.length > 0) groups.push(group)
       if (calls + groups.length > task.config.maxCalls) throw new MemoryError('budget', 'L1 task exceeded its model-call budget')
-      const results: L1Candidate[] = []
       const next: Piece[] = []
       for (const items of groups) {
         signal.throwIfAborted()
         calls++
         const refs = [...new Map(items.flatMap(item => item.refs).map(ref => [JSON.stringify(ref), ref])).values()]
         const result = await this.call(task, frame(items, merge), refs, signal, reserveCall)
-        results.push(result)
+        if (groups.length === 1) return result
         if (result.kind === 'memory') next.push({ refs: result.summary.sources, text: JSON.stringify(result.summary) })
       }
-      if (groups.length === 1) return results[0]!
       if (next.length === 0) return { kind: 'empty' }
       const previousBytes = Buffer.byteLength(frame(pieces, merge))
       if (merge && Buffer.byteLength(frame(next, true)) >= previousBytes) throw new MemoryError('budget', 'L1 summary merge did not reduce input')

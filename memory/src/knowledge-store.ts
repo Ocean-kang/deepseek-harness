@@ -316,8 +316,7 @@ export class KnowledgeStore {
     })
   }
 
-  private held(project: ProjectId, operation: OperationId, owner: string): KnowledgeTask {
-    const task = this.getTask(project, operation)
+  private held(task: KnowledgeTask | null, owner: string): KnowledgeTask {
     if (task === null || task.owner !== owner || (task.status !== 'running' && task.status !== 'prepared')) throw new MemoryError('conflict', 'Knowledge worker no longer owns the task')
     return task
   }
@@ -329,7 +328,7 @@ export class KnowledgeStore {
    */
   reserveCall(project: ProjectId, operation: OperationId, owner: string): void {
     this.transaction(() => {
-      const task = this.held(project, operation, owner)
+      const task = this.held(this.getTask(project, operation), owner)
       if (task.calls >= task.config.maxCalls) throw new MemoryError('budget', 'Knowledge call budget exhausted')
       this.save({ ...task, calls: task.calls + 1 })
     })
@@ -343,7 +342,7 @@ export class KnowledgeStore {
    */
   prepare(project: ProjectId, operation: OperationId, owner: string, value: unknown): void {
     this.transaction(() => {
-      const task = this.held(project, operation, owner)
+      const task = this.held(this.getTask(project, operation), owner)
       this.save({ ...task, candidates: parseKnowledgeCandidates(value, task.input, task.config), status: 'prepared' })
     })
   }
@@ -359,7 +358,7 @@ export class KnowledgeStore {
     return this.transaction(() => {
       const old = this.getTask(project, operation)
       if (old?.status === 'done') return old.result!
-      const task = this.held(project, operation, owner)
+      const task = this.held(old, owner)
       if (task.candidates === null) throw new MemoryError('conflict', 'Knowledge task is not prepared')
       const fresh = this.input(project, task.input.level, task.input.sources)
       if (!isDeepStrictEqual(fresh.existing.map(({ id, revision }) => ({ id, revision })), task.input.existing.map(({ id, revision }) => ({ id, revision })))) throw new MemoryError('conflict', 'Knowledge revisions changed')
@@ -400,7 +399,7 @@ export class KnowledgeStore {
    */
   fail(project: ProjectId, operation: OperationId, owner: string, failure: string | null, retryable: boolean, now: number): void {
     this.transaction(() => {
-      const task = this.held(project, operation, owner)
+      const task = this.held(this.getTask(project, operation), owner)
       let input = task.input
       let candidates = task.candidates
       if (failure === 'conflict') { input = this.input(project, task.input.level, task.input.sources); candidates = null }

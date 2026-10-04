@@ -11,11 +11,10 @@ export default defineConfig([{
   platform: 'node',
   tsconfig: 'tsconfig.build.json',
   dts: false,
-  clean: false,
   deps: { neverBundle: [/^@deepseek-ai\//] },
 }, {
   entry: { client: 'src/client/index.tsx' }, outDir: 'lib', format: 'cjs', platform: 'browser', tsconfig: 'tsconfig.build.json',
-  dts: false, clean: false,
+  dts: false,
   deps: { neverBundle: ['react', 'react/jsx-runtime', '@deepseek-ai/cordis', '@deepseek-ai/dsh-client-ui-primitives'], alwaysBundle: ['zod'] },
   define: { 'process.env.NODE_ENV': JSON.stringify('production') },
   plugins: [{

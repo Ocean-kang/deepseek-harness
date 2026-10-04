@@ -196,7 +196,7 @@ try {
 
 内存队列不持久化。SQLite 保存提交位置，原 Session 日志负责重启后的缺失事件。`session/flush` 等待捕获的目标范围，并在必要时补采。监听器调用持久化服务自己的刷新接口，不递归派发 Session 检查点。卸载移除监听、等待已接收工作、尝试最终补采，并在恢复失败时仍关闭 SQLite。诊断不包含事件正文，只报告失败类别和 Session 标识。
 
-独立 Host 和 Client 编译配置对插件和测试启用严格检查，同时引用已有项目自己的编译配置及声明。配置行为由测试覆盖。测试入口直接导入配置，并关闭 Vite 的配置文件加载器，避免在祖先目录生成配置 bundle；缓存及覆盖率路径位于本目录内。完成环境配置后使用以下命令；构建输出为 `lib/index.mjs`、`lib/portable.mjs` 和 `lib/client.js`，不会构建 peer 依赖。
+独立 Host 和 Client 编译配置对插件和测试启用严格检查，同时引用已有项目自己的编译配置及声明。测试入口直接导入配置，并关闭 Vite 的配置文件加载器，避免在祖先目录生成配置 bundle；缓存及覆盖率路径位于本目录内。完成环境配置后使用以下命令；构建用当前 `lib/index.mjs`、`lib/portable.mjs`、`lib/client.js` 及其导入的模块替换 `lib/`，不会构建 peer 依赖。[打包脚本](scripts/pack.mjs) 在成功或失败后均删除本次临时 staging 目录。
 
 ```powershell
 node ../node_modules/typescript/bin/tsc -p tsconfig.host.json --noEmit

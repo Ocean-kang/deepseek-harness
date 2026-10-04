@@ -63,6 +63,26 @@ it('finds pending and retry work after the current project lease settles', async
   expect(store.nextDue(item.project)).toEqual({ operationId: first, at: 1010 })
 })
 
+it('pages complete durable task inputs and rejects corrupt task bodies', async () => {
+  const item = await setup()
+  const store = item.provider.knowledge
+  const l2 = commitKnowledge(item, 'L2', [item.source], [knowledgeCandidate(item.source)])[0]!
+  const l3Operation = store.enqueue(item.project, 'L3', [l2], item.config)
+  const tasks = store.listTasks(item.project)
+  expect(tasks).toHaveLength(2)
+  expect(tasks.find(task => task.operationId === l3Operation)?.input).toMatchObject({ sources: [l2], lineage: [item.source] })
+  expect(store.listTasks(item.project, '', 1)).toEqual([tasks[0]])
+  expect(store.listTasks(item.project, tasks[0]!.operationId, 1)).toEqual([tasks[1]])
+  expect(store.listTasks(item.project, tasks[1]!.operationId, 1)).toEqual([])
+  expect(store.listTasks(other)).toEqual([])
+  expect(() => store.listTasks(item.project, '', 0)).toThrow(/positive/)
+  const db = new DatabaseSync(item.spec.databasePath)
+  try {
+    db.prepare("UPDATE knowledge_tasks SET body = json_set(body, '$.status', 'invalid') WHERE id = ?").run(l3Operation)
+    expect(() => store.listTasks(item.project)).toThrow(/Invalid task status/)
+  } finally { db.close() }
+})
+
 it('migrates populated schema 2 while retaining exact L0 and L1 records', async () => {
   const item = await setup()
   const raw = await item.provider.readRaw({ projectId: item.project, sessionId: header().id, from: SessionLogOffset(0), to: SessionLogOffset(3), limit: 10 })
@@ -199,7 +219,7 @@ it('shares only an exact current L3 projection and revokes visibility without ex
   store.approveShare(approve, () => true, 10)
   store.approveShare(approve, () => true, 11)
   expect(store.getMemory(other, l3)).toEqual({ ...l3, projectId: item.project, level: 'L3', shared: true, title: 'Type checking', body: 'Use strict TypeScript' })
-  expect(store.listCandidates(other, 'L3')).toHaveLength(1)
+  expect(store.listCandidates(other, 'L3')).toEqual([store.getMemory(other, l3)])
   expect(store.getMemory(other, l2)).toBeNull()
   expect(store.getMemory(other, item.source)).toBeNull()
   expect(() => store.approveShare({ ...approve, operationId: 'reuse' as OperationId }, () => true, 12)).toThrow(/consumed/)
