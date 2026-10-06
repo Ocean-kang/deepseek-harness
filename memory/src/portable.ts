@@ -22,7 +22,7 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
     databasePath: 'memory.sqlite', projectId: 'unassigned', projectByPath: true,
     storageMode: 'workspace',
     autoLearning: true, injection: true,
-    ...(config.embedding === undefined ? { textSearch: { tokenizer: 'trigram' as const, expandQuery: true } } : {}),
+    textSearch: { tokenizer: 'trigram' as const, expandQuery: true },
     l1: { provider: route.provider, model: route.model, maxOutputTokens: 4096 },
     knowledge: { provider: route.provider, model: route.model, maxOutputTokens: 4096 },
     ...config, panel: false,

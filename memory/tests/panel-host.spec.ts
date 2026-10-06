@@ -50,7 +50,7 @@ it('projects readable raw and summary cards while keeping scores, rationale and 
     expect(raw.body).not.toContain('"source"')
     expect(JSON.parse(raw.raw!)).toMatchObject({ type: 'user/message' })
     const summary = panelRowOf(item.source)
-    expect(summary.sections).toMatchObject([{ label: 'topic', text: 'Fix the parser' }, { label: 'actions' }, { label: 'result' }])
+    expect(summary.sections).toMatchObject([{ label: 'topic', text: 'Fix the parser' }, { label: 'result' }])
     expect(summary.outcome).toBe('unknown')
     const ref = commitKnowledge(item, 'L2', [item.source], [knowledgeCandidate(item.source)])[0]!
     const knowledge = panelRowOf(item.provider.knowledge.getMemory(item.project, ref)!)

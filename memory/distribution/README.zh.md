@@ -20,23 +20,23 @@ kind: "package-bundle"
 <a id="install-and-use"></a>
 ## 安装与使用
 
-Memory 0.1.9 面向 DSH 0.2.1-alpha.1 的 Web profile，DSH peer 声明会拒绝其他运行版本。下载构建包并通过 DSH 安装，无需编译源码或修改 DSH 代码。
+Memory 0.1.10 面向 DSH 0.2.1-alpha.1 的 Web profile，DSH peer 声明会拒绝其他运行版本。下载构建包并通过 DSH 安装，无需编译源码或修改 DSH 代码。
 
 ```sh
-dsh plugin --profile web add ./deepseek-ai-dsh-memory-l0-0.1.9.tgz
+dsh plugin --profile web add ./deepseek-ai-dsh-memory-l0-0.1.10.tgz
 dsh --profile web
 ```
 
-从 DSH 0.2.0-rc.2 上的 memory 0.1.8 升级时，停止 DSH，备份[记忆目录](#data-and-configuration)，将 DSH 更新到 0.2.1-alpha.1，再在相同 DSH home 中执行上述安装命令并重启。Memory 的 SQLite schema 和插件拥有的 Session 字段保持不变，无需 `allow-version` 豁免。使用源码 overlay 时，重新构建 `memory/lib`，以相同 patch 参数重启。Memory 0.1.8 仍用于 DSH 0.2.0-rc.2；不要在该运行时使用 memory 0.1.9。
+从 DSH 0.2.0-rc.2 上的 memory 0.1.8 升级时，停止 DSH，备份[记忆目录](#data-and-configuration)，将 DSH 更新到 0.2.1-alpha.1，再在相同 DSH home 中执行上述安装命令并重启。Memory 的 SQLite schema 和插件拥有的 Session 字段保持不变，无需 `allow-version` 豁免。使用源码 overlay 时，重新构建 `memory/lib`，以相同 patch 参数重启。Memory 0.1.8 仍用于 DSH 0.2.0-rc.2；不要在该运行时使用 memory 0.1.10。
 
-打开对话后，在右侧栏选择记忆。新 L1–L3 卡片展示单独生成的一句话描述，详情保留完整内容、来源、评分、证据及折叠 JSON。勾选每条可用 L2/L3 卡片行首的选择框，再将所选记录加入下一轮。待用区及输入框展示保存的正文、数量和预算；召回提交后消费选择。自动召回默认关闭，开关独立持久化。两条路径均检查版本、祖先、权限及默认 5 条、8192 个渲染字节的预算。共享轮询保留搜索及阅读位置。发送后查看已提交的上下文记录。过期来源暂停召回，并由可用来源触发核查；历史仍可读。
+在对话侧栏打开记忆。L1 展示任务目标、问题、结果和解决方案，trace 与来源默认折叠；L2 按场景组织可读知识卡；L3 区分工程知识和交互偏好。摘要随提炼生成。选择有效 L2/L3 供一轮使用；待用区和输入框展示正文及预算。自动召回默认关闭，开启后只搜索 L3。学习和召回保持独立。来源被替代或失效时暂停派生召回，精确历史仍可读。参见[分层记忆升级](layered-upgrade.zh.md)。
 
 重启后重新打开已采集的对话，可以浏览记忆、查看已接纳正文并保存下一轮选择。即使 Session 尚未加载，面板也增量读取 SQLite 中已捕获的 L0 前缀。这些操作不会启动 Agent、追加恢复标记或重复读取原 Session 日志。
 
 <a id="data-and-configuration"></a>
 ## 数据与配置
 
-随包配置直接开启采集、后台学习和下一轮注入，加载时读取 DSH 默认模型路径。新 L1–L3 记忆先提炼，再为每条最终记忆调用一次展示描述模型步骤，两者共用任务预算。新 L2/L3 提炼包含祖先引用的 L0 原文证据；`supported` 仍是模型判断及引用校验。旧版本仍可读。有预算的输入选择及来源分组避免仅因知识累积而失败；单条来源或原始事件无法容纳时仍明确报错。
+独立包通过已有 DSH 模型路由和凭据启用采集、后台学习及下一轮注入。新 `l1-v3` / `knowledge-v4` 任务在每个预算内提炼响应中生成可读字段与描述；大来源可能需要分组和合并。`supported` 仍是语义层面的模型判断；程序核验执行和可信确认具有独立证据状态。候选、任务检查点、来源引用和重启恢复继续持久化。SQLite schema 5 及已有代次完整保留；[升级指南](layered-upgrade.zh.md)说明新增可选 JSON 字段和提示词版本。
 
 默认 `storageMode: workspace` 将项目 L0–L3 记录、历史版本、学习任务及待选记忆全部保存在 `<工作区>/memory_<工作区UUID>/memory.sqlite`。UUID 使用 DSH 已注册的 Workspace ID。同一工作区的对话共用该数据库。没有匹配 Workspace 的对话使用 `$DSH_HOME/memory/workspace-memory.sqlite`；未设置 `DSH_HOME` 时使用 `~/.dsh/memory/workspace-memory.sqlite`。备份前停止所有使用数据库的 DSH 进程，再复制完整目录，包括 SQLite 辅助文件。
 
@@ -47,7 +47,7 @@ dsh --profile web
 工作区模式禁用 `/memory-share` 和跨项目召回。工作区目录失效或不可写、记忆路径被重定向、数据库打开失败时明确报错，保留原始 Session 日志供重试，不将项目数据转存全局目录。路径检查拒绝已有链接，但不能阻止其他进程并发替换目录。
 
 
-Web 服务可用时启用面板；`panel: false` 关闭 RPC。bundle 使用 BM25 与 `trigram`：中文展开为三字 OR 词项，一字或两字词项使用字面子串匹配。独立入口默认开启 `textSearch.expandQuery`：文本无命中且有可用记录时，通过已有 L1 模型进行一次带日志的查询改写，再检索一次。模型只提供搜索词，不提供记忆事实；错误明确显示。设置 `expandQuery: false` 可只用文本召回，`expansionTimeoutMs` 调整默认 15000 ms 时限。显式 `textSearch` 对象保留直挂默认值，包括关闭扩展。参见[升级说明](./trigram-upgrade.md)。面板搜索仍按单层进行字面浏览。`embedding` 选择向量检索，要求 `endpoint`、`model`、`dimensions` 和 `apiKeyEnv`；同时选择两种检索模式会被拒绝。
+Web 服务默认启用面板，`panel: false` 可关闭。BM25 默认 trigram，短中文词使用子串匹配。独立入口的查询扩展仍可选：未命中时，通过一次已记录的 L1 模型调用建议词项，再执行一次搜索。显式 `textSearch` 对象默认关闭扩展。面板在所选层级浏览，支持场景及知识/偏好筛选。可选 `embedding` 启用 BM25＋向量＋RRF，要求 `endpoint`、`model`、`dimensions`、`apiKeyEnv`；`hybrid` 控制排名和结果预算。单独 BM25 不需要 embedding 凭据。
 
 <a id="known-limitations"></a>
 ## 已知限制

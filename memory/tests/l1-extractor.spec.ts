@@ -96,6 +96,24 @@ it('rejects forged references and success attributed to a failed turn', async ()
   expect(() => parseCandidate({ kind: 'memory', summary: { ...value.summary, solution: 'Works' } }, refs, task.reason)).toThrow(/non-completed/)
 })
 
+it('validates execution references and trace when reading an episode', async () => {
+  const { task } = await setup()
+  const value = candidate(task)
+  if (value.kind !== 'memory') throw new Error('fixture')
+  const ref = { sessionId: task.sessionId, seq: SessionSeq(1) }
+  const trace = { actions: ['Checked parser'], commands: [], files: [], errors: [] }
+  const episode = { kind: 'memory', summary: { ...value.summary, trace, executionEvidence: [ref] } }
+  for (const allowed of [[ref], (source: typeof ref) => source.sessionId === ref.sessionId && source.seq === ref.seq]) {
+    expect(parseCandidate(episode, allowed, task.reason)).toMatchObject({ summary: { trace, executionEvidence: [ref] } })
+    for (const executionEvidence of [[], [ref, ref], [{ ...ref, seq: SessionSeq(0) }], [{ ...ref, extra: true }]]) {
+      expect(() => parseCandidate({ ...episode, summary: { ...episode.summary, executionEvidence } }, allowed, task.reason)).toThrow()
+    }
+    for (const invalidTrace of [{ ...trace, commands: 'command' }, { ...trace, errors: [null] }, { ...trace, extra: [] }]) {
+      expect(() => parseCandidate({ ...episode, summary: { ...episode.summary, trace: invalidTrace } }, allowed, task.reason)).toThrow()
+    }
+  }
+})
+
 it('does not call the model for an empty turn or incomplete source', async () => {
   const { task, extractor, records } = await setup()
   const events = turnEvents()

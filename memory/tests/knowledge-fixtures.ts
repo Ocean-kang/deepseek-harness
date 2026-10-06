@@ -1,6 +1,6 @@
 /** Real SQLite knowledge lifecycle fixtures; no external model or production grant adapter. */
 import { resolveKnowledgeConfig, resolveL1Config } from '../src/l1-config.ts'
-import type { KnowledgeCandidate, KnowledgeConfig, KnowledgeLevel } from '../src/knowledge-types.ts'
+import type { KnowledgeCandidate, KnowledgeConfig, KnowledgeLevel, KnowledgeSpec } from '../src/knowledge-types.ts'
 import type { MemoryRef } from '../src/l1-types.ts'
 import { batch, fixture, header } from './helpers.ts'
 import { candidate, turnEvents } from './l1-fixtures.ts'
@@ -19,7 +19,7 @@ export async function knowledgeFixture(overrides: Partial<KnowledgeConfig> = {})
     const task = provider.l1.claim(project, header().id, 'fixture', 1)!
     provider.l1.prepare(project, task.operationId, 'fixture', candidate(task))
     const source = provider.l1.commitMemory(project, task.operationId, 'fixture', 2)!
-    const config = resolveKnowledgeConfig({ provider: 'test', model: 'test', ...overrides })
+    const config: KnowledgeSpec = { ...resolveKnowledgeConfig({ provider: 'test', model: 'test', ...overrides }), promptVersion: 'knowledge-v3' as const }
     return { ...item, provider, project, source, config }
   } catch (error) { await item.close(); throw error }
 }

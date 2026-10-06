@@ -13,7 +13,7 @@ import {
 } from '../../scripts/translation-pairing-record.ts'
 
 const root = fileURLToPath(new URL('../../', import.meta.url))
-const pairSources = ['memory/README.md', 'memory/distribution/README.md', 'memory/distribution/trigram-upgrade.md']
+const pairSources = ['memory/README.md', 'memory/distribution/README.md', 'memory/distribution/trigram-upgrade.md', 'memory/distribution/layered-upgrade.md']
 const pairs = pairSources.map(translationPairPaths)
 const files = [...pairs.flatMap(({ source, zh }) => [source, zh]), 'memory/AGENTS.md',
   ...readdirSync(resolve(root, 'memory/evaluation')).filter(name => name.endsWith('.md')).sort().map(name => `memory/evaluation/${name}`)]

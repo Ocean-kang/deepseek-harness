@@ -29,7 +29,7 @@ export interface L1Config {
 export interface L1Spec {
   readonly provider: string
   readonly model: string
-  readonly promptVersion: 'l1-v1' | 'l1-v2'
+  readonly promptVersion: 'l1-v1' | 'l1-v2' | 'l1-v3'
   readonly maxInputBytes: number
   readonly maxOutputTokens: number
   readonly timeoutMs: number
@@ -39,9 +39,17 @@ export interface L1Spec {
   readonly retryMaxMs: number
 }
 
-/** Model content only; task identity and end reason are supplied by the manager. */
+/** Episode content and program-owned trace; the manager supplies task identity and end reason. */
 export interface L1Summary {
-  /** Separately generated display sentence; absent from historical summaries. */
+  /** Readable episode fields; historical summaries omit them. */
+  readonly title?: string
+  readonly problem?: string
+  readonly summary?: string
+  /** Program-owned execution records, separate from readable episode text. */
+  readonly trace?: { readonly actions: readonly string[]; readonly commands: readonly string[]; readonly files: readonly string[]; readonly errors: readonly string[] }
+  /** Exact successful tool results checked by the program, never assigned by the model. */
+  readonly executionEvidence?: readonly EventRef[]
+  /** Display sentence returned with extraction; historical tasks may generate it separately. */
   readonly description?: string
   readonly goal: string
   readonly actions: readonly string[]

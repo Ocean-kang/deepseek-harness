@@ -9,6 +9,7 @@ import { panelRequest } from './panel-protocol.ts'
 import type { PanelRequest, PanelResponse, PanelRow } from './panel-protocol.ts'
 import { MemoryError } from './types.ts'
 import type { ProjectId } from './types.ts'
+import { evidenceStatus } from './evidence.ts'
 import { renderRecall } from './retrieval.ts'
 import type {} from './index.ts'
 
@@ -117,19 +118,26 @@ export function panelRowOf(item: BrowserItem): PanelRow {
   if ('shared' in item) return { ...extra, level: 'L3', title: item.title, body: item.body, projectId: item.projectId,
     shared: true, ref, state: 'active', selectable: true, sources: [], sections: [{ label: 'principle', text: item.body }] }
   const generation = { provider: item.config.provider, model: item.config.model, createdAt: item.createdAt }
-  if (item.level === 'L1') return { ...extra, generation, level: 'L1', title: item.summary.goal, description: item.summary.description ?? null,
-    body: [item.summary.goal, ...item.summary.actions, item.summary.result, item.summary.solution].filter(Boolean).join('\n'),
+  if (item.level === 'L1') return { ...extra, generation, level: 'L1', title: item.summary.title ?? item.summary.goal, description: item.summary.description ?? null,
+    ...item.summary.trace === undefined ? { trace: item.summary.actions.join('\n') } : { trace: JSON.stringify(item.summary.trace, null, 2) },
+    body: [item.summary.goal, item.summary.problem, item.summary.summary, item.summary.result, item.summary.solution].filter(Boolean).join('\n'),
     raw: JSON.stringify(item, null, 2), outcome: item.summary.outcome,
-    sections: [{ label: 'topic', text: item.summary.goal }, { label: 'actions', text: item.summary.actions.join('\n') },
+    sections: [{ label: 'topic', text: item.summary.goal }, ...item.summary.problem === undefined ? [] : [{ label: 'problem' as const, text: item.summary.problem }],
+      ...item.summary.summary === undefined ? [] : [{ label: 'summary' as const, text: item.summary.summary }],
       { label: 'result', text: item.summary.result }, ...item.summary.solution === null ? [] : [{ label: 'solution' as const, text: item.summary.solution }]],
     projectId: item.projectId, shared: false, ref, state: item.state, selectable: false,
     sources: item.summary.sources.map(source => ({ kind: 'event', ...source })) }
   return { ...extra, generation, raw: JSON.stringify(item, null, 2),
+    ...item.knowledge.scenario === undefined ? {} : { scenario: item.knowledge.scenario },
+    kind: item.knowledge.kind ?? 'knowledge',
     trust: { score: item.knowledge.score, scoreMin: item.config.scoreMin, scoreMax: item.config.scoreMax,
-      evidence: item.knowledge.evidence, rationale: item.knowledge.rationale, category: item.knowledge.category },
-    sections: [{ label: item.level === 'L2' ? 'experience' : 'principle', text: item.knowledge.body }],
+      evidence: item.knowledge.evidence, evidenceStatus: evidenceStatus(item.knowledge, item.state === 'active'), rationale: item.knowledge.rationale, category: item.knowledge.category },
+    sections: item.knowledge.conclusion === undefined ? [{ label: item.level === 'L2' ? 'experience' : 'principle', text: item.knowledge.body }]
+      : [{ label: 'conclusion', text: item.knowledge.evidence === 'conflict' ? item.knowledge.body : item.knowledge.conclusion }, { label: 'reason', text: item.knowledge.reason! },
+        { label: 'whenToUse', text: item.knowledge.whenToUse!.join('\n') }, { label: 'recommendedAction', text: item.knowledge.recommendedAction! },
+        { label: 'limitations', text: item.knowledge.limitations!.join('\n') }],
     level: item.level, title: item.knowledge.title, description: item.knowledge.description ?? null, body: item.knowledge.body, projectId: item.projectId,
-    shared: false, ref, state: item.state, selectable: item.state === 'active' && item.knowledge.evidence === 'supported', sources: [...item.knowledge.sources] }
+    shared: false, ref, state: item.state, selectable: item.state === 'active' && item.knowledge.evidence === 'supported', sources: [...item.knowledge.sources, ...(item.knowledge.conflicts ?? []).map(conflict => ({ kind: 'memory' as const, ref: conflict.ref }))] }
 }
 
 /** Dispatch for a captured live or persisted Session without starting an Agent.
@@ -158,11 +166,12 @@ export async function dispatchPanel(ctx: Context, request: PanelRequest, signal:
     const row = panelRowOf(item)
     if (item.level === 'L0') return { ...row, projectId: project }
     const current = browser.sourcesCurrent(project, item)
+    if (row.trust !== null && !current) row.trust.evidenceStatus = 'stale'
     return { ...row, sourceStatus: current ? 'current' : 'needs-review', selectable: row.selectable && current }
   }
   switch (request.action) {
     case 'browse': {
-      const page = browser.browse(project, request.level, request.query, request.after)
+      const page = browser.browse(project, request.level, request.query, request.after, { ...request.kind === undefined ? {} : { kind: request.kind }, ...request.scenario === undefined ? {} : { scenario: request.scenario } })
       return { action: 'browse', rows: page.items.map(rowOf), next: page.next }
     }
     case 'detail': {

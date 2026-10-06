@@ -41,7 +41,7 @@ async function* response(text: string): AsyncIterable<StreamChunk> {
 const settings = { l1: { ...resolveL1Config({ provider: 'test', model: 'test' }), promptVersion: 'l1-v1' as const },
   knowledge: { ...resolveKnowledgeConfig({ provider: 'test', model: 'test' }), promptVersion: 'knowledge-v2' as const }, pageSize: 2, learningConcurrency: 2, learningQueueCapacity: 128 }
 
-it('persists two model steps per layer and supplies original L0 evidence to L2 and L3 after restart', async () => {
+it('persists one model step per layer and supplies original L0 evidence to L2 and L3 after restart', async () => {
   const item = await fixture()
   const provider = await item.open()
   const ctx = new Context()
@@ -60,13 +60,18 @@ it('persists two model steps per layer and supplies original L0 evidence to L2 a
         yield* response(JSON.stringify({ description }))
       } else if (options.system?.startsWith('Summarize')) {
         observed.push({ stage: 'extract', level: 'L1', rawEvidence: true })
-        yield* response(JSON.stringify(candidate({ sessionId: header().id })))
+        const value = candidate({ sessionId: header().id })
+        if (value.kind !== 'memory') throw new Error('Expected episode')
+        yield* response(JSON.stringify({ ...value, summary: { ...value.summary, title: 'Project policy', problem: 'No implementation requested', summary: description, description } }))
       } else {
         const input = parseInput.parse(JSON.parse(block.text)).input
         const rawEvidence = block.text.includes('原文约束：必须启用 strict TypeScript')
         expect(rawEvidence).toBe(true)
         observed.push({ stage: 'extract', level: input.level, rawEvidence })
-        yield* response(JSON.stringify([knowledgeCandidate(input.sources[0]!, 'Use strict TypeScript')]))
+        const value = knowledgeCandidate(input.sources[0]!, 'Use strict TypeScript')
+        yield* response(JSON.stringify([{ ...value, action: 'store', knowledge: { ...value.knowledge, scenario: 'Project language policy',
+          conclusion: value.knowledge.body, reason: value.knowledge.rationale, whenToUse: ['Writing code'], recommendedAction: 'Enable strict TypeScript',
+          limitations: ['Project code only'], kind: 'knowledge', conflicts: [], description } }]))
       }
     }))
     pipeline = new MemoryPipeline(provider, { ...settings, l1: resolveL1Config({ provider: 'test', model: 'test' }),
@@ -77,7 +82,7 @@ it('persists two model steps per layer and supplies original L0 evidence to L2 a
     const refs = memories.map(memory => ({ id: memory.id, revision: memory.revision }))
     expect(memories.map(memory => memory.level === 'L1' ? memory.summary.description : 'shared' in memory ? null : memory.knowledge.description)).toEqual([description, description, description])
     const auxiliary = provider.listSessions(item.spec.projectId).filter(source => source.header.id !== header().id)
-    expect(auxiliary).toHaveLength(6)
+    expect(auxiliary).toHaveLength(3)
     expect(auxiliary.every(source => source.committedTo === 2)).toBe(true)
     await expect(JSON.stringify(observed, null, 2) + '\n').toMatchFileSnapshot('./expected/layered-summary.json')
     await pipeline.close()

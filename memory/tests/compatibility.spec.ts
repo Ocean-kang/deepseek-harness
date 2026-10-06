@@ -11,7 +11,7 @@ const peers = Object.fromEntries(Object.entries(manifest.peerDependencies).filte
 
 it('admits the memory package on the supported DSH runtime without an exemption', () => {
   expect(getDshRuntimeVersion()).toBe(runtime)
-  expect(Object.keys(peers)).toHaveLength(11)
+  expect(Object.keys(peers)).toHaveLength(12)
   expect(Object.values(peers).every(version => version === runtime)).toBe(true)
   expect(evaluatePluginCompatibility(manifest)).toBeUndefined()
 })

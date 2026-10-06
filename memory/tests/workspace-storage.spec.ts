@@ -41,9 +41,9 @@ class LearningAdapter extends LlmAdapter {
     const text = options.system?.startsWith('Write one short sentence')
       ? JSON.stringify({ description: 'The project requires ESM modules.' })
       : options.system?.startsWith('Summarize')
-      ? JSON.stringify({ kind: 'memory', summary: { goal: 'Project ESM constraint', actions: [], outcome: 'unknown', result: 'Use ESM', solution: null,
+      ? JSON.stringify({ kind: 'memory', summary: { title: 'Project ESM constraint', problem: 'Choose the module format', summary: 'The user requires ESM modules.', description: 'The project requires ESM modules.', goal: 'Project ESM constraint', actions: [], outcome: 'unknown', result: 'Use ESM', solution: null,
         sources: inputL1.parse(input).input.flatMap(piece => piece.sources) } })
-      : JSON.stringify([{ target: null, knowledge: { title: 'ESM', body: 'Use ESM in this project', category: 'constraint', score: 4,
+      : JSON.stringify([{ action: 'store', target: null, knowledge: { title: 'ESM', body: 'Use ESM in this project', scenario: 'Module format', conclusion: 'Use ESM', reason: 'The user explicitly requires ESM', whenToUse: ['Project modules'], recommendedAction: 'Write ESM modules', limitations: [], kind: 'knowledge', conflicts: [], description: 'The project requires ESM modules.', category: 'constraint', score: 4,
         rationale: 'Explicit constraint', evidence: 'supported', sources: inputKnowledge.parse(input).input.sources.map(ref => ({ kind: 'memory', ref })) } }])
     yield { type: 'block-start', index: 0, blockType: 'text' }
     yield { type: 'text-delta', index: 0, text }
@@ -142,7 +142,7 @@ it('learns L1–L3 in the project database, browses exact versions, persists sel
     await item.ctx.sessions.flush(session)
     const project = item.ctx.memory.projectOfSession(session.id)!
     await item.ctx.memory.flushLearning(project)
-    expect(item.adapter.calls).toBe(6)
+    expect(item.adapter.calls).toBe(3)
     for (const level of ['L1', 'L2', 'L3'] as const) expect(await item.ctx.memory.listCandidates(project, level)).toHaveLength(1)
     const l3 = (await item.ctx.memory.listCandidates(project, 'L3'))[0]!
     const ref = { id: l3.id, revision: l3.revision }
@@ -158,7 +158,7 @@ it('learns L1–L3 in the project database, browses exact versions, persists sel
     await first.dispose()
     await item.plugin()
     await item.ctx.memory.flushLearning(project)
-    expect(item.adapter.calls).toBe(6)
+    expect(item.adapter.calls).toBe(3)
     expect(item.ctx.memory.browser.selection(project, another)).toMatchObject({ refs: [ref], automatic: true })
   } finally { await item.close() }
 })
@@ -288,7 +288,7 @@ it('recovers project learning when the Workspace registry becomes ready after me
       await item.ctx.memory.flushLearning(project)
       expect(await item.ctx.memory.listCandidates(project, 'L3')).toHaveLength(1)
     })
-    expect(item.adapter.calls).toBe(6)
+    expect(item.adapter.calls).toBe(3)
   } finally { release.resolve(undefined); await registryLoad; listing.mockRestore(); await item.close() }
 })
 

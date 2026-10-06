@@ -75,6 +75,28 @@ it('combines L2 and L3 choices, saves them for the next turn and displays the re
   await waitFor(() => expect(item.view.getByText(/待注入 0 条/)).toBeDefined())
 })
 
+it('filters scenarios and stable profiles before browsing, with trace and sources initially collapsed', async () => {
+  const item = mount(false, false, call => async (request, signal) => {
+    const response = await call(request, signal)
+    const enrich = (record: PanelRow): PanelRow => ({ ...record, scenario: 'Workspace management', kind: 'knowledge', trace: 'pnpm test' })
+    if (response.action === 'browse') return { ...response, rows: response.rows.map(enrich) }
+    if (response.action === 'detail' && response.row !== null) return { ...response, row: enrich(response.row) }
+    return response
+  })
+  fireEvent.click(await item.view.findByRole('button', { name: `${zh.scenario}: Workspace management` }))
+  await waitFor(() => expect(item.requests).toContainEqual(expect.objectContaining({ action: 'browse', level: 'L2', scenario: 'Workspace management', after: null })))
+  fireEvent.click(item.view.getByRole('button', { name: `L3: ${zh.L3}` }))
+  fireEvent.click(await item.view.findByRole('button', { name: zh.profile, exact: true }))
+  await waitFor(() => expect(item.requests).toContainEqual(expect.objectContaining({ action: 'browse', level: 'L3', kind: 'profile', scenario: 'Workspace management', after: null })))
+  fireEvent.click(item.view.getByRole('button', { name: zh.allScenarios }))
+  await waitFor(() => expect(item.requests.at(-1)).toMatchObject({ action: 'browse', level: 'L3', kind: 'profile' }))
+  expect(item.requests.at(-1)).not.toHaveProperty('scenario')
+  fireEvent.click(item.view.getByRole('button', { name: /查看正文与来源: Long-term rule/ }))
+  const detail = await item.view.findByRole('article', { name: zh.detail })
+  expect(within(detail).getByText(zh.trace).closest('details')?.open).toBe(false)
+  expect(within(detail).getByText(zh.source).closest('details')?.open).toBe(false)
+})
+
 it('places each selection control before its memory title and keeps insertion as a separate action', async () => {
   const item = mount()
   const checkbox = await item.view.findByRole('checkbox', { name: zh.select })

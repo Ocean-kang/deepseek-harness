@@ -5,28 +5,13 @@
     "rawEvidence": true
   },
   {
-    "stage": "visualize",
-    "level": null,
-    "rawEvidence": false
-  },
-  {
     "stage": "extract",
     "level": "L2",
     "rawEvidence": true
   },
   {
-    "stage": "visualize",
-    "level": null,
-    "rawEvidence": false
-  },
-  {
     "stage": "extract",
     "level": "L3",
     "rawEvidence": true
-  },
-  {
-    "stage": "visualize",
-    "level": null,
-    "rawEvidence": false
   }
 ]

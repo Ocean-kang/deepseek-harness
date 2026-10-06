@@ -1,0 +1,16 @@
+# Bilingual-pair consistency record for layered-upgrade.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
+#   node --import tsx/esm scripts/check-docs.mjs --write-pairing
+/:
+  en: c4dc7a4f901c2ec3
+  zh: 0ef14be47dbf27e4
+/layered-memory-upgrade:
+  en: 6749a67c0a1a5756
+  zh: 515bd8695a3270b1
+/layered-memory-upgrade/change:
+  en: b68657d6acd4bd65
+  zh: dad349030d7333ae
+/layered-memory-upgrade/migration:
+  en: 9ed5ed66ca2ed0ae
+  zh: c415060a57a3dd02

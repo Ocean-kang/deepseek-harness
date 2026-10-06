@@ -16,6 +16,7 @@ import { installPanelHost } from './panel-host.ts'
 import { LearningBudget, MemoryPipeline } from './pipeline.ts'
 import { enqueueCandidates } from './knowledge-store.ts'
 import { MemoryRetriever } from './retrieval.ts'
+import { HybridMemoryRetriever } from './hybrid-retrieval.ts'
 import { SqliteMemory } from './sqlite.ts'
 import { TextMemoryRetriever } from './text-retrieval.ts'
 import { queryExpander } from './query-expansion.ts'
@@ -148,9 +149,12 @@ export class WorkspaceMemory implements MemoryRoutes {
       if (provider.listProjects().some(owner => owner !== project)) throw new MemoryError('conflict', 'Workspace database contains another project')
       const embedder = this.spec.embedding === undefined ? undefined : new HttpEmbedder(this.spec.embedding, process.env[this.spec.embedding.apiKeyEnv] ?? '')
       const llm = this.ctx.get('llm')
-      retriever = this.spec.textSearch !== undefined ? new TextMemoryRetriever(provider, this.spec.textSearch,
+      const textRetriever = this.spec.textSearch !== undefined ? new TextMemoryRetriever(provider, this.spec.textSearch,
         this.spec.textSearch.expandQuery ? queryExpander(provider, llm!, this.spec.l1!, this.spec.textSearch) : undefined)
-        : this.spec.embedding === undefined || embedder === undefined ? undefined : new MemoryRetriever(provider, this.spec.embedding, embedder, this.report)
+        : undefined
+      const vectorRetriever = this.spec.embedding === undefined || embedder === undefined ? undefined : new MemoryRetriever(provider, this.spec.embedding, embedder, this.report)
+      retriever = textRetriever !== undefined && vectorRetriever !== undefined
+        ? new HybridMemoryRetriever(textRetriever, vectorRetriever, this.spec.hybrid!) : textRetriever ?? vectorRetriever
       pipeline = this.spec.autoLearning && llm !== undefined ? new MemoryPipeline(provider, this.spec, llm, this.report, retriever, this.budget) : undefined
       const runtime: MemoryRuntime = { provider, ...(retriever === undefined ? {} : { retriever }), ...(pipeline === undefined ? {} : { pipeline }) }
       const recoveredSessions: SessionId[] = []

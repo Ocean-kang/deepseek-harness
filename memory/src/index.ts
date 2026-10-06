@@ -11,6 +11,7 @@ import type { Config as ConfigInput } from './config.ts'
 import { SqliteMemory } from './sqlite.ts'
 import { HttpEmbedder } from './embedding.ts'
 import { MemoryRetriever } from './retrieval.ts'
+import { HybridMemoryRetriever } from './hybrid-retrieval.ts'
 import type { RetrievalRequest, MemorySearch } from './retrieval.ts'
 import { TextMemoryRetriever } from './text-retrieval.ts'
 import { MemoryPipeline } from './pipeline.ts'
@@ -33,6 +34,8 @@ export type * from './embedding.ts'
 export type * from './retrieval.ts'
 export { resolveEmbeddingConfig, HttpEmbedder } from './embedding.ts'
 export { MemoryRetriever } from './retrieval.ts'
+export { HybridMemoryRetriever, resolveHybridConfig } from './hybrid-retrieval.ts'
+export type { HybridConfig, HybridSpec } from './hybrid-retrieval.ts'
 export { TextMemoryRetriever, resolveTextSearchConfig } from './text-retrieval.ts'
 export type { TextSearchConfig, TextSearchSpec } from './text-retrieval.ts'
 export { installMemoryInjector } from './injector.ts'
@@ -65,6 +68,7 @@ export const Config: z<Config> = z.object({
   browser: z.object({ pageSize: z.number(), maxQueryBytes: z.number(), limit: z.number(), maxBytes: z.number(),
     refreshIntervalMs: z.number(), stateCacheSessions: z.number() }),
   autoLearning: z.boolean(),
+  hybrid: z.union([z.object({ rrfK: z.number(), candidateLimit: z.number(), limit: z.number(), maxBytes: z.number() }), z.const(undefined)]),
   projectId: z.string().required(), databasePath: z.string().required(),
   queueCapacity: z.number(), batchSize: z.number(), pageSize: z.number(), busyTimeoutMs: z.number(),
   learningConcurrency: z.number(), learningQueueCapacity: z.number(),
@@ -175,9 +179,9 @@ export class MemoryService extends Service implements RawMemory {
   /** @param project - captured owner.
    * @returns configured retrieval method for user-facing limitations.
    */
-  recallMethod(project: ProjectId): 'disabled' | 'vector' | 'unicode61' | 'trigram' {
+  recallMethod(project: ProjectId): 'disabled' | 'vector' | 'hybrid' | 'unicode61' | 'trigram' {
     const retriever = this.routes === undefined ? this.retriever : this.routes.get(project).retriever
-    return retriever === undefined ? 'disabled' : retriever instanceof TextMemoryRetriever ? retriever.spec.tokenizer : 'vector'
+    return retriever === undefined ? 'disabled' : retriever instanceof HybridMemoryRetriever ? 'hybrid' : retriever instanceof TextMemoryRetriever ? retriever.spec.tokenizer : 'vector'
   }
 
   private search(project?: ProjectId): MemorySearch {
@@ -355,9 +359,12 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   const embedder = spec.embedding === undefined ? undefined : new HttpEmbedder(spec.embedding, process.env[spec.embedding.apiKeyEnv] ?? '')
   const provider = await SqliteMemory.open(spec)
   const report = (error: MemoryError) => ctx.logger.warn(`[memory/${error.code}] ${error.message}`)
-  const retriever = spec.textSearch !== undefined ? new TextMemoryRetriever(provider, spec.textSearch,
+  const textRetriever = spec.textSearch !== undefined ? new TextMemoryRetriever(provider, spec.textSearch,
     spec.textSearch.expandQuery ? queryExpander(provider, llm!, spec.l1!, spec.textSearch) : undefined)
-    : spec.embedding === undefined || embedder === undefined ? undefined : new MemoryRetriever(provider, spec.embedding, embedder, report)
+    : undefined
+  const vectorRetriever = spec.embedding === undefined || embedder === undefined ? undefined : new MemoryRetriever(provider, spec.embedding, embedder, report)
+  const retriever = vectorRetriever !== undefined && textRetriever !== undefined
+    ? new HybridMemoryRetriever(textRetriever, vectorRetriever, spec.hybrid!) : textRetriever ?? vectorRetriever
   const pipeline = spec.autoLearning && llm !== undefined ? new MemoryPipeline(provider, spec, llm, report, retriever) : undefined
   let panelDispose: (() => Promise<void>) | undefined
   let injectorDispose: (() => Promise<void>) | undefined

@@ -13,13 +13,16 @@ export function apply(ctx) {
       } else if (options.system?.startsWith('Summarize')) {
         const input = JSON.parse(options.messages[0].content[0].text)
         text = JSON.stringify({ kind: 'memory', summary: {
+          title: '[安装验收样例] Portable ESM constraint', problem: 'Synthetic policy, no execution', summary: 'Synthetic fixture: use ESM.', description: '[安装验收样例] 该项目要求使用 ESM 模块。',
           goal: '[安装验收样例] Portable ESM constraint', actions: [], outcome: 'unknown',
           result: 'Synthetic fixture: use ESM.', solution: null,
           sources: input.input.flatMap(piece => piece.sources),
         } })
-      } else if (options.system?.startsWith('Extract project knowledge')) {
+      } else if (options.system?.startsWith('Extract project knowledge') || options.system?.startsWith('Consolidate immutable execution episodes')) {
         const input = JSON.parse(options.messages[0].content[0].text)
-        text = JSON.stringify([{ target: null, knowledge: {
+        text = JSON.stringify([{ action: 'store', target: null, knowledge: {
+          scenario: 'Synthetic module policy', conclusion: 'Use ESM modules', reason: 'Explicit synthetic policy', whenToUse: ['Project modules'],
+          recommendedAction: 'Use ESM', limitations: ['Synthetic acceptance only'], kind: 'knowledge', conflicts: [], description: '[安装验收样例] 该项目要求使用 ESM 模块。',
           title: '[安装验收样例] Portable ESM', body: 'Synthetic fixture: use ESM.',
           category: 'constraint', score: 4, rationale: 'Synthetic acceptance fixture', evidence: 'supported',
           sources: input.input.sources.map(ref => ({ kind: 'memory', ref: { id: ref.id, revision: ref.revision } })),

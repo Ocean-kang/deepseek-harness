@@ -1,7 +1,7 @@
 /** Project-scoped browsing and exact-version selection shared by trusted UI adapters. */
 import type { Session, SessionEvent, SessionHeader, SessionId } from '@deepseek-ai/dsh-session'
 import type { MemoryId, MemoryRef } from './l1-types.ts'
-import type { OwnedMemory, SharedMemory } from './knowledge-types.ts'
+import type { KnowledgeFilter, OwnedMemory, SharedMemory } from './knowledge-types.ts'
 import type { SqliteMemory } from './sqlite.ts'
 import type { ProjectId } from './types.ts'
 import { MemoryError } from './types.ts'
@@ -61,9 +61,10 @@ export class MemoryBrowser {
    * @param level - L0 through L3.
    * @param query - literal case-insensitive substring.
    * @param after - previous page position, or null.
+   * @param filter - optional scenario and stable memory kind; retained across paging.
    * @returns bounded visible records and the next position.
    */
-  browse(project: ProjectId, level: 'L0' | 'L1' | 'L2' | 'L3', query = '', after: BrowserPosition | null = null): BrowserPage {
+  browse(project: ProjectId, level: 'L0' | 'L1' | 'L2' | 'L3', query = '', after: BrowserPosition | null = null, filter: KnowledgeFilter = {}): BrowserPage {
     if (Buffer.byteLength(query, 'utf8') > this.spec.maxQueryBytes) throw new MemoryError('budget', 'memory browser query exceeds configured byte limit')
     if (after !== null && after.level !== level) throw new MemoryError('config', 'memory browser cursor belongs to another level')
     if (level === 'L0') {
@@ -72,7 +73,7 @@ export class MemoryBrowser {
       const last = rows[this.spec.pageSize - 1]
       return { items, next: rows.length <= this.spec.pageSize || last === undefined ? null : { level, sessionId: last.header.id, seq: last.event.seq } }
     }
-    const rows = this.providerFor(project).knowledge.browse(project, level, after !== null && after.level !== 'L0' ? after.id : '', this.spec.pageSize + 1, query)
+    const rows = this.providerFor(project).knowledge.browse(project, level, after !== null && after.level !== 'L0' ? after.id : '', this.spec.pageSize + 1, query, filter)
     const items = rows.slice(0, this.spec.pageSize)
     return { items, next: rows.length <= this.spec.pageSize ? null : { level, id: items.at(-1)!.id } }
   }

@@ -1,9 +1,9 @@
 /** Explicit knowledge scoring configuration and model-output validation. */
-import { integer, object, textValue } from './l1-validation.ts'
+import { integer, object, textValue, textList } from './l1-validation.ts'
 import { SessionId, SessionSeq } from '@deepseek-ai/dsh-session'
 import { MemoryError } from './types.ts'
-import type { MemoryId, MemoryRef } from './l1-types.ts'
-import type { Knowledge, KnowledgeCandidate, KnowledgeInput, KnowledgeSpec, OwnedMemory } from './knowledge-types.ts'
+import type { L1Memory, MemoryId, MemoryRef } from './l1-types.ts'
+import type { EvidenceReceiptId, Knowledge, KnowledgeCandidate, KnowledgeInput, KnowledgeSpec } from './knowledge-types.ts'
 
 /** Decode an exact version reference from JSON.
  * @param value - external or durable JSON.
@@ -32,7 +32,7 @@ export function sameRef(left: MemoryRef, right: MemoryRef): boolean {
  */
 export function parseKnowledge(value: unknown, config: KnowledgeSpec): Knowledge {
   const item = object(value)
-  const keys = ['title', 'body', 'description', 'examinedEvents', 'category', 'score', 'rationale', 'evidence', 'sources']
+  const keys = ['title', 'body', 'description', 'examinedEvents', 'category', 'score', 'rationale', 'evidence', 'sources', 'scenario', 'conclusion', 'reason', 'whenToUse', 'recommendedAction', 'limitations', 'kind', 'evidenceStatus', 'conflicts', 'confirmation']
   if (Object.keys(item).some(key => !keys.includes(key))) throw new MemoryError('output', 'Unexpected knowledge field')
   const category = textValue(item.category)
   const evidence = textValue(item.evidence)
@@ -53,7 +53,27 @@ export function parseKnowledge(value: unknown, config: KnowledgeSpec): Knowledge
     if (Object.keys(ref).some(key => key !== 'sessionId' && key !== 'seq')) throw new MemoryError('output', 'Invalid examined event reference')
     return { sessionId: SessionId(textValue(ref.sessionId)), seq: SessionSeq(integer(ref.seq)) }
   })
-  return { title: textValue(item.title), body: textValue(item.body), ...description === undefined ? {} : { description },
+  const card = item.scenario === undefined ? {} : { scenario: textValue(item.scenario), conclusion: textValue(item.conclusion),
+    reason: textValue(item.reason), whenToUse: textList(item.whenToUse), recommendedAction: textValue(item.recommendedAction), limitations: textList(item.limitations) }
+  if (item.scenario === undefined && ['conclusion', 'reason', 'whenToUse', 'recommendedAction', 'limitations'].some(key => item[key] !== undefined)) throw new MemoryError('output', 'Incomplete knowledge card')
+  if (item.kind !== undefined && item.kind !== 'knowledge' && item.kind !== 'profile') throw new MemoryError('output', 'Invalid stable memory kind')
+  if (item.evidenceStatus !== undefined && !['claimed', 'model_supported', 'user_confirmed', 'execution_verified', 'externally_verified', 'conflicted', 'stale'].includes(textValue(item.evidenceStatus))) throw new MemoryError('output', 'Invalid evidence status')
+  if ((item.evidenceStatus === 'conflicted' && evidence !== 'conflict')
+    || (['model_supported', 'execution_verified', 'user_confirmed', 'externally_verified'].includes(String(item.evidenceStatus)) && evidence !== 'supported')) throw new MemoryError('output', 'Evidence origin disagrees with support state')
+  if (item.conflicts !== undefined && !Array.isArray(item.conflicts)) throw new MemoryError('output', 'Invalid knowledge conflicts')
+  const conflicts = item.conflicts === undefined ? undefined : item.conflicts.map((value: unknown) => {
+    const conflict = object(value)
+    if (Object.keys(conflict).some(key => key !== 'ref' && key !== 'reason')) throw new MemoryError('output', 'Invalid conflict fields')
+    return { ref: knowledgeRef(conflict.ref), reason: textValue(conflict.reason) }
+  })
+  const confirmation = item.confirmation === undefined ? undefined : object(item.confirmation)
+  if (confirmation !== undefined && (Object.keys(confirmation).some(key => !['status', 'actor', 'receiptId', 'reference', 'occurredAt'].includes(key))
+    || !['user_confirmed', 'externally_verified'].includes(textValue(confirmation.status)) || confirmation.status !== item.evidenceStatus)) throw new MemoryError('output', 'Invalid evidence confirmation')
+  if (['user_confirmed', 'externally_verified'].includes(String(item.evidenceStatus)) && confirmation === undefined) throw new MemoryError('output', 'Trusted evidence status requires a receipt')
+  return { ...confirmation === undefined ? {} : { confirmation: { status: confirmation.status as 'user_confirmed' | 'externally_verified',
+    actor: textValue(confirmation.actor), receiptId: textValue(confirmation.receiptId) as EvidenceReceiptId, reference: textValue(confirmation.reference), occurredAt: integer(confirmation.occurredAt) } }, ...card, ...item.kind === undefined ? {} : { kind: item.kind as NonNullable<Knowledge['kind']> },
+    ...item.evidenceStatus === undefined ? {} : { evidenceStatus: item.evidenceStatus as NonNullable<Knowledge['evidenceStatus']> },
+    ...conflicts === undefined ? {} : { conflicts }, title: textValue(item.title), body: textValue(item.body), ...description === undefined ? {} : { description },
     ...examinedEvents === undefined ? {} : { examinedEvents: [...new Map(examinedEvents.map(ref => [JSON.stringify(ref), ref])).values()] }, category: category as Knowledge['category'],
     score: item.score, rationale: textValue(item.rationale), evidence: evidence as Knowledge['evidence'],
     sources: [...new Map(sources.map(source => [JSON.stringify(source.ref), source])).values()] }
@@ -68,16 +88,22 @@ export function parseKnowledge(value: unknown, config: KnowledgeSpec): Knowledge
 export function parseKnowledgeCandidates(value: unknown, input: KnowledgeInput, config: KnowledgeSpec): KnowledgeCandidate[] {
   if (!Array.isArray(value)) throw new MemoryError('output', 'Expected a knowledge candidate array')
   const targets = new Set<string>()
-  const allRecords = new Map([...input.sources, ...input.existing, ...input.lineage].map(record => [JSON.stringify([record.id, record.revision]), record]))
+  const directRecords = [...input.sources, ...input.existing]
+  const allRecords = new Map([...directRecords, ...input.lineage].map(record => [JSON.stringify([record.id, record.revision]), record]))
   return value.map((value: unknown) => {
     const item = object(value)
-    if (Object.keys(item).some(key => key !== 'knowledge' && key !== 'target')) throw new MemoryError('output', 'Unexpected candidate field')
+    if (Object.keys(item).some(key => key !== 'knowledge' && key !== 'target' && key !== 'action')) throw new MemoryError('output', 'Unexpected candidate field')
     const knowledge = parseKnowledge(item.knowledge, config)
+    const action = item.action
+    if (action !== undefined && !['store', 'update', 'merge', 'skip', 'conflict'].includes(textValue(action))) throw new MemoryError('output', 'Invalid candidate action')
     const target = item.target === null ? null : knowledgeRef(item.target)
     if (target !== null && (!input.existing.some(record => sameRef(record, target)) || targets.has(target.id))) throw new MemoryError('output', 'Invalid or repeated merge target')
     if (target !== null) targets.add(target.id)
+    if ((action === 'store' && target !== null) || (['update', 'merge', 'conflict'].includes(String(action)) && target === null)) throw new MemoryError('output', 'Candidate action requires a matching target')
+    if (action === 'conflict' && (knowledge.evidence !== 'conflict' || !knowledge.conflicts?.some(conflict => target !== null && sameRef(conflict.ref, target)))) throw new MemoryError('output', 'Conflict must retain its previous version and reason')
+    for (const conflict of knowledge.conflicts ?? []) if (!input.existing.some(record => sameRef(record, conflict.ref)) && !input.lineage.some(record => sameRef(record, conflict.ref))) throw new MemoryError('source', 'Conflict version is outside the input')
     const records = knowledge.sources.map(source => {
-      const record = [...input.sources, ...input.existing].find(record => sameRef(record, source.ref))
+      const record = directRecords.find(record => sameRef(record, source.ref))
       if (record === undefined || record.projectId !== input.projectId || record.state !== 'active') throw new MemoryError('source', 'Knowledge source is outside the current input')
       return record
     })
@@ -85,7 +111,7 @@ export function parseKnowledgeCandidates(value: unknown, input: KnowledgeInput, 
     if (input.level === 'L3' && (['temporary', 'local'].includes(knowledge.category) || knowledge.evidence !== 'supported' || records.some(record => record.level === 'L1' || record.knowledge.evidence !== 'supported'))) {
       throw new MemoryError('output', 'L3 requires supported, nonconflicting sources')
     }
-    const roots = new Map<string, OwnedMemory>()
+    const roots = new Map<string, L1Memory>()
     const seen = new Set<string>()
     const pending = [...records]
     while (pending.length > 0) {
@@ -106,15 +132,18 @@ export function parseKnowledgeCandidates(value: unknown, input: KnowledgeInput, 
         }
       }
     }
-    if (knowledge.examinedEvents?.some(ref => ![...roots.values()].some(root => root.level === 'L1'
-      && root.summary.sources.some(source => source.sessionId === ref.sessionId && source.seq === ref.seq)))) {
+    if (knowledge.examinedEvents?.some(ref => ![...roots.values()].some(root => root.summary.sources.some(source => source.sessionId === ref.sessionId && source.seq === ref.seq)))) {
       throw new MemoryError('source', 'Examined event is outside the candidate ancestry')
     }
-    if (knowledge.evidence === 'supported' && knowledge.category === 'method'
-      && ![...roots.values()].some(record => record.level === 'L1' && record.summary.outcome === 'success')) {
-      throw new MemoryError('output', 'A method requires a successful source outcome')
+    const successful = [...roots.values()].filter(record => record.summary.outcome === 'success')
+    const method = knowledge.evidence === 'supported' && knowledge.category === 'method'
+    if (config.promptVersion === 'knowledge-v4' && (method || knowledge.evidenceStatus === 'execution_verified')
+      && !successful.some(record => record.summary.executionEvidence?.length)) {
+      throw new MemoryError('output', knowledge.evidenceStatus === 'execution_verified'
+        ? 'Execution verification requires checked successful ancestry' : 'A method requires program-verified successful execution')
     }
-    return { knowledge, target }
+    if (method && successful.length === 0) throw new MemoryError('output', 'A method requires a successful source outcome')
+    return { knowledge, target, ...action === undefined ? {} : { action: action as NonNullable<KnowledgeCandidate['action']> } }
   })
 }
 
@@ -123,5 +152,5 @@ export function parseKnowledgeCandidates(value: unknown, input: KnowledgeInput, 
  * @returns stable content key; evidence remains a separate state.
  */
 export function knowledgeKey(knowledge: Knowledge): string {
-  return JSON.stringify([knowledge.category, knowledge.body.normalize('NFC').trim().replace(/\s+/gu, ' ')])
+  return JSON.stringify([knowledge.kind ?? 'knowledge', knowledge.scenario ?? '', knowledge.category, knowledge.body.normalize('NFC').trim().replace(/\s+/gu, ' ')])
 }

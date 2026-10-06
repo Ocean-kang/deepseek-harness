@@ -63,7 +63,7 @@ it('preserves an explicit tokenizer and refresh interval over portable defaults'
   } finally { await item.close() }
 })
 
-it('uses an explicitly selected vector mode without adding BM25 and rejects two selected modes', async () => {
+it('combines optional embeddings with BM25 and accepts explicit text settings', async () => {
   const item = await setup()
   const key = `MEMORY_PORTABLE_${randomUUID().replaceAll('-', '')}`
   const previous = process.env[key]
@@ -71,9 +71,11 @@ it('uses an explicitly selected vector mode without adding BM25 and rejects two 
   try {
     const embedding = { endpoint: 'https://example.invalid/embeddings', model: 'test', dimensions: 2, apiKeyEnv: key }
     const plugin = await item.ctx.plugin(Portable, { ...item.config, embedding, panel: false })
-    expect(await item.ctx.memory.getIndexStatus(item.spec.projectId)).toMatchObject({ method: 'vector', ready: true })
+    expect(await item.ctx.memory.getIndexStatus(item.spec.projectId)).toMatchObject({ method: 'hybrid', ready: true })
     await plugin.dispose()
-    await expect(item.ctx.plugin(Portable, { ...item.config, embedding, textSearch: {} })).rejects.toThrow('simultaneous modes are not supported')
+    const configured = await item.ctx.plugin(Portable, { ...item.config, embedding, textSearch: {}, panel: false })
+    expect(item.ctx.memory.recallMethod(item.spec.projectId)).toBe('hybrid')
+    await configured.dispose()
   } finally {
     if (previous === undefined) delete process.env[key]
     else process.env[key] = previous

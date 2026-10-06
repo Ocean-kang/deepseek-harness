@@ -8,7 +8,7 @@ import { integer, json, object, textValue } from './l1-validation.ts'
 import { MemoryError } from './types.ts'
 import type { ProjectId } from './types.ts'
 import type { MemoryId, MemoryRef, OperationId } from './l1-types.ts'
-import type { KnowledgeInput, KnowledgeLevel, KnowledgeMemory, KnowledgeSpec, KnowledgeTask, OwnedMemory, ShareAction, SharedMemory } from './knowledge-types.ts'
+import type { EvidenceConfirmation, KnowledgeFilter, KnowledgeInput, KnowledgeLevel, KnowledgeMemory, KnowledgeSpec, KnowledgeTask, OwnedMemory, ShareAction, SharedMemory } from './knowledge-types.ts'
 import { knowledgeKey, knowledgeRef, parseKnowledge, parseKnowledgeCandidates } from './knowledge-validation.ts'
 
 /** Version-3 migration; the parent opens and commits the migration transaction. */
@@ -30,7 +30,7 @@ CREATE TABLE knowledge_grants (id TEXT NOT NULL, revision INTEGER NOT NULL, acti
 
 function storedConfig(value: unknown): KnowledgeSpec {
   const item = object(value)
-  if (!['knowledge-v1', 'knowledge-v2', 'knowledge-v3'].includes(textValue(item.promptVersion))) throw new MemoryError('corrupt', 'Unsupported knowledge prompt version')
+  if (!['knowledge-v1', 'knowledge-v2', 'knowledge-v3', 'knowledge-v4'].includes(textValue(item.promptVersion))) throw new MemoryError('corrupt', 'Unsupported knowledge prompt version')
   return { ...resolveKnowledgeConfig({ provider: textValue(item.provider), model: textValue(item.model),
     maxInputBytes: integer(item.maxInputBytes), maxOutputTokens: integer(item.maxOutputTokens), timeoutMs: integer(item.timeoutMs),
     maxCalls: integer(item.maxCalls), maxAttempts: integer(item.maxAttempts), retryBaseMs: integer(item.retryBaseMs), retryMaxMs: integer(item.retryMaxMs),
@@ -132,7 +132,9 @@ export class KnowledgeStore {
     const memory = this.decode(row)
     if (memory.knowledge.evidence !== 'supported' || !this.sourcesCurrent(memory.projectId, memory)) return null
     return { id: memory.id, revision: memory.revision, projectId: memory.projectId, level: 'L3', shared: true,
-      title: memory.knowledge.title, body: memory.knowledge.body }
+      title: memory.knowledge.title, body: memory.knowledge.body,
+      ...memory.knowledge.scenario === undefined ? {} : { scenario: memory.knowledge.scenario },
+      ...memory.knowledge.kind === undefined ? {} : { kind: memory.knowledge.kind } }
   }
 
   /** Check exact source revisions recursively without rewriting historical content.
@@ -164,9 +166,10 @@ export class KnowledgeStore {
    * @param after - exclusive memory identity.
    * @param limit - bounded page size supplied by the browser.
    * @param query - literal substring; no SQL wildcards.
+   * @param filter - optional scenario and knowledge/profile selectors; apply to knowledge levels.
    * @returns visible records in identity order.
    */
-  browse(project: ProjectId, level: 'L1' | KnowledgeLevel, after: string, limit: number, query: string): Array<OwnedMemory | SharedMemory> {
+  browse(project: ProjectId, level: 'L1' | KnowledgeLevel, after: string, limit: number, query: string, filter: KnowledgeFilter = {}): Array<OwnedMemory | SharedMemory> {
     this.assertOpen()
     const statement = level === 'L1'
       ? this.db.prepare(`SELECT id,revision FROM l1_memories v WHERE project = ? AND id > ?
@@ -176,12 +179,14 @@ export class KnowledgeStore {
       : this.db.prepare(`SELECT id,revision FROM knowledge_versions v WHERE state = 'active' AND level = ? AND id > ?
           AND (project = ? OR (level = 'L3' AND json_extract(knowledge,'$.evidence') = 'supported'
             AND EXISTS (SELECT 1 FROM knowledge_grants g WHERE g.id = v.id AND g.revision = v.revision)))
-          AND instr(lower(json_extract(knowledge,'$.title') || char(10) || json_extract(knowledge,'$.body')),lower(?)) > 0
+          AND instr(lower(knowledge),lower(?)) > 0
+          AND (? IS NULL OR coalesce(json_extract(knowledge,'$.kind'),'knowledge') = ?)
+          AND (? IS NULL OR json_extract(knowledge,'$.scenario') = ?)
           ORDER BY id LIMIT ?`)
     const result: Array<OwnedMemory | SharedMemory> = []
     let cursor = after
     for (;;) {
-      const rows = level === 'L1' ? statement.all(project, cursor, query, limit) : statement.all(level, cursor, project, query, limit)
+      const rows = level === 'L1' ? statement.all(project, cursor, query, limit) : statement.all(level, cursor, project, query, filter.kind ?? null, filter.kind ?? null, filter.scenario ?? null, filter.scenario ?? null, limit)
       for (const row of rows) {
         const visible = this.getMemory(project, knowledgeRef(row))
         if (visible !== null) result.push(visible)
@@ -439,7 +444,9 @@ export class KnowledgeStore {
   prepare(project: ProjectId, operation: OperationId, owner: string, value: unknown): void {
     this.transaction(() => {
       const task = this.held(this.getTask(project, operation), owner)
-      this.save({ ...task, candidates: parseKnowledgeCandidates(value, task.input, task.config), status: 'prepared' })
+      const candidates = parseKnowledgeCandidates(value, task.input, task.config)
+      if (candidates.some(candidate => candidate.knowledge.confirmation !== undefined)) throw new MemoryError('output', 'Learning cannot establish trusted confirmation')
+      this.save({ ...task, candidates, status: 'prepared' })
     })
   }
 
@@ -460,6 +467,7 @@ export class KnowledgeStore {
       if (!isDeepStrictEqual(fresh.existing.map(({ id, revision }) => ({ id, revision })), task.input.existing.map(({ id, revision }) => ({ id, revision })))) throw new MemoryError('conflict', 'Knowledge revisions changed')
       const result: MemoryRef[] = []
       for (const candidate of task.candidates) {
+        if (candidate.action === 'skip') continue
         const threshold = task.input.level === 'L2' ? task.config.l2Threshold : task.config.l3Threshold
         if (candidate.knowledge.evidence !== 'conflict' && (candidate.knowledge.score < threshold || candidate.knowledge.category === 'temporary')) continue
         const key = knowledgeKey(candidate.knowledge)
@@ -486,6 +494,33 @@ export class KnowledgeStore {
       }
       this.save({ ...task, status: 'done', result, owner: null, leaseUntil: 0, failure: null })
       return result
+    })
+  }
+
+  /** Confirm an exact active conclusion through a trusted adapter, retaining the previous version.
+   * @param project - authoritative owner.
+   * @param ref - exact supported version explicitly confirmed by the actor.
+   * @param receipt - trusted user/external verification, never inferred from assistant text.
+   * @returns confirmed new version; a repeated identical receipt returns its original result.
+   */
+  confirmEvidence(project: ProjectId, ref: MemoryRef, receipt: EvidenceConfirmation): MemoryRef {
+    return this.transaction(() => {
+      const operation = l1Key('evidence-confirmation', project, receipt.receiptId)
+      const request = { project, ref, receipt }
+      const prior = this.db.prepare('SELECT request,result FROM knowledge_operations WHERE id = ?').get(operation)
+      if (prior !== undefined) {
+        if (!isDeepStrictEqual(json(prior.request), request)) throw new MemoryError('conflict', 'Confirmation receipt was reused for different evidence')
+        return knowledgeRef(json(prior.result))
+      }
+      const target = this.owned(project, ref)
+      if (target.level === 'L1' || target.state !== 'active' || !this.sourcesCurrent(project, target)) throw new MemoryError('source', 'Confirmation requires current supported knowledge')
+      const knowledge = parseKnowledge({ ...target.knowledge, evidenceStatus: receipt.status, confirmation: receipt }, target.config)
+      const next = { id: target.id, revision: target.revision + 1 }
+      this.retire(target, 'superseded')
+      this.db.prepare('INSERT INTO knowledge_versions VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(next.id, next.revision, project, target.level,
+        operation, knowledgeKey(knowledge), JSON.stringify(knowledge), JSON.stringify(target.config), receipt.occurredAt, 'active')
+      this.db.prepare('INSERT INTO knowledge_operations VALUES (?, ?, ?)').run(operation, JSON.stringify(request), JSON.stringify(next))
+      return next
     })
   }
 

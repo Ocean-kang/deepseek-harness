@@ -36,9 +36,11 @@ export interface VectorDocument { readonly memory: VisibleMemory; readonly text:
  */
 export function vectorDocument(memory: VisibleMemory): VectorDocument {
   const text = memory.level === 'L1'
-    ? JSON.stringify({ goal: memory.summary.goal, actions: memory.summary.actions, outcome: memory.summary.outcome,
+    ? JSON.stringify({ title: memory.summary.title, goal: memory.summary.goal, problem: memory.summary.problem, summary: memory.summary.summary, outcome: memory.summary.outcome,
       result: memory.summary.result, solution: memory.summary.solution, reason: memory.reason })
-    : 'shared' in memory ? `${memory.title}\n${memory.body}` : `${memory.knowledge.title}\n${memory.knowledge.body}`
+    : 'shared' in memory ? `${memory.title}\n${memory.body}` : memory.knowledge.scenario === undefined ? `${memory.knowledge.title}\n${memory.knowledge.body}` : JSON.stringify({ title: memory.knowledge.title, scenario: memory.knowledge.scenario, kind: memory.knowledge.kind ?? 'knowledge',
+      conclusion: memory.knowledge.conclusion ?? memory.knowledge.body, reason: memory.knowledge.reason, whenToUse: memory.knowledge.whenToUse,
+      recommendedAction: memory.knowledge.recommendedAction, limitations: memory.knowledge.limitations, evidenceStatus: memory.knowledge.evidenceStatus })
   return { memory, text, digest: createHash('sha256').update(text).digest('hex') }
 }
 

@@ -12,6 +12,8 @@ import type { KnowledgeConfig, KnowledgeSpec } from './knowledge-types.ts'
 import { resolveTextSearchConfig } from './text-retrieval.ts'
 import type { TextSearchConfig, TextSearchSpec } from './text-retrieval.ts'
 import { resolveBrowserConfig } from './browser.ts'
+import { resolveHybridConfig } from './hybrid-retrieval.ts'
+import type { HybridConfig, HybridSpec } from './hybrid-retrieval.ts'
 import type { BrowserConfig, BrowserSpec } from './browser.ts'
 
 /** This plugin's permitted write root, preserved in both src/ and lib/. */
@@ -32,6 +34,7 @@ export interface Config {
   autoLearning?: boolean
   textSearch?: TextSearchConfig | undefined
   embedding?: EmbeddingConfig | undefined
+  hybrid?: HybridConfig | undefined
   l1?: L1Config | undefined
   knowledge?: KnowledgeConfig | undefined
   /** Required fallback for Sessions without a matching Workspace. */
@@ -57,6 +60,7 @@ export interface Spec {
   readonly autoLearning: boolean
   readonly textSearch?: TextSearchSpec
   readonly embedding?: EmbeddingSpec
+  readonly hybrid?: HybridSpec
   readonly l1?: L1Spec
   readonly knowledge?: KnowledgeSpec
   readonly projectId: ProjectId
@@ -113,7 +117,7 @@ export async function resolveConfig(input: Config): Promise<Spec> {
   if (input.panel !== undefined && typeof input.panel !== 'boolean') throw new MemoryError('config', 'panel must be boolean')
   if (input.autoLearning !== undefined && typeof input.autoLearning !== 'boolean') throw new MemoryError('config', 'autoLearning must be boolean')
   if (input.autoLearning === true && (input.l1 === undefined || input.knowledge === undefined)) throw new MemoryError('config', 'autoLearning requires L1 and knowledge model configurations')
-  if (input.textSearch !== undefined && input.embedding !== undefined) throw new MemoryError('config', 'Choose text search or vector search explicitly; simultaneous modes are not supported')
+  if (input.hybrid !== undefined && input.embedding === undefined) throw new MemoryError('config', 'hybrid requires embedding configuration')
   if (input.textSearch?.expandQuery && input.l1 === undefined) throw new MemoryError('config', 'Query expansion requires an explicit L1 model configuration')
   if (typeof input.projectId !== 'string' || input.projectId.trim() === '' || input.projectId !== input.projectId.trim()) {
     throw new MemoryError('config', 'projectId must be an explicit nonempty identifier without surrounding whitespace')
@@ -144,7 +148,8 @@ export async function resolveConfig(input: Config): Promise<Spec> {
     panel: input.panel ?? false,
     browser: resolveBrowserConfig(input.browser ?? {}),
     autoLearning: input.autoLearning ?? false,
-    ...(input.textSearch === undefined ? {} : { textSearch: resolveTextSearchConfig(input.textSearch) }),
+    ...(input.textSearch === undefined && input.embedding === undefined ? {} : { textSearch: resolveTextSearchConfig(input.textSearch ?? { tokenizer: 'trigram' }) }),
+    ...(input.embedding === undefined ? {} : { hybrid: resolveHybridConfig(input.hybrid ?? {}) }),
     ...(input.embedding === undefined ? {} : { embedding: resolveEmbeddingConfig(input.embedding) }),
     ...(input.l1 === undefined ? {} : { l1: resolveL1Config(input.l1) }),
     ...(input.knowledge === undefined ? {} : { knowledge: resolveKnowledgeConfig(input.knowledge) }),

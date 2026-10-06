@@ -1,5 +1,6 @@
 /** SQLite-owned L1 scans, leased tasks, candidate checkpoints and immutable versions. */
 import { randomUUID } from 'node:crypto'
+import { executionRefs } from './evidence.ts'
 import type { DatabaseSync } from 'node:sqlite'
 import { isDeepStrictEqual } from 'node:util'
 import { SessionId, SessionLogOffset } from '@deepseek-ai/dsh-session'
@@ -229,6 +230,13 @@ export class L1Store {
     this.transaction(() => {
       const task = this.owned(project, operation, owner)
       const valid = parseCandidate(candidate, taskRefs(task), task.reason)
+      if (valid.kind === 'memory' && valid.summary.executionEvidence !== undefined) {
+        const events = this.db.prepare('SELECT body FROM events WHERE session_id = ? AND seq >= ? AND seq < ? ORDER BY seq').all(task.sessionId, task.from, task.to)
+          .map(row => object(json(row.body)) as SessionEvent)
+        const verified = executionRefs(task.sessionId, events)
+        if (valid.summary.executionEvidence.some(ref => !verified.some(source => source.sessionId === ref.sessionId && source.seq === ref.seq))
+          || valid.summary.outcome !== 'success') throw new MemoryError('output', 'Invalid program-owned execution evidence')
+      }
       if (task.candidate !== null && !isDeepStrictEqual(task.candidate, valid)) throw new MemoryError('conflict', 'L1 operation already has another candidate')
       this.db.prepare("UPDATE l1_tasks SET candidate = ?, status = 'prepared' WHERE id = ?").run(JSON.stringify(valid), operation)
     })

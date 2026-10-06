@@ -58,7 +58,7 @@ it('retains a retryable task and unknown request outcome when the result transac
     const provider = await item.open()
     const project = item.spec.projectId
     await provider.appendRaw(batch(item.spec, turnEvents()))
-    provider.scanTurns(project, resolveL1Config({ provider: 'test', model: 'test' }), 10)
+    provider.scanTurns(project, { ...resolveL1Config({ provider: 'test', model: 'test' }), promptVersion: 'l1-v2' }, 10)
     const task = provider.l1.listTasks(project, '', 10)[0]!
     const calls = vi.fn((options: GenerateOptions) => response(JSON.stringify(options.system?.startsWith('Write one short sentence')
       ? { description: 'A parser fix was requested.' } : candidate(task))))

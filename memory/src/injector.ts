@@ -79,7 +79,7 @@ export function installMemoryInjector(ctx: Context, retriever: Pick<MemorySearch
         let result: RetrievalResult | undefined
         if (text && (browser === undefined || selection?.automatic === true)) {
           try {
-            result = await retriever.retrieve({ projectId: project, text, signal,
+            result = await retriever.retrieve({ projectId: project, text, signal, levels: ['L3'],
               ...(browser === undefined ? {} : { limit: browser.spec.limit, maxBytes: browser.spec.maxBytes }) })
           } catch (error) {
             signal.throwIfAborted()

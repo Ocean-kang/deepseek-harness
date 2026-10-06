@@ -8,10 +8,11 @@ import { MemoryError } from './types.ts'
 import type { SqliteMemory } from './sqlite.ts'
 import { vectorDocument } from './vector-store.ts'
 import type { VectorDocument } from './vector-store.ts'
+import type { HybridMemoryRetriever } from './hybrid-retrieval.ts'
 import type { TextMemoryRetriever } from './text-retrieval.ts'
 
-/** Explicitly selected text or vector search with the same authorization and lifecycle operations. */
-export type MemorySearch = MemoryRetriever | TextMemoryRetriever
+/** Text, vector or hybrid search with the same authorization and lifecycle operations. */
+export type MemorySearch = MemoryRetriever | TextMemoryRetriever | HybridMemoryRetriever
 
 /** Authorized immutable reference text. */
 export interface RetrievalHit {
@@ -20,19 +21,36 @@ export interface RetrievalHit {
   readonly shared: boolean
   readonly text: string
   readonly similarity: number | null
-  /** BM25 relevance when text search is selected; larger values rank first. */
+  /** BM25 relevance or fused reciprocal-rank score; larger values rank first. */
   readonly score?: number
 }
 /** Exact rendered reference text, already within the configured byte budget. */
-export interface RetrievalResult { readonly hits: readonly RetrievalHit[]; readonly text: string; readonly scanned: number; readonly elapsedMs: number; readonly method: 'vector' | 'bm25' }
+export interface RetrievalResult { readonly hits: readonly RetrievalHit[]; readonly text: string; readonly scanned: number; readonly elapsedMs: number; readonly method: 'vector' | 'bm25' | 'hybrid' }
 /** Query settings use resolved deployment defaults unless explicitly overridden. */
 export interface RetrievalRequest {
   readonly projectId: ProjectId
   readonly text: string
   readonly levels?: readonly ('L1' | 'L2' | 'L3')[]
+  readonly kinds?: readonly ('knowledge' | 'profile')[]
+  readonly scenario?: string
   readonly limit?: number
   readonly maxBytes?: number
   readonly signal?: AbortSignal
+}
+
+/** Filter levels, scenarios and stable knowledge/profile before ranking.
+ * @param document - authorized memory projection.
+ * @param request - explicit retrieval selectors.
+ * @returns whether this document belongs in the query corpus.
+ */
+export function matchesRetrieval(document: VectorDocument, request: RetrievalRequest): boolean {
+  const memory = document.memory
+  if (request.levels !== undefined && !request.levels.includes(memory.level)) return false
+  if (request.kinds === undefined && request.scenario === undefined) return true
+  if (memory.level === 'L1') return false
+  const content = 'shared' in memory ? memory : memory.knowledge
+  return (request.kinds === undefined || request.kinds.includes(content.kind ?? 'knowledge'))
+    && (request.scenario === undefined || content.scenario === request.scenario)
 }
 
 /** Render full entries; the caller measures this exact text.
@@ -209,7 +227,7 @@ export class MemoryRetriever {
       const candidates: Array<{ document: VectorDocument; vector: number[] }> = []
       for (const document of store.documents(request.projectId, this.spec.pageSize)) {
         check()
-        if (request.levels !== undefined && !request.levels.includes(document.memory.level)) continue
+        if (!matchesRetrieval(document, request)) continue
         if (candidates.length === this.spec.maxCandidates) throw new MemoryError('budget', 'memory candidate scan exceeds configured limit')
         const vector = store.read(this.spec, document)
         if (vector === null) { this.schedule(); throw new MemoryError('index-not-ready', 'current memory vector is missing') }
@@ -238,7 +256,7 @@ export class MemoryRetriever {
         const expected = new Map(candidates.map(({ document }) => [document.memory.id, `${document.memory.revision}:${document.digest}`]))
         for (const document of store.documents(request.projectId, this.spec.pageSize)) {
           check()
-          if (request.levels !== undefined && !request.levels.includes(document.memory.level)) continue
+          if (!matchesRetrieval(document, request)) continue
           if (expected.get(document.memory.id) !== `${document.memory.revision}:${document.digest}`) throw new MemoryError('conflict', 'memory candidates changed during retrieval')
           expected.delete(document.memory.id)
         }

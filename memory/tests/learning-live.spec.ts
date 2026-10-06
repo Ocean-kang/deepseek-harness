@@ -28,7 +28,7 @@ it.runIf(process.env.DSH_MEMORY_VERIFY_LEARNING === '1')('reopens the live run a
     expect(l1Tasks).toHaveLength(1)
     const l1Task = l1Tasks[0]!
     expect(l1Task.status).toBe('done')
-    expect(l1Task.config.promptVersion).toBe('l1-v2')
+    expect(l1Task.config.promptVersion).toBe('l1-v3')
     const l1 = memory.l1.byOperation(project, l1Task.operationId)!
     expect(l1.summary.description?.trim()).toBeTruthy()
     expect(['unknown', 'incomplete']).toContain(l1.summary.outcome)
@@ -58,7 +58,7 @@ it.runIf(process.env.DSH_MEMORY_VERIFY_LEARNING === '1')('reopens the live run a
     } finally { await search.close() }
     for (const task of [...l2Tasks, ...l3Tasks]) {
       expect(task.status).toBe('done')
-      expect(task.config.promptVersion).toBe('knowledge-v3')
+      expect(task.config.promptVersion).toBe('knowledge-v4')
       expect(task.result?.length).toBeGreaterThan(0)
       for (const ref of task.result!) {
         const record = memory.knowledge.getMemory(project, ref)
@@ -110,11 +110,11 @@ it.runIf(process.env.DSH_MEMORY_VERIFY_LEARNING === '1')('reopens the live run a
     expect(levels.filter(level => level === 'L2')).toHaveLength(l2Tasks.reduce((sum, task) => sum + task.calls, 0))
     expect(levels.filter(level => level === 'L3')).toHaveLength(l3Tasks.reduce((sum, task) => sum + task.calls, 0))
     expect(levels).toHaveLength(l1Task.calls + [...l2Tasks, ...l3Tasks].reduce((sum, task) => sum + task.calls, 0))
-    expect(l1Task.calls).toBe(2)
+    expect(l1Task.calls).toBe(1)
     for (const task of [...l2Tasks, ...l3Tasks]) {
       const recorded = stages.get(task.operationId) ?? []
       expect(recorded).toHaveLength(task.calls)
-      expect(recorded.filter(stage => stage === 'visualize')).toHaveLength(task.candidates!.length)
+      expect(recorded.filter(stage => stage === 'visualize')).toHaveLength(0)
       expect(recorded.filter(stage => stage !== 'visualize').length).toBeGreaterThan(0)
     }
   } finally { await memory.close() }

@@ -294,6 +294,6 @@ it('rejects invalid modes and configured budgets, cancels scans and drains on cl
   await expect(item.search.retrieve({ projectId: item.project, text: 'ESM' })).rejects.toMatchObject({ code: 'closed' })
   await expect(resolveConfig({ projectId: 'a', databasePath: 'data/text.sqlite', textSearch: {}, embedding: {
     endpoint: 'https://example.invalid/embeddings', model: 'test', dimensions: 2, apiKeyEnv: 'TEST_KEY',
-  } })).rejects.toMatchObject({ code: 'config' })
+  } })).resolves.toMatchObject({ hybrid: { rrfK: 60 } })
   for (const config of [{ limit: 0 }, { maxCandidates: 1, limit: 2 }, { maxTerms: Infinity }, { timeoutMs: -1 }]) expect(() => resolveTextSearchConfig(config)).toThrow()
 })

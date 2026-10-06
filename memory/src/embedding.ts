@@ -125,13 +125,11 @@ export class HttpEmbedder implements Embedder {
         if (body === null || typeof body !== 'object' || !('data' in body) || !Array.isArray(body.data) || body.data.length !== texts.length
           || !('model' in body) || body.model !== this.spec.model) throw new MemoryError('output', 'embedding response count or model mismatch')
         const vectors: number[][] = Array.from({ length: texts.length })
-        const seen = new Set<number>()
         for (const entry of body.data) {
           const row: unknown = entry
           if (row === null || typeof row !== 'object' || !('index' in row) || typeof row.index !== 'number' || !Number.isSafeInteger(row.index)
-            || row.index < 0 || row.index >= texts.length || seen.has(row.index) || !('embedding' in row)) throw new MemoryError('output', 'embedding response index mismatch')
+            || row.index < 0 || row.index >= texts.length || vectors[row.index] !== undefined || !('embedding' in row)) throw new MemoryError('output', 'embedding response index mismatch')
           vectors[row.index] = unitVector(row.embedding, this.spec.dimensions)
-          seen.add(row.index)
         }
         let tokens: number | null = null
         if ('usage' in body && body.usage !== null && typeof body.usage === 'object' && 'prompt_tokens' in body.usage) {

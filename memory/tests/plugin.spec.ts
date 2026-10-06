@@ -57,16 +57,21 @@ it('automatically learns captured turns using the mounted LLM and serves text re
       async *stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
         calls++
         let text: string
-        if (options.system?.startsWith('Write one short sentence')) {
-          text = JSON.stringify({ description: 'The project requires strict TypeScript.' })
-        } else if (options.system?.startsWith('Summarize')) {
+        if (options.system?.startsWith('Summarize')) {
           entered.resolve()
           await release.promise
-          text = JSON.stringify(candidate({ sessionId: session.id }))
+          const episode = candidate({ sessionId: session.id })
+          if (episode.kind !== 'memory') throw new Error('Expected episode fixture')
+          text = JSON.stringify({ ...episode, summary: { ...episode.summary, title: 'Strict TypeScript', problem: 'Choose the type checking policy',
+            summary: 'The user requires strict TypeScript.', description: 'The project requires strict TypeScript.' } })
         } else {
           const block = options.messages[0]!.content[0]!
           if (block.type !== 'text') throw new Error('expected text')
-          text = JSON.stringify([knowledgeCandidate(JSON.parse(block.text).input.sources[0])])
+          const card = knowledgeCandidate(JSON.parse(block.text).input.sources[0])
+          text = JSON.stringify([{ ...card, action: 'store', knowledge: { ...card.knowledge, scenario: 'Type checking',
+            conclusion: 'Use strict TypeScript', reason: 'Explicit project constraint', whenToUse: ['Project modules'],
+            recommendedAction: 'Enable strict TypeScript', limitations: [], kind: 'knowledge', conflicts: [],
+            description: 'The project requires strict TypeScript.' } }])
         }
         yield { type: 'block-start', index: 0, blockType: 'text' }
         yield { type: 'text-delta', index: 0, text }
@@ -87,7 +92,7 @@ it('automatically learns captured turns using the mounted LLM and serves text re
     expect((await ctx.memory.readRaw({ projectId: item.spec.projectId, sessionId: session.id, from: SessionLogOffset(0), to: session.seq, limit: 10 })).events).toHaveLength(3)
     release.resolve()
     await ctx.memory.flushLearning(item.spec.projectId)
-    expect(calls).toBe(6)
+    expect(calls).toBe(3)
     expect(await ctx.memory.listCandidates(item.spec.projectId, 'L3')).toHaveLength(1)
     const recall = await ctx.memory.retrieve({ projectId: item.spec.projectId, text: 'TypeScript', levels: ['L3'] })
     expect(recall).toMatchObject({ method: 'bm25', hits: [{ similarity: null }] })
@@ -95,7 +100,7 @@ it('automatically learns captured turns using the mounted LLM and serves text re
     await plugin.dispose()
     const reopened = await ctx.plugin({ ...MemoryPlugin, inject: [...MemoryPlugin.inject, 'llm'] }, options)
     await ctx.memory.flushLearning(item.spec.projectId)
-    expect(calls).toBe(6)
+    expect(calls).toBe(3)
     await reopened.dispose()
     await writer.close()
   } finally {
@@ -343,7 +348,7 @@ it('exposes real HTTP retrieval through configured service and closes it on unlo
     const plugin = await ctx.plugin(MemoryPlugin, { projectId: item.project, databasePath: item.spec.databasePath,
       embedding: { endpoint: `http://127.0.0.1:${address.port}/embeddings`, model: 'fixture', dimensions: 2, apiKeyEnv: keyName } })
     await ctx.memory.rebuildIndex()
-    expect(await ctx.memory.getIndexStatus(item.project)).toMatchObject({ ready: true, candidates: 1 })
+    expect(await ctx.memory.getIndexStatus(item.project)).toMatchObject({ method: 'hybrid', ready: true, vector: { candidates: 1 } })
     expect((await ctx.memory.retrieve({ projectId: item.project, text: 'parser' })).hits).toHaveLength(1)
     const service = ctx.memory
     await plugin.dispose()

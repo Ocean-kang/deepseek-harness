@@ -55,13 +55,13 @@ export function json(value: unknown): unknown {
  */
 export function storedSpec(value: unknown): L1Spec {
   const row = object(value)
-  if (row.promptVersion !== 'l1-v1' && row.promptVersion !== 'l1-v2') throw new MemoryError('schema', 'unsupported L1 prompt version')
+  if (!['l1-v1', 'l1-v2', 'l1-v3'].includes(textValue(row.promptVersion))) throw new MemoryError('schema', 'unsupported L1 prompt version')
   return { ...resolveL1Config({
     provider: textValue(row.provider), model: textValue(row.model),
     maxInputBytes: integer(row.maxInputBytes), maxOutputTokens: integer(row.maxOutputTokens),
     timeoutMs: integer(row.timeoutMs), maxCalls: integer(row.maxCalls), maxAttempts: integer(row.maxAttempts),
     retryBaseMs: integer(row.retryBaseMs), retryMaxMs: integer(row.retryMaxMs),
-  }), promptVersion: row.promptVersion }
+  }), promptVersion: row.promptVersion as L1Spec['promptVersion'] }
 }
 
 /**
@@ -73,6 +73,15 @@ export function storedReason(value: unknown): TurnEndReason {
   const row = object(value)
   textValue(row.kind)
   return row as TurnEndReason
+}
+
+/** Decode a list of nonempty strings.
+ * @param value - JSON field.
+ * @returns validated strings, including an empty list.
+ */
+export function textList(value: unknown): string[] {
+  if (!Array.isArray(value)) throw new MemoryError('output', 'Expected text list')
+  return value.map(textValue)
 }
 
 function exact(row: Record<string, unknown>, keys: string[]): void {
@@ -92,27 +101,39 @@ export function parseCandidate(value: unknown, allowed: readonly EventRef[] | ((
   if (row.kind !== 'memory') throw new MemoryError('output', 'L1 invalid result kind')
   exact(row, ['kind', 'summary'])
   const summary = object(row.summary)
-  exact(summary, ['goal', 'actions', 'outcome', 'result', 'solution', 'sources', ...('description' in summary ? ['description'] : [])])
-  if (!Array.isArray(summary.actions) || !Array.isArray(summary.sources) || summary.sources.length === 0) throw new MemoryError('output', 'L1 requires actions and nonempty sources')
+  exact(summary, ['goal', 'actions', 'outcome', 'result', 'solution', 'sources', ...['description', 'title', 'problem', 'summary', 'trace', 'executionEvidence'].filter(key => key in summary)])
+  if (!Array.isArray(summary.actions)) throw new MemoryError('output', 'L1 requires actions and nonempty sources')
   const outcome = summary.outcome
   if (outcome !== 'success' && outcome !== 'failure' && outcome !== 'incomplete' && outcome !== 'unknown') throw new MemoryError('output', 'L1 invalid outcome')
   const solution = summary.solution === null ? null : textValue(summary.solution)
   if (reason.kind !== 'completed' && (outcome === 'success' || solution !== null)) throw new MemoryError('output', 'L1 non-completed turn cannot assert a successful solution')
   if (solution !== null && outcome !== 'success') throw new MemoryError('output', 'L1 solution requires a successful outcome')
-  const seen = new Set<string>()
-  const sources = summary.sources.map((source: unknown) => {
-    const ref = object(source)
-    exact(ref, ['sessionId', 'seq'])
-    const sessionId = SessionId(textValue(ref.sessionId))
-    const seq = SessionSeq(integer(ref.seq))
-    const key = JSON.stringify([sessionId, seq])
-    const supplied = typeof allowed === 'function' ? allowed({ sessionId, seq }) : allowed.some(item => item.sessionId === sessionId && item.seq === seq)
-    if (seen.has(key) || !supplied) throw new MemoryError('output', 'L1 duplicate or unprovided event reference')
-    seen.add(key)
-    return { sessionId, seq }
-  })
+  const references = (value: unknown): EventRef[] => {
+    if (!Array.isArray(value) || value.length === 0) throw new MemoryError('output', 'L1 requires actions and nonempty sources')
+    const seen = new Set<string>()
+    return value.map((source: unknown) => {
+      const ref = object(source)
+      exact(ref, ['sessionId', 'seq'])
+      const sessionId = SessionId(textValue(ref.sessionId))
+      const seq = SessionSeq(integer(ref.seq))
+      const key = JSON.stringify([sessionId, seq])
+      const supplied = typeof allowed === 'function' ? allowed({ sessionId, seq }) : allowed.some(item => item.sessionId === sessionId && item.seq === seq)
+      if (seen.has(key) || !supplied) throw new MemoryError('output', 'L1 duplicate or unprovided event reference')
+      seen.add(key)
+      return { sessionId, seq }
+    })
+  }
+  const sources = references(summary.sources)
   const description = summary.description === undefined ? undefined : textValue(summary.description).trim()
   if (description !== undefined && (/[\r\n]/u.test(description) || Array.from(description).length > 240)) throw new MemoryError('output', 'L1 description must be one short line')
-  return { kind: 'memory', summary: { goal: textValue(summary.goal), actions: summary.actions.map(textValue), outcome, result: textValue(summary.result), solution, sources,
+  const episode = summary.title === undefined ? {} : { title: textValue(summary.title), problem: textValue(summary.problem), summary: textValue(summary.summary) }
+  if (summary.title === undefined && (summary.problem !== undefined || summary.summary !== undefined)) throw new MemoryError('output', 'Incomplete episode fields')
+  const trace = summary.trace === undefined ? undefined : object(summary.trace)
+  if (trace !== undefined) exact(trace, ['actions', 'commands', 'files', 'errors'])
+  const executionEvidence = summary.executionEvidence === undefined ? undefined : references(summary.executionEvidence)
+  return { kind: 'memory', summary: { ...episode,
+    ...trace === undefined ? {} : { trace: { actions: textList(trace.actions), commands: textList(trace.commands),
+      files: textList(trace.files), errors: textList(trace.errors) } },
+    ...executionEvidence === undefined ? {} : { executionEvidence }, goal: textValue(summary.goal), actions: summary.actions.map(textValue), outcome, result: textValue(summary.result), solution, sources,
     ...description === undefined ? {} : { description } } }
 }

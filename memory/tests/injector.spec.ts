@@ -27,6 +27,8 @@ afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await c
 async function setup(embedder?: Embedder, responses?: StreamChunk[][], useBrowser = false, useText = false, mountPlugin = false) {
   const item = await knowledgeFixture()
   cleanup.push(() => item.close())
+  const l2 = commitKnowledge(item, 'L2', [item.source], [knowledgeCandidate(item.source, 'Parser ESM policy')], 'automatic-setup')[0]!
+  commitKnowledge(item, 'L3', [l2], [knowledgeCandidate(l2, 'Parser ESM policy')])
   const queries: string[][] = []
   const retriever = new MemoryRetriever(item.provider, resolveEmbeddingConfig({ endpoint: 'https://example.invalid/embeddings', model: 'test', dimensions: 2, apiKeyEnv: 'TEST_KEY' }), embedder ?? {
     embed: async texts => { queries.push([...texts]); return { vectors: texts.map(() => [1, 0]), tokens: null } },

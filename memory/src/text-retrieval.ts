@@ -5,7 +5,7 @@ import type { SqliteMemory } from './sqlite.ts'
 import { MemoryError } from './types.ts'
 import type { ProjectId } from './types.ts'
 import type { RetrievalHit, RetrievalRequest, RetrievalResult } from './retrieval.ts'
-import { renderRecall, revalidateRecall } from './retrieval.ts'
+import { renderRecall, revalidateRecall, matchesRetrieval } from './retrieval.ts'
 import type { VectorDocument } from './vector-store.ts'
 
 /** Text search is selected explicitly and never replaces a failing vector query. */
@@ -121,7 +121,7 @@ export class TextMemoryRetriever {
       // ponytail: a per-query corpus avoids persistent index migrations; scans are explicitly capped.
       for (const document of this.provider.vectors.documents(request.projectId, this.spec.pageSize)) {
         check()
-        if (request.levels !== undefined && !request.levels.includes(document.memory.level)) continue
+        if (!matchesRetrieval(document, request)) continue
         if (documents.length === this.spec.maxCandidates) throw new MemoryError('budget', 'memory candidate scan exceeds configured limit')
         documents.push(document)
         insert.run(documents.length, document.text)
@@ -131,7 +131,7 @@ export class TextMemoryRetriever {
       // oxlint-disable-next-line typescript/no-misused-spread -- SQLite trigram counts Unicode code points.
       const short = this.spec.tokenizer === 'trigram' ? terms.filter(term => [...term].length < 3) : []
       const match = terms.filter(term => !short.includes(term)).map(term => `"${term}"`).join(' OR ')
-      const rows = match === '' ? [] : corpus.prepare('SELECT rowid,bm25(docs) AS rank FROM docs WHERE docs MATCH ? ORDER BY rank,rowid').all(match)
+      const rows = match === '' ? [] : corpus.prepare('SELECT rowid,bm25(docs) AS rank FROM docs WHERE docs MATCH ?').all(match)
       const ranked: Array<{ document: VectorDocument; score?: number }> = rows.map(row => ({ document: documents[Number(row.rowid) - 1]!, score: -Number(row.rank) }))
         .sort((a, b) => b.score - a.score || (a.document.memory.id < b.document.memory.id ? -1 : a.document.memory.id > b.document.memory.id ? 1 : 0))
       if (short.length !== 0) {
@@ -158,7 +158,7 @@ export class TextMemoryRetriever {
         let index = 0
         for (const current of this.provider.vectors.documents(request.projectId, this.spec.pageSize)) {
           check()
-          if (request.levels !== undefined && !request.levels.includes(current.memory.level)) continue
+          if (!matchesRetrieval(current, request)) continue
           const previous = documents[index++]
           if (previous === undefined || previous.memory.id !== current.memory.id || previous.memory.revision !== current.memory.revision
             || previous.digest !== current.digest || ('shared' in previous.memory) !== ('shared' in current.memory)) {
