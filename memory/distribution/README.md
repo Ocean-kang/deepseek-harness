@@ -20,12 +20,14 @@ Browse L0–L3, select L2/L3 for one conversation turn, or enable BM25 automatic
 <a id="install-and-use"></a>
 ## Install and use
 
-This bundle targets the Web profile of DSH 0.2.0-rc.2. Its DSH peer declarations reject other runtime versions. Download the built archive and install it through DSH; source compilation and changes to DSH code are unnecessary.
+Memory 0.1.9 targets the Web profile of DSH 0.2.1-alpha.1. Its DSH peer declarations reject other runtime versions. Download the built archive and install it through DSH; source compilation and changes to DSH code are unnecessary.
 
 ```sh
-dsh plugin --profile web add ./deepseek-ai-dsh-memory-l0-0.1.8.tgz
+dsh plugin --profile web add ./deepseek-ai-dsh-memory-l0-0.1.9.tgz
 dsh --profile web
 ```
+
+To upgrade from memory 0.1.8 on DSH 0.2.0-rc.2, stop DSH, back up the [memory directories](#data-and-configuration), update DSH to 0.2.1-alpha.1, then run the installation command above in the same DSH home and restart. Memory's SQLite schema and producer-owned Session fields are unchanged. No `allow-version` exemption is needed. For a source overlay, rebuild `memory/lib` and restart with the same patch arguments. Memory 0.1.8 remains the package for DSH 0.2.0-rc.2; do not use memory 0.1.9 on that runtime.
 
 Open a conversation and choose Memory in the right sidebar. New L1–L3 cards show a separately generated one-sentence description; detail keeps full content, sources, scores, evidence and folded JSON. Select eligible L2/L3 with the checkbox at the start of each card, then add selected records to the next turn. The pending area and composer show saved text, count and budget. Selections are consumed after recall commits; automatic recall defaults off and its switch persists independently. Both paths check versions, ancestry, permissions and a default budget of five records and 8192 rendered bytes. Shared polling preserves search and reading position. Inspect the committed context receipt after sending. Obsolete sources pause recall and trigger eligible rechecks while history stays readable.
 

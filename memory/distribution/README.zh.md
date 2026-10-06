@@ -20,12 +20,14 @@ kind: "package-bundle"
 <a id="install-and-use"></a>
 ## 安装与使用
 
-此 bundle 面向 DSH 0.2.0-rc.2 的 Web profile，DSH peer 声明会拒绝其他运行版本。下载构建包并通过 DSH 安装，无需编译源码或修改 DSH 代码。
+Memory 0.1.9 面向 DSH 0.2.1-alpha.1 的 Web profile，DSH peer 声明会拒绝其他运行版本。下载构建包并通过 DSH 安装，无需编译源码或修改 DSH 代码。
 
 ```sh
-dsh plugin --profile web add ./deepseek-ai-dsh-memory-l0-0.1.8.tgz
+dsh plugin --profile web add ./deepseek-ai-dsh-memory-l0-0.1.9.tgz
 dsh --profile web
 ```
+
+从 DSH 0.2.0-rc.2 上的 memory 0.1.8 升级时，停止 DSH，备份[记忆目录](#data-and-configuration)，将 DSH 更新到 0.2.1-alpha.1，再在相同 DSH home 中执行上述安装命令并重启。Memory 的 SQLite schema 和插件拥有的 Session 字段保持不变，无需 `allow-version` 豁免。使用源码 overlay 时，重新构建 `memory/lib`，以相同 patch 参数重启。Memory 0.1.8 仍用于 DSH 0.2.0-rc.2；不要在该运行时使用 memory 0.1.9。
 
 打开对话后，在右侧栏选择记忆。新 L1–L3 卡片展示单独生成的一句话描述，详情保留完整内容、来源、评分、证据及折叠 JSON。勾选每条可用 L2/L3 卡片行首的选择框，再将所选记录加入下一轮。待用区及输入框展示保存的正文、数量和预算；召回提交后消费选择。自动召回默认关闭，开关独立持久化。两条路径均检查版本、祖先、权限及默认 5 条、8192 个渲染字节的预算。共享轮询保留搜索及阅读位置。发送后查看已提交的上下文记录。过期来源暂停召回，并由可用来源触发核查；历史仍可读。
 
@@ -45,7 +47,7 @@ dsh --profile web
 工作区模式禁用 `/memory-share` 和跨项目召回。工作区目录失效或不可写、记忆路径被重定向、数据库打开失败时明确报错，保留原始 Session 日志供重试，不将项目数据转存全局目录。路径检查拒绝已有链接，但不能阻止其他进程并发替换目录。
 
 
-Web 服务可用时启用面板；`panel: false` 关闭 RPC。bundle 使用 BM25 与 `trigram`：中文展开为三字 OR 词项，一字或两字词项使用字面子串匹配。独立入口默认开启 `textSearch.expandQuery`：文本无命中且有可用记录时，通过已有 L1 模型进行一次带日志的查询改写，再检索一次。模型只提供搜索词，不提供记忆事实；错误明确显示。设置 `expandQuery: false` 可只用文本召回，`expansionTimeoutMs` 调整默认 15000 ms 时限。显式 `textSearch` 对象保留直挂默认值，包括关闭扩展。参见[升级说明](./trigram-upgrade.zh.md)。面板搜索仍按单层进行字面浏览。`embedding` 选择向量检索，要求 `endpoint`、`model`、`dimensions` 和 `apiKeyEnv`；同时选择两种检索模式会被拒绝。
+Web 服务可用时启用面板；`panel: false` 关闭 RPC。bundle 使用 BM25 与 `trigram`：中文展开为三字 OR 词项，一字或两字词项使用字面子串匹配。独立入口默认开启 `textSearch.expandQuery`：文本无命中且有可用记录时，通过已有 L1 模型进行一次带日志的查询改写，再检索一次。模型只提供搜索词，不提供记忆事实；错误明确显示。设置 `expandQuery: false` 可只用文本召回，`expansionTimeoutMs` 调整默认 15000 ms 时限。显式 `textSearch` 对象保留直挂默认值，包括关闭扩展。参见[升级说明](./trigram-upgrade.md)。面板搜索仍按单层进行字面浏览。`embedding` 选择向量检索，要求 `endpoint`、`model`、`dimensions` 和 `apiKeyEnv`；同时选择两种检索模式会被拒绝。
 
 <a id="known-limitations"></a>
 ## 已知限制

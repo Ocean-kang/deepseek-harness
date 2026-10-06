@@ -9,7 +9,7 @@ kind: "package-bundle"
 
 ## 摘要
 
-将完整的已记录 Session 事件保存在项目所属的 SQLite 中，浏览 L0–L3 并选择 L2/L3 用于下一轮。后台学习复用 DSH 模型和凭据，BM25 检索无需 embedding 密钥。独立 bundle 通过公开扩展点开启带日志的注入。参见[安装说明](distribution/README.zh.md)和[验证范围](evaluation/workspace-storage-2026-10-02.md)。
+将完整的已记录 Session 事件保存在项目所属的 SQLite 中，浏览 L0–L3 并选择 L2/L3 用于下一轮。后台学习复用 DSH 模型和凭据，BM25 检索无需 embedding 密钥。独立 bundle 通过公开扩展点开启带日志的注入。参见[安装说明](distribution/README.zh.md)和[验证范围](evaluation/compatibility-0.2.1-alpha.1-2026-10-06.md)。
 
 ## 目录
 
@@ -22,7 +22,7 @@ kind: "package-bundle"
 <a id="use-this-plugin"></a>
 ## 使用插件
 
-当前检出面向 DSH 0.2.0-rc.2。构建 `memory/lib` 后，从仓库根目录运行以下命令，开启采集、L1–L3 学习、召回和右侧栏记忆标签页。bundle 使用当前 DSH home 及已配置的模型凭据；`profiles/web.patch.yml` 仅开启 L0 采集。如果 Web profile 已安装此 bundle，省略 `--patch ./memory/cordis.patch.yml`，避免重复加载。安装构建包见[独立插件说明](distribution/README.zh.md)。
+当前检出面向 DSH 0.2.1-alpha.1。构建 `memory/lib` 后，从仓库根目录运行以下命令，开启采集、L1–L3 学习、召回和右侧栏记忆标签页。bundle 使用当前 DSH home 及已配置的模型凭据；`profiles/web.patch.yml` 仅开启 L0 采集。如果 Web profile 已安装此 bundle，省略 `--patch ./memory/cordis.patch.yml`，避免重复加载。安装构建包及从 memory 0.1.8 升级见[独立插件说明](distribution/README.zh.md)。
 
 ```powershell
 pnpm dsh web --patch ./memory/cordis.patch.yml --patch ./memory/profiles/chat-view.patch.yml
@@ -235,7 +235,7 @@ node ../apps/cli/lib/bin.js --profile headless --patch ./profiles/headless-built
 - [面板轮询与召回验收](evaluation/panel-recall-2026-10-04.md)
 - [0.1.8 交付验收](evaluation/delivery-0.1.8-2026-10-04.md)
 - [浏览器交互及真实 Provider 验收](evaluation/browser-live-2026-10-04.md)
-- [独立插件 trigram 升级说明](distribution/trigram-upgrade.zh.md)
+- [独立插件 trigram 升级说明](distribution/trigram-upgrade.md)
 - [手工质量实验输入](evaluation/task4-cases.json)，尚未执行
 - [Session 持久化服务](../packages/session/session-persistence/README.zh.md)
 - [DSH profile 组合](../packages/boot/app-boot/README.zh.md)

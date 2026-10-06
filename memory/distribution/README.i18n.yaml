@@ -1,7 +1,7 @@
 # Bilingual-pair consistency record for README.md (docs/i18n/README.md): per heading
 # section, a hash of its English and Chinese blocks outside code blocks and generated regions.
 # After editing either side, bring the other along and re-record with:
-#   node --import tsx/esm scripts/check-docs.mjs --write-pairing
+#   pnpm run verify-translation-pairing --write memory/distribution/README.md
 /:
   en: 5cd5f5876d432ad3
   zh: 89a465ed3fe706a1
@@ -15,11 +15,11 @@
   en: 0bbaf8cd0000bb83
   zh: c062225447350fbb
 /portable-memory/install-and-use:
-  en: 767da0e2fbf3d9ba
-  zh: 40c50cbf0a299bfe
+  en: fc2281144e8716f3
+  zh: 4e0694ea985c14a8
 /portable-memory/data-and-configuration:
-  en: dc7434db594b7e18
-  zh: 605546f6d061cf6b
+  en: 22e1bf919fe3bd9a
+  zh: d26f154bc59c951b
 /portable-memory/known-limitations:
   en: 68ce025f6473d676
   zh: 83ab9ab9dceff286
