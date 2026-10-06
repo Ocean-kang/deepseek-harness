@@ -142,7 +142,6 @@ export class MemoryRetriever {
         })
         void job.catch(() => undefined) // The batch barrier owns reporting after all requests settle.
         pending.add(job)
-        return job
       }
       try {
         for (const document of store.documents(project, this.spec.pageSize)) {

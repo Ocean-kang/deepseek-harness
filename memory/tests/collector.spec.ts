@@ -42,7 +42,7 @@ async function setup() {
     },
   }
   const report = vi.fn()
-  const create = (memory: RawMemory = provider) => {
+  const create = (memory: Pick<RawMemory, 'appendRaw'> = provider) => {
     const collector = new RawCollector(memory, source, item.spec, report)
     collectors.add(collector)
     return collector
@@ -97,8 +97,7 @@ it('recovers bounded-queue overflow while history recovery is paused', async () 
 it('keeps the committed prefix on failure and resumes on an explicit flush', async () => {
   const item = await setup()
   let fail = false
-  const faulty: RawMemory = {
-    readRaw: request => item.provider.readRaw(request),
+  const faulty: Pick<RawMemory, 'appendRaw'> = {
     appendRaw: request => {
       if (fail && request.events.length > 0) return Promise.reject(new Error('disk failure'))
       return item.provider.appendRaw(request)
@@ -134,8 +133,7 @@ it('waits for an in-flight transaction on close and ignores subsequent capture',
   const item = await setup()
   const entered = Promise.withResolvers<void>()
   const release = Promise.withResolvers<void>()
-  const held: RawMemory = {
-    readRaw: request => item.provider.readRaw(request),
+  const held: Pick<RawMemory, 'appendRaw'> = {
     async appendRaw(request) {
       if (request.events.length > 0) { entered.resolve(); await release.promise }
       return item.provider.appendRaw(request)

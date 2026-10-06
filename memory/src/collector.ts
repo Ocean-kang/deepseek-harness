@@ -29,7 +29,7 @@ export class RawCollector {
   private closePromise: Promise<void> | undefined
 
   /**
-   * @param memory - durable transaction provider; remains open until close resolves.
+   * @param memory - durable append provider; remains open until close resolves.
    * @param source - canonical Session storage with an independent flush barrier.
    * @param spec - resolved limits and fallback project identity.
    * @param report - body-free operational diagnostics; must not throw.
@@ -37,7 +37,7 @@ export class RawCollector {
    * @param resolveProject - resolve existing ownership or a new Session's project; failures remain retryable.
    */
   constructor(
-    private readonly memory: RawMemory,
+    private readonly memory: Pick<RawMemory, 'appendRaw'>,
     private readonly source: Pick<SessionPersistence, 'flush' | 'open'>,
     private readonly spec: Spec,
     private readonly report: (error: MemoryError) => void,

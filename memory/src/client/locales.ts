@@ -3,6 +3,10 @@ import type {} from '@deepseek-ai/dsh-client-ui-slots'
 
 /** Chinese dictionary owns the key set. */
 export const zh = {
+  assets: '记忆资产', assetsHelp: '从原始记录到长期知识', loaded: '已加载 {count} 条',
+  browseHelp: '选择一条记忆，查看正文与来源', content: '记忆正文',
+  L0Help: '完整对话与工具记录', L1Help: '提炼主题、动作和结果', L2Help: '可复用的项目经验', L3Help: '长期有效的原则与决策',
+  revision: 'v{revision}', versionMetadata: '{level} · v{revision}', sourceVersion: '{id} · v{revision}',
   title: '记忆', description: '浏览 L0–L3，选择下一轮使用的记忆', search: '搜索记忆',
   excluded: '此对话创建于工作区记忆启用之前。请新建对话使用项目记忆。',
   empty: '暂无匹配记忆', retry: '刷新记忆', more: '加载更多', detail: '查看正文与来源',
@@ -46,6 +50,10 @@ export const zh = {
 export type MemoryPanelKey = keyof typeof zh
 /** English dictionary has exactly the same keys. */
 export const en: Record<MemoryPanelKey, string> = {
+  assets: 'Memory assets', assetsHelp: 'From raw records to lasting knowledge', loaded: '{count} loaded',
+  browseHelp: 'Select a memory to read its text and sources', content: 'Memory content',
+  L0Help: 'Full conversations and tool records', L1Help: 'Distilled topics, actions and outcomes', L2Help: 'Reusable project experience', L3Help: 'Lasting principles and decisions',
+  revision: 'v{revision}', versionMetadata: '{level} · v{revision}', sourceVersion: '{id} · v{revision}',
   title: 'Memory', description: 'Browse L0–L3 and choose memory for the next turn', search: 'Search memory',
   excluded: 'This conversation predates workspace memory. Start a new conversation to use project memory.',
   empty: 'No matching memory', retry: 'Reload', more: 'Load more', detail: 'View text and sources',

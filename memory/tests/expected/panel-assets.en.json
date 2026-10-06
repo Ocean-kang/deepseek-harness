@@ -1,0 +1,24 @@
+{
+  "levels": [
+    {
+      "name": "L0: Conversation and execution",
+      "selected": "false"
+    },
+    {
+      "name": "L1: Topics, actions and outcomes",
+      "selected": "false"
+    },
+    {
+      "name": "L2: Project experience and constraints",
+      "selected": "true"
+    },
+    {
+      "name": "L3: Stable principles and decisions",
+      "selected": "false"
+    }
+  ],
+  "assets": [
+    "Use next turnL2: firstL2 · v2 · ActiveExperience and constraintsExact memory textSave next-turn selection",
+    "Use next turnL2: nextL2 · v2 · ActiveExperience and constraintsExact memory textSave next-turn selection"
+  ]
+}

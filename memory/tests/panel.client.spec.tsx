@@ -6,9 +6,10 @@ import { SessionId, SessionSeq } from '@deepseek-ai/dsh-session/types'
 import { MemoryPanel } from '../src/client/MemoryPanel.tsx'
 import { PendingMemory } from '../src/client/PendingMemory.tsx'
 import type { PendingMemoryProps } from '../src/client/PendingMemory.tsx'
-import type { MemoryPanelProps, PanelCall } from '../src/client/MemoryPanel.tsx'
-import { zh } from '../src/client/locales.ts'
+import type { MemoryPanelProps } from '../src/client/MemoryPanel.tsx'
+import { en, zh } from '../src/client/locales.ts'
 import { createPanelStateObserver } from '../src/client/state-observer.ts'
+import type { PanelCall } from '../src/client/state-observer.ts'
 import type { PanelRequest, PanelResponse, PanelRow } from '../src/panel-protocol.ts'
 import type { MemoryId, MemoryRef } from '../src/l1-types.ts'
 
@@ -63,7 +64,7 @@ it('combines L2 and L3 choices, saves them for the next turn and displays the re
   const item = mount()
   await waitFor(() => expect(item.view.getByRole('checkbox')).toBeDefined())
   fireEvent.click(item.view.getByRole('checkbox'))
-  fireEvent.click(item.view.getByRole('button', { name: 'L3' }))
+  fireEvent.click(item.view.getByRole('button', { name: `L3: ${zh.L3}` }))
   await waitFor(() => expect(item.view.getByRole('button', { name: /查看正文与来源: Long-term rule/ })).toBeDefined())
   fireEvent.click(item.view.getByRole('checkbox'))
   fireEvent.click(item.view.getByRole('button', { name: zh.applySelection }))
@@ -90,6 +91,50 @@ it('places each selection control before its memory title and keeps insertion as
   ])
 })
 
+it('opens a separate reading area, preserves input focus on refresh and returns to the initiating asset', async () => {
+  const item = mount()
+  const opener = await item.view.findByRole('button', { name: /查看正文与来源: Project rule/ })
+  fireEvent.click(opener)
+  const detail = await item.view.findByRole('article', { name: zh.detail })
+  const heading = within(detail).getByRole('heading', { name: 'Project rule' })
+  expect(document.activeElement).toBe(heading)
+  expect(within(detail).getByRole('heading', { name: zh.content })).toBeDefined()
+  expect(item.view.container.querySelector('[data-row-key][data-active="true"]')).toBe(opener.closest('article'))
+  const input = item.view.getByRole('textbox')
+  input.focus()
+  const before = item.requests.filter(request => request.action === 'detail').length
+  fireEvent.click(item.view.getByRole('button', { name: zh.retry }))
+  await waitFor(() => expect(item.requests.filter(request => request.action === 'detail').length).toBeGreaterThan(before))
+  await waitFor(() => expect(item.view.getByRole('button', { name: zh.retry }).hasAttribute('disabled')).toBe(false))
+  expect(document.activeElement).toBe(input)
+  fireEvent.click(item.view.getByRole('button', { name: zh.close }))
+  expect(item.view.queryByRole('article', { name: zh.detail })).toBeNull()
+  expect(document.activeElement).toBe(opener)
+  expect(item.view.getByRole('checkbox')).toBeDefined()
+})
+
+it('labels loaded pages independently from generated versions in both locales', async () => {
+  const item = mount(false, true)
+  await waitFor(() => expect(item.view.getAllByText('已加载 1 条')).toHaveLength(2))
+  expect(item.view.getByText('项目累计已生成 2 条记忆')).toBeDefined()
+  expect(item.view.getByRole('button', { name: `L2: ${zh.L2}` }).textContent).toContain(zh.L2Help)
+  fireEvent.click(item.view.getByRole('button', { name: zh.more }))
+  await waitFor(() => expect(item.view.getAllByText('已加载 2 条')).toHaveLength(2))
+  const presentation = () => ({
+    levels: within(item.view.getByRole('navigation'))
+      .getAllByRole('button').map(button => ({ name: button.getAttribute('aria-label'), selected: button.getAttribute('aria-pressed') })),
+    assets: [...item.view.container.querySelectorAll('[data-row-key]')].map(asset => asset.textContent),
+  })
+  await expect(JSON.stringify(presentation(), null, 2) + '\n').toMatchFileSnapshot('./expected/panel-assets.zh.json')
+  const t: MemoryPanelProps['t'] = (key, params) => Object.entries(params ?? {}).reduce(
+    (text, [name, value]) => text.replace(`{${name}}`, String(value)), en[key])
+  item.view.rerender(<MemoryPanel {...item.props} t={t} />)
+  expect(item.view.getByRole('heading', { name: en.assets })).toBeDefined()
+  expect(item.view.getAllByText('2 loaded')).toHaveLength(2)
+  expect(item.view.getByRole('button', { name: `L2: ${en.L2}` }).textContent).toContain(en.L2Help)
+  await expect(JSON.stringify(presentation(), null, 2) + '\n').toMatchFileSnapshot('./expected/panel-assets.en.json')
+})
+
 it('shows one-sentence L1–L3 descriptions and opens full text and folded JSON in detail', async () => {
   const sentence = 'Use a dedicated workspace for each project to preserve its memory'
   const item = mount(false, false, call => async (request, signal) => {
@@ -103,12 +148,12 @@ it('shows one-sentence L1–L3 descriptions and opens full text and folded JSON 
   })
   await waitFor(() => expect(item.view.getByText(sentence)).toBeDefined())
   expect(item.view.queryByText('Exact memory text')).toBeNull()
-  fireEvent.click(item.view.getByRole('button', { name: 'L1' }))
+  fireEvent.click(item.view.getByRole('button', { name: `L1: ${zh.L1}` }))
   await waitFor(() => expect(item.view.getByText(zh.readOnly)).toBeDefined())
   await waitFor(() => expect(item.view.getByText(sentence)).toBeDefined())
   expect(item.view.queryByRole('checkbox')).toBeNull()
   expect(item.view.queryByText('Exact memory text')).toBeNull()
-  fireEvent.click(item.view.getByRole('button', { name: 'L3' }))
+  fireEvent.click(item.view.getByRole('button', { name: `L3: ${zh.L3}` }))
   await waitFor(() => expect(item.view.getByText(sentence)).toBeDefined())
   expect(item.view.getByRole('checkbox')).toBeDefined()
   expect(item.view.queryByText('Exact memory text')).toBeNull()
@@ -190,7 +235,7 @@ it('adds one row to pending memory without clearing another unsaved choice', asy
   const item = mount()
   await waitFor(() => expect(item.view.getByRole('checkbox')).toBeDefined())
   fireEvent.click(item.view.getByRole('checkbox'))
-  fireEvent.click(item.view.getByRole('button', { name: 'L3' }))
+  fireEvent.click(item.view.getByRole('button', { name: `L3: ${zh.L3}` }))
   await waitFor(() => expect(item.view.getByRole('button', { name: '加入下一轮：Long-term rule' })).toBeDefined())
   fireEvent.click(item.view.getByRole('button', { name: '加入下一轮：Long-term rule' }))
   await waitFor(() => expect(item.view.getByText(/待注入 1 条/)).toBeDefined())
@@ -199,7 +244,7 @@ it('adds one row to pending memory without clearing another unsaved choice', asy
   ])
   expect((item.view.getByRole('checkbox') as HTMLInputElement).checked).toBe(true)
   expect(item.view.getByText('已选择 2 条')).toBeDefined()
-  fireEvent.click(item.view.getByRole('button', { name: 'L2' }))
+  fireEvent.click(item.view.getByRole('button', { name: `L2: ${zh.L2}` }))
   await waitFor(() => expect(item.view.getByRole('button', { name: /查看正文与来源: Project rule/ })).toBeDefined())
   expect((item.view.getByRole('checkbox') as HTMLInputElement).checked).toBe(true)
   fireEvent.click(item.view.getByRole('button', { name: zh.applySelection }))
@@ -402,7 +447,7 @@ it('keeps the visible L0 event when newly captured earlier sessions add a refres
       return response.action === 'state' ? { ...response, revision: generation, refreshIntervalMs: 100 } : response
     })
     await act(async () => { await Promise.resolve() })
-    await act(async () => { fireEvent.click(item.view.getByRole('button', { name: 'L0' })) })
+    await act(async () => { fireEvent.click(item.view.getByRole('button', { name: `L0: ${zh.L0}` })) })
     await act(async () => { fireEvent.click(item.view.getByRole('button', { name: zh.more })) })
     const scroller = item.view.container.querySelector('[aria-busy]')!
     scroller.scrollTop = 95

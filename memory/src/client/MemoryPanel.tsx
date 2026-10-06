@@ -1,4 +1,4 @@
-/** Sidebar content with cancellable project-scoped reads and durable next-turn choices. */
+/** Responsive memory asset browser with exact-version detail and durable next-turn choices. */
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { Button, Checkbox, Input, Switch } from '@deepseek-ai/dsh-client-ui-primitives'
@@ -10,7 +10,6 @@ import type { PanelCall, PanelState, PanelStateRefresh, PanelStateWatch } from '
 import type {} from './locales.ts'
 import css from './MemoryPanel.module.css'
 
-export type { PanelCall } from './state-observer.ts'
 /** Injected endpoint and the existing tab/locale seats. */
 export type MemoryPanelProps = PropsRuntime<'sidebar.right.pane.tab'> & PropsLocale<'memoryPanel'> & {
   call: PanelCall
@@ -58,9 +57,16 @@ export function MemoryPanel({ sessionId, useTabInfo, t, call, watch, refresh }: 
   const dirty = useRef(false)
   const owner = useRef(sessionId)
   const body = useRef<HTMLDivElement>(null)
+  const detailHeading = useRef<HTMLHeadingElement>(null)
+  const focusDetail = useRef(false)
+  const detailOpener = useRef<HTMLButtonElement | null>(null)
   const anchor = useRef<{ key: string | undefined; offset: number; scroll: number } | null>(null)
   const observe = useRef<(status: PanelState) => Promise<void>>(async () => {})
   const listedRevision = useRef<string | undefined>(undefined)
+
+  useLayoutEffect(() => {
+    if (focusDetail.current) { detailHeading.current?.focus(); focusDetail.current = false }
+  }, [detail])
 
   useLayoutEffect(() => {
     if (anchor.current === null || body.current === null) return
@@ -147,17 +153,10 @@ export function MemoryPanel({ sessionId, useTabInfo, t, call, watch, refresh }: 
   }, [sessionId, level, call, tab.signal])
 
   observe.current = async (status) => {
-    if ((reads.current !== null && !reads.current.signal.aborted) || (writes.current !== null && !writes.current.signal.aborted)) return
-    const controller = lifetime()
-    reads.current = controller
-    try {
-      setState(status)
-      if (!dirty.current) setDraft(status.refs)
-      if (listedRevision.current !== status.revision) {
-        controller.abort()
-        await reload(false, submittedQuery.current, true)
-      }
-    } catch (error) { if (!controller.signal.aborted) failed(error) } finally { controller.abort() }
+    if (tab.signal.aborted || (reads.current !== null && !reads.current.signal.aborted) || (writes.current !== null && !writes.current.signal.aborted)) return
+    setState(status)
+    if (!dirty.current) setDraft(status.refs)
+    if (listedRevision.current !== status.revision) await reload(false, submittedQuery.current, true)
   }
   useEffect(() => {
     if (tab.signal.aborted) return
@@ -201,6 +200,7 @@ export function MemoryPanel({ sessionId, useTabInfo, t, call, watch, refresh }: 
       const current = result?.action === 'detail' ? result.row : row
       if (current === null) throw new Error('conflict')
       const sameMemory = current.ref !== null && detail?.ref !== undefined && detail.ref !== null && current.ref.id === detail.ref.id
+      focusDetail.current = true
       setDetail(current)
       if (!sameMemory) { setHistory([]); setHistoryNext(null) }
       if (current.ref !== null && !current.shared && !sameMemory) {
@@ -250,13 +250,14 @@ export function MemoryPanel({ sessionId, useTabInfo, t, call, watch, refresh }: 
 
   return <section className={css.root} aria-label={t('title')} data-memory-panel="true">
     <header className={css.header}>
-      <div className={css.masthead}><h2>{t('title')}</h2><span>{t('description')}</span></div>
+      <div className={css.masthead}><div><span className={css.eyebrow}>{t('assetsHelp')}</span><h2>{t('assets')}</h2></div>
+        <span className={css.assetCount}>{t('loaded', { count: page.rows.length })}</span></div>
       {state !== undefined && <div className={css.project}>{t('project', { project: state.projectId })}</div>}
       <nav className={css.levels} aria-label={t('title')}>
-        {(['L0', 'L1', 'L2', 'L3'] as const).map(item => <Button key={item} aria-pressed={level === item} onClick={() => { setLevel(item) }}>{item}</Button>)}
+        {(['L0', 'L1', 'L2', 'L3'] as const).map(item => <Button key={item} aria-label={`${item}: ${t(item)}`} aria-pressed={level === item} onClick={() => { setLevel(item) }}>
+          <span className={css.levelTag}>{item}</span><span className={css.levelName}>{t(item)}</span><span className={css.levelHelp}>{t(`${item}Help`)}</span>
+        </Button>)}
       </nav>
-      <h3 className={css.sectionTitle}>{t(level)}</h3>
-      <p>{t(level === 'L0' || level === 'L1' ? 'readOnly' : 'selectionHelp')}</p>
       <form className={css.search} onSubmit={(event) => { event.preventDefault(); void reload(false, query) }}>
         <Input className={css.searchInput ?? ''} aria-label={t('search')} placeholder={t('search')} value={query} onChange={(event) => { setQuery(event.target.value) }} />
         <Button className={css.primary} size="sm" type="submit" disabled={busy}>{t('search')}</Button>
@@ -265,7 +266,6 @@ export function MemoryPanel({ sessionId, useTabInfo, t, call, watch, refresh }: 
           void reload(false, submittedQuery.current, true)
         }}>{t('retry')}</Button>
       </form>
-      <p>{t('searchScope', { level })}</p>
       {state !== undefined && <div className={css.learning} role="status" aria-live="polite">
         {!state.learning.enabled && <div>{t('learningDisabled')}</div>}
         {state.learning.enabled && state.learning.pending + state.learning.running > 0 && <div>{t('learning', { count: state.learning.pending + state.learning.running })}</div>}
@@ -276,12 +276,18 @@ export function MemoryPanel({ sessionId, useTabInfo, t, call, watch, refresh }: 
     <div className={css.body} ref={body} aria-busy={busy}>
       {failure !== undefined && <p role="alert">{t(failure)}</p>}
       {state?.valid === false && <p role="status">{t('stale')}</p>}
+      <div className={css.browser}>
+      <div className={css.assetList}>
+      <div className={css.listHeading}><h3>{t(level)}</h3><span>{t('loaded', { count: page.rows.length })}</span></div>
+      <p className={css.listHelp}>{t(level === 'L0' || level === 'L1' ? 'readOnly' : 'selectionHelp')}</p>
+      <p className={css.listHelp}>{t('searchScope', { level })}</p>
       {busy && page.rows.length === 0 && <div className={css.skeleton} aria-hidden="true" />}
       {!busy && failure === undefined && page.rows.length === 0 && <p className={css.empty}>{t('empty')}</p>}
       {submittedQuery.current && <p>{t('searchMatches', { count: page.rows.length, query: submittedQuery.current })}</p>}
-      {page.rows.map((row, index) => {
+      {page.rows.map(row => {
         const selected = row.ref
-        return <article className={css.row} key={rowKey(row)} data-row-key={selected?.id ?? rowKey(row)}>
+        return <article className={css.row} key={rowKey(row)} data-row-key={selected?.id ?? rowKey(row)}
+          data-active={detail !== undefined && rowKey(detail) === rowKey(row)}>
           <div className={css.entryHeading}>
             {row.selectable && selected !== null && <Checkbox className={css.selection} label={t('select')}
               title={t('selectRow', { title: row.title })} checked={draft.some(ref => same(ref, selected))}
@@ -290,9 +296,9 @@ export function MemoryPanel({ sessionId, useTabInfo, t, call, watch, refresh }: 
                 setDraft(previous => checked ? [...previous.filter(ref => !same(ref, selected)), selected]
                   : previous.filter(ref => !same(ref, selected)))
               }} />}
-            <span className={css.ordinal}>[{index + 1}]</span>
-            <Button className={css.title} onClick={() => { void show(row) }} aria-label={`${t('detail')}: ${row.title}`}>{highlight(row.title, submittedQuery.current)}</Button></div>
-          <div className={css.metadata}>{row.ref === null ? row.level : `${row.level} · v${row.ref.revision}`} · {t(row.state)}{row.shared && ` · ${t('shared')}`}</div>
+            <span className={css.badge}>{row.level}</span>
+            <Button className={css.title} onClick={(event) => { detailOpener.current = event.currentTarget; void show(row) }} aria-label={`${t('detail')}: ${row.title}`}>{highlight(row.title, submittedQuery.current)}</Button></div>
+          <div className={css.metadata}>{row.ref === null ? row.level : t('versionMetadata', { level: row.level, revision: row.ref.revision })} · {t(row.state)}{row.shared && ` · ${t('shared')}`}</div>
           {content(row)}
           <div className={css.rowActions}>
             {row.selectable && selected !== null && <Button aria-label={t('applyRow', { title: row.title })}
@@ -303,12 +309,18 @@ export function MemoryPanel({ sessionId, useTabInfo, t, call, watch, refresh }: 
         </article>
       })}
       {page.next !== null && <Button disabled={busy} onClick={() => { void reload(true) }}>{t('more')}</Button>}
-      {detail !== undefined && <article className={css.row}>
-        <Button onClick={() => { setDetail(undefined) }}>{t('close')}</Button>
-        <h3>{detail.title}</h3>
+      </div>
+      {detail === undefined ? <div className={css.detailEmpty}><span className={css.levelTag}>{level}</span><p>{t('browseHelp')}</p></div>
+        : <article className={css.detail} aria-label={t('detail')}>
+        <div className={css.detailToolbar}><span className={css.badge}>{detail.level}</span><Button size="sm" onClick={() => {
+          setDetail(undefined)
+          if (detailOpener.current?.isConnected) detailOpener.current.focus()
+        }}>{t('close')}</Button></div>
+        <h3 ref={detailHeading} tabIndex={-1} className={css.detailTitle}>{detail.title}</h3>
+        <div className={css.metadata}>{detail.ref === null ? detail.level : t('versionMetadata', { level: detail.level, revision: detail.ref.revision })} · {t(detail.state)}{detail.shared && ` · ${t('shared')}`}</div>
+        <h4 className={css.detailSection}>{t('content')}</h4>
         {detail.description && <p className={css.summary}>{highlight(detail.description, submittedQuery.current)}</p>}
         {content(detail, true)}
-        <div>{detail.ref === null ? detail.level : `${detail.level} · v${detail.ref.revision}`} · {t(detail.state)}{detail.shared && ` · ${t('shared')}`}</div>
         {detail.trust !== null && <dl className={css.trust}>
           <dt>{t('importance', { score: detail.trust.score, min: detail.trust.scoreMin, max: detail.trust.scoreMax })}</dt><dd>{t('trustHelp')}</dd>
           <dt>{t('evidence')}</dt><dd>{t(detail.trust.evidence)}</dd>
@@ -317,21 +329,22 @@ export function MemoryPanel({ sessionId, useTabInfo, t, call, watch, refresh }: 
           <dt>{t('rationale')}</dt><dd>{detail.trust.rationale}</dd>
         </dl>}
         {detail.generation !== null && <p>{t('generation')}: {detail.generation.provider} / {detail.generation.model}</p>}
-        <h4>{t('source')}</h4>
+        <h4 className={css.detailSection}>{t('source')}</h4>
         {detail.shared && <p>{t('sharedPrivacy')}</p>}
         <div>{t(detail.sourceStatus === 'needs-review' ? 'reviewHelp' : 'currentSources')}</div>
         <ul>{detail.sources.map((source, index) => <li key={index}>{source.kind === 'memory'
-          ? <Button onClick={() => { void show({ ...detail, ref: source.ref }) }}>{source.ref.id} · v{source.ref.revision}</Button>
+          ? <Button onClick={() => { void show({ ...detail, ref: source.ref }) }}>{t('sourceVersion', { id: source.ref.id, revision: source.ref.revision })}</Button>
           : `${source.sessionId} #${source.seq}`}</li>)}</ul>
         {detail.raw !== null && <details><summary>{t('raw')}</summary><pre>{highlight(detail.raw, submittedQuery.current)}</pre></details>}
-        {history.length > 0 && <div>{t('history')}: {history.map(ref => <Button key={ref.revision} aria-pressed={detail.ref?.revision === ref.revision} onClick={() => { void show({ ...detail, ref }) }}>v{ref.revision}</Button>)}</div>}
+        {history.length > 0 && <div>{t('history')}: {history.map(ref => <Button key={ref.revision} aria-pressed={detail.ref?.revision === ref.revision} onClick={() => { void show({ ...detail, ref }) }}>{t('revision', { revision: ref.revision })}</Button>)}</div>}
         {historyNext !== null && <Button disabled={busy} onClick={() => { void older() }}>{t('older')}</Button>}
       </article>}
+      </div>
       {state !== undefined && state.used.length > 0 && <details className={css.row}>
         <summary>{t('used')}</summary>
         <p>{t('usedHelp')}</p>
         {state.used.map((used, index) => <div key={index}><div>{t('turn', { turn: used.turn })}</div><pre>{used.body}</pre>
-          <ul>{used.refs.map(ref => <li key={`${ref.id}:${ref.revision}`}>{ref.id} · v{ref.revision}</li>)}</ul></div>)}
+          <ul>{used.refs.map(ref => <li key={`${ref.id}:${ref.revision}`}>{t('sourceVersion', { id: ref.id, revision: ref.revision })}</li>)}</ul></div>)}
       </details>}
     </div>
     <footer className={css.footer}>

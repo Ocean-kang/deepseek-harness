@@ -1,5 +1,0 @@
-# A fresh L0 database must recover a Session already persisted by an earlier process.
-- id: memory-l0
-  config:
-    projectId: !!js process.env.DSH_MEMORY_PROJECT
-    databasePath: data/recovery.sqlite

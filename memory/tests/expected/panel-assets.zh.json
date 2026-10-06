@@ -1,0 +1,24 @@
+{
+  "levels": [
+    {
+      "name": "L0: 对话与执行记录",
+      "selected": "false"
+    },
+    {
+      "name": "L1: 主题、动作与结果",
+      "selected": "false"
+    },
+    {
+      "name": "L2: 项目经验与约束",
+      "selected": "true"
+    },
+    {
+      "name": "L3: 稳定原则与决策",
+      "selected": "false"
+    }
+  ],
+  "assets": [
+    "选择记忆L2: firstL2 · v2 · 有效经验与约束Exact memory text加入下一轮",
+    "选择记忆L2: nextL2 · v2 · 有效经验与约束Exact memory text加入下一轮"
+  ]
+}

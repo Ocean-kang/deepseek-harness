@@ -246,7 +246,6 @@ export async function installWorkspaceMemory(ctx: Context, spec: Spec): Promise<
     await routes.recover()
     collector = new RawCollector({
       appendRaw: request => routes.get(request.projectId).provider.appendRaw(request),
-      readRaw: request => routes.get(request.projectId).provider.readRaw(request),
     }, ctx.sessionPersistence, spec, report, project => routes.scan(project), session => routes.resolveSession(session))
     const capture = collector
     listeners.push(ctx.on('session/created', session => { if (routes.accepts(session)) capture.adopt(session) }))

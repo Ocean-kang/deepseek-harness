@@ -8,9 +8,9 @@ import type { ConnectionHandle } from '@deepseek-ai/dsh-client-connection/client
 import { FileTypeIcon, GuideArtworkFiles } from '@deepseek-ai/dsh-client-ui-primitives'
 import { panelResponse } from '../panel-protocol.ts'
 import { MemoryPanel } from './MemoryPanel.tsx'
-import type { PanelCall } from './MemoryPanel.tsx'
 import { PendingMemory } from './PendingMemory.tsx'
 import { createPanelStateObserver } from './state-observer.ts'
+import type { PanelCall } from './state-observer.ts'
 import { en, zh } from './locales.ts'
 import { cssText } from './MemoryPanel.module.css'
 

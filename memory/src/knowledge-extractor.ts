@@ -293,8 +293,7 @@ export class KnowledgeExtractor {
     const input = scopedInput(task.input, sources, existing)
     if (task.config.promptVersion !== 'knowledge-v3') return { input }
     if (this.readEvidence === undefined) throw new MemoryError('integration', 'Knowledge v3 requires an exact L0 evidence reader')
-    const roots = [...input.sources, ...input.existing, ...input.lineage].filter(record => record.level === 'L1')
-    const refs = [...new Map(roots.flatMap(record => record.summary.sources).map(ref => [JSON.stringify(ref), ref])).values()]
+    const refs = eventRefs(input)
     const evidence: EvidenceItem[] = []
     for (const ref of refs) {
       signal.throwIfAborted()

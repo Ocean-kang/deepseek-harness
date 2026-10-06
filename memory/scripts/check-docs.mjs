@@ -1,5 +1,5 @@
 /** Check independent plugin documents; --write-pairing records the reviewed local bilingual pairs. */
-import { existsSync, lstatSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs'
 import { basename, dirname, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { anchorCache, findViolations } from '../../scripts/verify-md-links.ts'
@@ -16,10 +16,7 @@ const root = fileURLToPath(new URL('../../', import.meta.url))
 const pairSources = ['memory/README.md', 'memory/distribution/README.md', 'memory/distribution/trigram-upgrade.md']
 const pairs = pairSources.map(translationPairPaths)
 const files = [...pairs.flatMap(({ source, zh }) => [source, zh]), 'memory/AGENTS.md',
-  'memory/evaluation/workspace-storage-2026-10-02.md', 'memory/evaluation/memory-cards-2026-10-03.md',
-  'memory/evaluation/batch-sidebar-2026-10-04.md', 'memory/evaluation/knowledge-growth-2026-10-04.md',
-  'memory/evaluation/panel-recall-2026-10-04.md', 'memory/evaluation/delivery-0.1.8-2026-10-04.md',
-  'memory/evaluation/browser-live-2026-10-04.md', 'memory/evaluation/compatibility-0.2.1-alpha.1-2026-10-06.md']
+  ...readdirSync(resolve(root, 'memory/evaluation')).filter(name => name.endsWith('.md')).sort().map(name => `memory/evaluation/${name}`)]
 const args = process.argv.slice(2)
 if (args.length > 1 || args.some(arg => arg !== '--write-pairing')) throw new Error('Use check-docs.mjs [--write-pairing]')
 const context = { repoRoot: root, isTranslationPairSource: path => pairSources.includes(path) || isTranslationScopeFile(path) }

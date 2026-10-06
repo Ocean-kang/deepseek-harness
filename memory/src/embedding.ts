@@ -79,18 +79,12 @@ export interface Embedder {
 
 /** HTTP adapter; response errors never retain provider bodies or credentials. */
 export class HttpEmbedder implements Embedder {
-  private readonly spec: EmbeddingSpec
-  private readonly key: string
-  private readonly request: typeof fetch
   /** @param spec - resolved configuration.
    * @param key - explicit secret read at activation, never stored in SQLite.
    * @param request - instance-local transport for tests.
    */
-  constructor(spec: EmbeddingSpec, key: string, request: typeof fetch = fetch) {
+  constructor(private readonly spec: EmbeddingSpec, private readonly key: string, private readonly request: typeof fetch = fetch) {
     if (!key.trim()) throw new MemoryError('config', 'embedding credential is missing')
-    this.spec = spec
-    this.key = key
-    this.request = request
   }
 
   /** @param texts - nonempty inputs.
