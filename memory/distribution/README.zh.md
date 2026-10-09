@@ -20,14 +20,14 @@ kind: "package-bundle"
 <a id="install-and-use"></a>
 ## 安装与使用
 
-Memory 0.1.10 面向 DSH 0.2.1-alpha.1 的 Web profile，DSH peer 声明会拒绝其他运行版本。下载构建包并通过 DSH 安装，无需编译源码或修改 DSH 代码。
+Memory 0.1.11 面向 DSH 0.2.1-alpha.2 的 Web profile，DSH peer 声明会拒绝其他运行版本。下载构建包并通过 DSH 安装，无需编译源码或修改 DSH 代码。
 
 ```sh
-dsh plugin --profile web add ./deepseek-ai-dsh-memory-l0-0.1.10.tgz
+dsh plugin --profile web add ./deepseek-ai-dsh-memory-l0-0.1.11.tgz
 dsh --profile web
 ```
 
-从 DSH 0.2.0-rc.2 上的 memory 0.1.8 升级时，停止 DSH，备份[记忆目录](#data-and-configuration)，将 DSH 更新到 0.2.1-alpha.1，再在相同 DSH home 中执行上述安装命令并重启。Memory 的 SQLite schema 和插件拥有的 Session 字段保持不变，无需 `allow-version` 豁免。使用源码 overlay 时，重新构建 `memory/lib`，以相同 patch 参数重启。Memory 0.1.8 仍用于 DSH 0.2.0-rc.2；不要在该运行时使用 memory 0.1.10。
+从 DSH 0.2.1-alpha.1 上的 memory 0.1.10 升级时，停止 DSH，备份[记忆目录](#data-and-configuration)，将 DSH 更新到 0.2.1-alpha.2，再在相同 DSH home 中执行上述安装命令并重启。Memory 的 SQLite schema 和插件拥有的 Session 字段保持不变，无需 `allow-version` 豁免。使用源码 overlay 时，重新构建 `memory/lib`，以相同 patch 参数重启。Memory 0.1.11 要求所声明的 DSH 版本；不要在旧运行时安装。从 memory 0.1.8 升级还需遵循[分层记忆指南](layered-upgrade.zh.md)。
 
 在对话侧栏打开记忆。L1 展示任务目标、问题、结果和解决方案，trace 与来源默认折叠；L2 按场景组织可读知识卡；L3 区分工程知识和交互偏好。摘要随提炼生成。选择有效 L2/L3 供一轮使用；待用区和输入框展示正文及预算。自动召回默认关闭，开启后只搜索 L3。学习和召回保持独立。来源被替代或失效时暂停派生召回，精确历史仍可读。参见[分层记忆升级](layered-upgrade.zh.md)。
 
