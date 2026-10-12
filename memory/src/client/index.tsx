@@ -30,7 +30,7 @@ export function apply(ctx: ClientContext): void {
   }, 'memory.panel.styles')
   const t = ctx.locale.bind('memoryPanel')
   const transport: PanelCall = async (request, signal) => {
-    const result = await connection.rpc.call('/memory', 'panel', request, signal)
+    const result = await connection.rpc.call('/api', 'memory/panel', request, signal)
     signal.throwIfAborted()
     if (!result.ok) throw new Error(result.error.code)
     const response = panelResponse.parse(result.value)

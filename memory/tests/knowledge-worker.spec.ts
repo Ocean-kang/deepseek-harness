@@ -114,7 +114,7 @@ it('records the frozen exact request before calling the real LLM service and com
   expect(item.store.listCandidates(item.project, 'L2')).toHaveLength(1)
 })
 
-it.each(['L2', 'L3'] as const)('learns four independent %s tasks in four model calls from one queued batch', async (level) => {
+it.each(['L2', 'L3'] as const)('learns four independent %s tasks in four model calls from one queued batch', async (level: 'L2' | 'L3') => {
   const item = await setup()
   const sources = [item.source]
   for (let index = 1; index < 4; index++) {
@@ -141,7 +141,7 @@ it.each(['L2', 'L3'] as const)('learns four independent %s tasks in four model c
   for (const operation of operations) expect(item.store.getTask(item.project, operation)).toMatchObject({ status: 'done', calls: 1, attempts: 1 })
 })
 
-it.each([false, true])('resumes after unload with one allowed attempt and model dispatched=%s', async (dispatched) => {
+it.each([false, true])('resumes after unload with one allowed attempt and model dispatched=%s', async (dispatched: boolean) => {
   const item = await setup({ maxAttempts: 1 })
   const started = Promise.withResolvers<undefined>()
   const cancelled = new KnowledgeWorker(item.store, { consolidate: async (_task, signal, charge) => {
@@ -251,7 +251,7 @@ it('schedules pending work and a durable retry without a manual run', async () =
   expect(reports).toEqual([])
 })
 
-it.each(['not JSON', '{}', '[{"approved":true}]'])('rejects invalid output %s without publishing knowledge', async text => {
+it.each(['not JSON', '{}', '[{"approved":true}]'])('rejects invalid output %s without publishing knowledge', async (text: string) => {
   const item = await setup()
   item.ctx.llm.registerAdapter(['test'], new Adapter(() => response(text)))
   await item.worker.run(item.project, item.operation, new AbortController().signal)
@@ -278,7 +278,7 @@ it('rejects oversized complete input before recording or dispatch', async () => 
   expect(item.store.getTask(item.project, item.operation)).toMatchObject({ status: 'failed', calls: 0, failure: 'budget' })
 })
 
-it.each([{ level: 'L2', version: 'knowledge-v3' }, { level: 'L3', version: 'knowledge-v2' }] as const)('bounds existing context and resumes a previously budget-failed task after 80 $level versions with $version', async ({ level, version }) => {
+it.each([{ level: 'L2', version: 'knowledge-v3' }, { level: 'L3', version: 'knowledge-v2' }] as const)('bounds existing context and resumes a previously budget-failed task after 80 $level versions with $version', async ({ level, version }: { level: 'L2' | 'L3'; version: 'knowledge-v2' | 'knowledge-v3' }) => {
   const item = await setup({}, version)
   const source = level === 'L2' ? item.source : commitKnowledge(item, 'L2', [item.source], [knowledgeCandidate(item.source, 'Current parent')])[0]!
   const operation = level === 'L2' ? item.operation : item.store.enqueue(item.project, level, [source], item.config)
@@ -455,7 +455,7 @@ it('retains only current ancestry inspection records when a recheck drops an inv
     sources: [{ kind: 'memory', ref: current }] } })
 })
 
-it.each(['L2', 'L3'] as const)('records original L0 evidence before extracting and describing %s', async level => {
+it.each(['L2', 'L3'] as const)('records original L0 evidence before extracting and describing %s', async (level: 'L2' | 'L3') => {
   const item = await setup({}, 'knowledge-v3')
   const source = level === 'L2' ? item.source : commitKnowledge(item, 'L2', [item.source], [knowledgeCandidate(item.source)])[0]!
   const operation = level === 'L2' ? item.operation : item.store.enqueue(item.project, level, [source], item.config)
@@ -502,7 +502,7 @@ it('groups complete preceding-level sources without publishing a partial batch',
   expect(item.store.listCandidates(item.project, 'L2')).toHaveLength(3)
 })
 
-it.each(['knowledge-v2', 'knowledge-v3'] as const)('reconciles repeated merge targets across source groups before one atomic %s publication', async version => {
+it.each(['knowledge-v2', 'knowledge-v3'] as const)('reconciles repeated merge targets across source groups before one atomic %s publication', async (version: 'knowledge-v2' | 'knowledge-v3') => {
   const item = await setup({ maxInputBytes: 10000 }, version)
   const target = commitKnowledge(item, 'L2', [item.source], [knowledgeCandidate(item.source, 'Original constraint')])[0]!
   const sources = await largeSources(item, 240)
@@ -560,7 +560,7 @@ it('fails an oversized mandatory recheck target instead of silently omitting it'
   expect(item.store.getMemory(item.project, target)).toMatchObject({ state: 'active', revision: 1 })
 })
 
-it.each([1, 2])('reserves complete description capacity with a %s-call v3 budget', async maxCalls => {
+it.each([1, 2])('reserves complete description capacity with a %s-call v3 budget', async (maxCalls: number) => {
   const item = await setup({ maxCalls }, 'knowledge-v3')
   const calls = vi.fn(() => response(JSON.stringify([knowledgeCandidate(item.source, 'Constraint one'), knowledgeCandidate(item.source, 'Constraint two')])))
   item.ctx.llm.registerAdapter(['test'], new Adapter(calls))
@@ -677,7 +677,7 @@ it('renews a multi-step task lease at dispatch without extending idle crash reco
 it('recognizes a successful commit even when its acknowledgement fails', async () => {
   const item = await setup()
   const original = item.store.commit.bind(item.store)
-  vi.spyOn(item.store, 'commit').mockImplementation((...args) => { original(...args); throw new MemoryError('storage', 'Acknowledgement lost') })
+  vi.spyOn(item.store, 'commit').mockImplementation((...args: Parameters<typeof original>) => { original(...args); throw new MemoryError('storage', 'Acknowledgement lost') })
   const worker = new KnowledgeWorker(item.store, { consolidate: async () => [knowledgeCandidate(item.source)] })
   cleanups.push(() => worker.close())
   await worker.run(item.project, item.operation, new AbortController().signal)

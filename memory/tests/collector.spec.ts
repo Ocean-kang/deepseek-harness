@@ -4,6 +4,7 @@ import { Session, SessionId, SessionLogOffset } from '@deepseek-ai/dsh-session'
 import type { SessionHandle, SessionPersistence } from '@deepseek-ai/dsh-session-persistence'
 import { RawCollector } from '../src/collector.ts'
 import type { RawMemory } from '../src/types.ts'
+import type { MemoryError } from '../src/types.ts'
 import { fixture } from './helpers.ts'
 
 const collectors = new Set<RawCollector>()
@@ -41,7 +42,7 @@ async function setup() {
       return handle
     },
   }
-  const report = vi.fn()
+  const report = vi.fn<(error: MemoryError) => void>()
   const create = (memory: Pick<RawMemory, 'appendRaw'> = provider) => {
     const collector = new RawCollector(memory, source, item.spec, report)
     collectors.add(collector)
@@ -86,7 +87,7 @@ it('recovers bounded-queue overflow while history recovery is paused', async () 
       const event = item.session.append('turn/start', { turn })
       collector.capture(item.session, event)
     }
-    expect(item.report.mock.calls.some(([error]) => error.code === 'backpressure')).toBe(true)
+    expect(item.report.mock.calls.some(([error]: [MemoryError]) => error.code === 'backpressure')).toBe(true)
   } finally {
     release.resolve()
   }

@@ -83,7 +83,7 @@ it('reuses a persisted candidate after a transient commit failure', async () => 
 it('queries the operation after an ambiguous successful commit', async () => {
   const state = await setup({ async extractTurn(task) { return candidate(task) } })
   const original = state.provider.l1.commitMemory.bind(state.provider.l1)
-  const commit = vi.spyOn(state.provider.l1, 'commitMemory').mockImplementationOnce((...args) => {
+  const commit = vi.spyOn(state.provider.l1, 'commitMemory').mockImplementationOnce((...args: Parameters<typeof original>) => {
     original(...args)
     throw new MemoryError('storage', 'reply lost after commit')
   })

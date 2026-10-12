@@ -1,0 +1,5 @@
+- id: hmr
+  disabled: true
+- insert:
+    - id: memory-profile-startup-check
+      name: ./profile-startup.mjs

@@ -1,6 +1,6 @@
 {
   "name": "@deepseek-ai/dsh-memory-l0",
-  "version": "0.1.11",
+  "version": "0.1.12",
   "private": true,
   "description": "Portable L0–L3 memory, next-turn recall and a DSH memory panel",
   "engines": { "node": "^22.19.0 || >=24.0.0" },

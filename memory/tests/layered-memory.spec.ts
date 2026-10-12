@@ -49,7 +49,7 @@ it.each([
   ['Tests passed', '{}', 1], ['Failed\n[exit code: 1]', '{}', 0], ['Cut short\n[timed out after 20ms]', '{}', 0],
   ['Killed\n[killed by signal: SIGTERM]', '{}', 0], ['No status\n[exit code: null]', '{}', 0], ['Stopped\n[stopped: user]', '{}', 0], ['started background job job-a', '{}', 0],
   ['Tests passed', '{"run_in_background":true}', 0], ['Tests passed', 'invalid-json', 0],
-])('checks recorded shell settlement %s without asking the model', (output, args, count) => {
+])('checks recorded shell settlement %s without asking the model', (output: string, args: string, count: number) => {
   expect(executionRefs(header().id, executionEvents(output, args))).toHaveLength(count)
   expect(executionRefs(header().id, turnEvents({ kind: 'completed' }, 'Assistant claims all tests passed'))).toEqual([])
 })

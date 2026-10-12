@@ -72,7 +72,7 @@ it.each([
   { kind: 'completed' }, { kind: 'error', error: { code: 'TEST', message: 'failed' } },
   { kind: 'blocked' }, { kind: 'aborted', reason: { kind: 'legacy' } },
   { kind: 'max-tokens' }, { kind: 'interrupted' }, { kind: 'forked' },
-] satisfies TurnEndReason[])('preserves the $kind end reason in the model input', async reason => {
+] satisfies TurnEndReason[])('preserves the $kind end reason in the model input', async (reason: TurnEndReason) => {
   const { ctx, task, events, records, extractor } = await setup({}, reason)
   ctx.llm.registerAdapter(['test'], new Adapter(() => response(JSON.stringify(candidate(task)))))
   await extractor.extractTurn(task, events, new AbortController().signal, () => {})
@@ -80,7 +80,7 @@ it.each([
   expect(content?.type === 'text' && content.text.includes(JSON.stringify(reason))).toBe(true)
 })
 
-it.each(['not-json', '{"kind":"other"}', '{"kind":"empty","extra":true}'])('rejects malformed output %s', async output => {
+it.each(['not-json', '{"kind":"other"}', '{"kind":"empty","extra":true}'])('rejects malformed output %s', async (output: string) => {
   const { ctx, task, events, extractor } = await setup()
   ctx.llm.registerAdapter(['test'], new Adapter(() => response(output)))
   await expect(extractor.extractTurn(task, events, new AbortController().signal, () => {})).rejects.toMatchObject({ code: 'output' })
@@ -157,7 +157,7 @@ it('does not dispatch when durable request recording fails', async () => {
   expect(dispatched).toBe(false)
 })
 
-it.each(['timeout', 'cancel'] as const)('settles %s without returning a candidate', async mode => {
+it.each(['timeout', 'cancel'] as const)('settles %s without returning a candidate', async (mode: 'timeout' | 'cancel') => {
   const { ctx, task, events, extractor } = await setup({ timeoutMs: 50 })
   vi.useFakeTimers()
   const entered = Promise.withResolvers<void>()
@@ -188,7 +188,7 @@ it('routes a terminal provider failure without persisting provider text', async 
   await expect(extractor.extractTurn(task, events, new AbortController().signal, () => {})).rejects.toMatchObject({ failureCode: 'RATE_LIMIT', retryable: true, message: 'Memory model request failed (RATE_LIMIT)' })
 })
 
-it.each(['tool-calls', 'max-tokens'] as const)('rejects the non-final %s terminal state', async kind => {
+it.each(['tool-calls', 'max-tokens'] as const)('rejects the non-final %s terminal state', async (kind: 'tool-calls' | 'max-tokens') => {
   const { ctx, task, events, extractor } = await setup()
   ctx.llm.registerAdapter(['test'], new Adapter(async function* () {
     yield { type: 'text-delta', index: 0, text: JSON.stringify(candidate(task)) }
@@ -250,7 +250,7 @@ it('records a separate display-summary request after validating the extracted L1
 })
 
 it.each([{ description: '' }, { description: 'a\nb' }, { description: 'x'.repeat(241) }, { description: 'Fine.', sources: [] }])(
-  'rejects invalid display descriptions without publishing a partial L1', async output => {
+  'rejects invalid display descriptions without publishing a partial L1', async (output: unknown) => {
     const { ctx, task, events, extractor, provider, project } = await setup()
     const current = { ...task, config: { ...task.config, promptVersion: 'l1-v2' as const } }
     ctx.llm.registerAdapter(['test'], new Adapter(options => response(JSON.stringify(

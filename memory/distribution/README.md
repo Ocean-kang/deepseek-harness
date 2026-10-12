@@ -20,14 +20,16 @@ Browse L0–L3, select L2/L3 for one conversation turn, or enable BM25 automatic
 <a id="install-and-use"></a>
 ## Install and use
 
-Memory 0.1.11 targets the Web profile of DSH 0.2.1-alpha.2. Its DSH peer declarations reject other runtime versions. Download the built archive and install it through DSH; source compilation and changes to DSH code are unnecessary.
+Memory 0.1.12 targets the Web profile of DSH 0.2.1-alpha.2. Its DSH peer declarations reject other runtime versions. Download the built archive and install it through DSH; source compilation and changes to DSH code are unnecessary.
 
 ```sh
-dsh plugin --profile web add ./deepseek-ai-dsh-memory-l0-0.1.11.tgz
+dsh plugin --profile web add ./deepseek-ai-dsh-memory-l0-0.1.12.tgz
 dsh --profile web
 ```
 
-To upgrade from memory 0.1.10 on DSH 0.2.1-alpha.1, stop DSH, back up the [memory directories](#data-and-configuration), update DSH to 0.2.1-alpha.2, then run the installation command above in the same DSH home and restart. Memory's SQLite schema and producer-owned Session fields are unchanged. No `allow-version` exemption is needed. For a source overlay, rebuild `memory/lib` and restart with the same patch arguments. Memory 0.1.11 requires the declared DSH version; do not install it on an older runtime. Upgrades from memory 0.1.8 also follow the [layered-memory guide](layered-upgrade.md).
+To upgrade from memory 0.1.10 on DSH 0.2.1-alpha.1, stop DSH, back up the [memory directories](#data-and-configuration), update DSH to 0.2.1-alpha.2, then run the installation command above in the same DSH home and restart. Memory's SQLite schema and producer-owned Session fields are unchanged. No `allow-version` exemption is needed. For a source overlay, rebuild `memory/lib` and restart with the same patch arguments. Memory 0.1.12 requires the declared DSH version; do not install it on an older runtime. Upgrades from memory 0.1.8 also follow the [layered-memory guide](layered-upgrade.md).
+
+Memory 0.1.12 preserves the official Web `connection` dependencies and serves the panel through `POST /api/memory/panel`. When upgrading from 0.1.11 on the same DSH version, stop DSH, install the new archive, restart, and reload open browser tabs so Client and Host use the same route. Remove any local `connection` override containing `webRuntime`; it is a plugin ID, not a service. Source installations use the updated `cordis.patch.yml` or `profiles/panel.patch.yml` and rebuild `memory/lib`. Confirm that the Memory tab loads and a next-turn selection survives page reload. Custom callers of the former `/memory/panel` route must use the shared API with RPC method `memory/panel`.
 
 Open Memory in the conversation sidebar. L1 displays task goals, problems, results and solutions; its trace and sources are collapsed. L2 groups readable knowledge cards by scenario. L3 separates engineering knowledge and interaction profiles. Summaries arrive with extraction. Select eligible L2/L3 for one turn; the pending area and composer show saved text and budget. Automatic recall defaults off and searches only L3 when enabled. Learning and recall remain independent. Source replacement or invalidation pauses derived recall while exact history remains readable. See the [layered-memory upgrade](layered-upgrade.md).
 

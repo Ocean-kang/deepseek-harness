@@ -1,8 +1,7 @@
 /** Authenticated-adapter JSON validation and authoritative Session ownership over real storage. */
 import { expect, it, vi } from 'vitest'
 import { Context, Service } from '@deepseek-ai/cordis'
-import type { ConnectionRpcHandler } from '@deepseek-ai/dsh-client-connection'
-import { OperatorPeer } from '@deepseek-ai/dsh-client-connection'
+import type { ConnectionFetchRoute } from '@deepseek-ai/dsh-client-connection'
 import SessionStore, { Session, SessionId, SessionLogOffset, SessionSeq } from '@deepseek-ai/dsh-session'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import type { SessionHandle } from '@deepseek-ai/dsh-session-persistence'
@@ -217,7 +216,7 @@ async function projectionFixture(options: BrowserConfig, beforeRead?: (signal: A
     const reads: Array<{ offset: number | undefined; length: number | undefined }> = []
     const opened = vi.spyOn(ctx.sessionPersistence, 'open')
     const readRaw = ctx.memory.readRaw.bind(ctx.memory)
-    vi.spyOn(ctx.memory, 'readRaw').mockImplementation(async request => {
+    vi.spyOn(ctx.memory, 'readRaw').mockImplementation(async (request: Parameters<typeof ctx.memory.readRaw>[0]) => {
       if (request.to > request.from) {
         reads.push({ offset: request.cursor ?? request.from, length: request.limit })
         await beforeRead?.(request.signal)
@@ -261,7 +260,7 @@ it('pages captured SQLite events once, skips unchanged polls and projects only t
   } finally { await item.close() }
 })
 
-it.each([false, true])('shares overlapping SQLite state polls and retries cancelled reads: cancelled=%s', async (cancelled) => {
+it.each([false, true])('shares overlapping SQLite state polls and retries cancelled reads: cancelled=%s', async (cancelled: boolean) => {
   let enter!: () => void
   let release!: () => void
   const entered = new Promise<void>(resolve => { enter = resolve })
@@ -309,17 +308,14 @@ it('evicts the least recently viewed Session when the configured projection capa
 
 it('stops panel requests before disposing and drops the cached prefix after the pending read settles', async () => {
   class PanelConnection extends Service {
-    handler: ConnectionRpcHandler | undefined
+    handler: ConnectionFetchRoute['fetch'] | undefined
     stopped = false
-    readonly operator: OperatorPeer
-    readonly rpc = { handle: (_channel: string, handler: ConnectionRpcHandler) => {
-      this.handler = handler
+    readonly fetch = { register: (route: ConnectionFetchRoute) => {
+      this.handler = route.fetch
       return () => { this.stopped = true; this.handler = undefined }
     } }
     constructor(ctx: Context) {
       super(ctx, 'connection')
-      this.operator = new OperatorPeer(ctx)
-      ctx.effect(() => () => this.operator.dispose(), 'panel-test.operator')
     }
   }
   let enter!: () => void
@@ -345,7 +341,8 @@ it('stops panel requests before disposing and drops the cached prefix after the 
       if (index === 0) await item.call()
     }
     block = true
-    const request = connection.handler!('panel', { action: 'state', sessionId: item.session.id }, new AbortController().signal, connection.operator)
+    const request = connection.handler!(new Request('http://localhost/api/memory/panel', { method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ type: 'client-request', rpcId: 'panel-test', method: 'memory/panel', payload: { action: 'state', sessionId: item.session.id } }) }))
       .catch((error: unknown) => error)
     await entered
     await dispose()

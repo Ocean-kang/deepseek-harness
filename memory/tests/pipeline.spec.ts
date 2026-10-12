@@ -279,7 +279,7 @@ it('does not call the model if its request cannot commit, and recovers from reta
     }))
     pipeline = new MemoryPipeline(provider, settings, ctx.llm, () => {})
     const append = provider.appendRaw.bind(provider)
-    const fault = vi.spyOn(provider, 'appendRaw').mockImplementation(request => request.events[0]?.type === 'memory/extraction-request'
+    const fault = vi.spyOn(provider, 'appendRaw').mockImplementation((request: Parameters<typeof provider.appendRaw>[0]) => request.events[0]?.type === 'memory/extraction-request'
       ? Promise.reject(new Error('injected disk failure')) : append(request))
     await pipeline.learn(batch(item.spec, turnEvents()))
     expect(calls).not.toHaveBeenCalled()
@@ -356,7 +356,7 @@ it('delivers newly learned memory through text search to a new Agent Session and
   }
 })
 
-it.each(['close', 'caller'] as const)('cancels an in-flight extraction through %s, retaining a recoverable task', async mode => {
+it.each(['close', 'caller'] as const)('cancels an in-flight extraction through %s, retaining a recoverable task', async (mode: 'close' | 'caller') => {
   const item = await fixture()
   const provider = await item.open()
   const ctx = new Context()

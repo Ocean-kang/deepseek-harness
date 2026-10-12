@@ -16,7 +16,7 @@ it('admits the memory package on the supported DSH runtime without an exemption'
   expect(evaluatePluginCompatibility(manifest)).toBeUndefined()
 })
 
-it.each(['0.1.7-rc.2', '0.2.0-rc.2', '0.2.0-rc.3', '0.2.1-alpha.1', '0.2.1-alpha.3', '0.2.1'])('rejects unsupported DSH %s without an exemption', runtime => {
+it.each(['0.1.7-rc.2', '0.2.0-rc.2', '0.2.0-rc.3', '0.2.1-alpha.1', '0.2.1-alpha.3', '0.2.1'])('rejects unsupported DSH %s without an exemption', (runtime: string) => {
   expect(evaluatePluginCompatibility(manifest, {}, runtime)).toMatchObject({
     name: manifest.name, version: manifest.version, runtimeVersion: runtime, exempted: false,
     peers,

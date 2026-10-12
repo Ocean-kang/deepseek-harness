@@ -65,7 +65,7 @@ it('retains a retryable task and unknown request outcome when the result transac
     const journal = new MemoryRequestJournal(provider, { stream: calls })
     worker = new L1Worker(provider, new L1Extractor(journal, journal.recordL1), project, 2, () => {})
     const append = provider.appendRaw.bind(provider)
-    const fault = vi.spyOn(provider, 'appendRaw').mockImplementation(request => request.events[0]?.type === 'memory/extraction-result'
+    const fault = vi.spyOn(provider, 'appendRaw').mockImplementation((request: Parameters<typeof provider.appendRaw>[0]) => request.events[0]?.type === 'memory/extraction-result'
       ? Promise.reject(new Error('injected disk failure')) : append(request))
     await worker.flush(task.sessionId)
     fault.mockRestore()

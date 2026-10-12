@@ -13,7 +13,7 @@ const state = (revision = 'initial'): PanelState => ({ action: 'state', projectI
 it('shares in-flight reads and preserves another subscriber when one caller cancels', async () => {
   let settle: (value: PanelState) => void = () => { throw new Error('State read did not start') }
   let transportSignal: AbortSignal | undefined
-  const transport: PanelCall = vi.fn(async (_request, signal) => {
+  const transport: PanelCall = vi.fn<PanelCall>(async (_request: Parameters<PanelCall>[0], signal: AbortSignal) => {
     transportSignal = signal
     return await new Promise<PanelState>(resolve => { settle = resolve })
   })
@@ -70,7 +70,7 @@ it('cancels the final subscription and suppresses late state publication after d
   vi.useFakeTimers()
   let settle: (value: PanelState) => void = () => { throw new Error('State read did not start') }
   let transportSignal: AbortSignal | undefined
-  const transport: PanelCall = vi.fn(async (_request, signal) => {
+  const transport: PanelCall = vi.fn<PanelCall>(async (_request: Parameters<PanelCall>[0], signal: AbortSignal) => {
     transportSignal = signal
     return await new Promise<PanelState>(resolve => { settle = resolve })
   })
@@ -97,7 +97,7 @@ it('isolates throwing subscribers and preserves polling and final cancellation f
   const failure = new Error('Subscriber failed')
   const reported = vi.fn()
   let transportSignal: AbortSignal | undefined
-  const transport: PanelCall = vi.fn(async (_request, signal) => { transportSignal = signal; return state() })
+  const transport: PanelCall = vi.fn<PanelCall>(async (_request: Parameters<PanelCall>[0], signal: AbortSignal) => { transportSignal = signal; return state() })
   const observer = createPanelStateObserver(transport, reported)
   const updates: PanelStateUpdate[] = []
   const stopThrowing = observer.watch(sessionId, () => { throw failure })

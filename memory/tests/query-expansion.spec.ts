@@ -41,7 +41,7 @@ it('uses a single logged paraphrase call after no text hits and never returns mo
   } finally { await retriever?.close(); await item.close() }
 })
 
-it.each(['{}', '[]', '[""]', '["a\\nb"]'])('rejects malformed expansion %s and retains the stored memory', async output => {
+it.each(['{}', '[]', '[""]', '["a\\nb"]'])('rejects malformed expansion %s and retains the stored memory', async (output: string) => {
   const item = await knowledgeFixture()
   let retriever: TextMemoryRetriever | undefined
   try {

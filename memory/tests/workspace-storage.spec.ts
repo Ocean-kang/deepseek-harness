@@ -229,7 +229,7 @@ it('logs manual and automatic recall for the selected workspace and disables sha
     }
     const result = await item.ctx.commands.execute(agents[0]!, '/memory-share approve example', [], new AbortController().signal)
     expect(result?.result).toMatchObject({ kind: 'error', text: 'Cross-project sharing is disabled in workspace storage mode.' })
-    expect(JSON.stringify({ transcript, sharing: result?.result }, null, 2) + '\n').toMatchFileSnapshot('./expected/workspace-recall.json')
+    await expect(JSON.stringify({ transcript, sharing: result?.result }, null, 2) + '\n').toMatchFileSnapshot('./expected/workspace-recall.json')
   } finally { await item.close() }
 })
 

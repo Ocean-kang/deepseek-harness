@@ -9,7 +9,7 @@ kind: "package-bundle"
 
 ## 摘要
 
-将完整的已记录 Session 事件保存在项目所属的 SQLite 中，浏览 L0–L3 并选择 L2/L3 用于下一轮。后台学习复用 DSH 模型和凭据，BM25 检索无需 embedding 密钥。独立 bundle 通过公开扩展点开启带日志的注入。参见[安装说明](distribution/README.zh.md)和[验证范围](evaluation/compatibility-0.2.1-alpha.2-2026-10-09.md)。
+将完整的已记录 Session 事件保存在项目所属的 SQLite 中，浏览 L0–L3 并选择 L2/L3 用于下一轮。后台学习复用 DSH 模型和凭据，BM25 检索无需 embedding 密钥。独立 bundle 通过公开扩展点开启带日志的注入。参见[安装说明](distribution/README.zh.md)和[验证范围](evaluation/web-startup-0.1.12-2026-10-12.md)。
 
 ## 目录
 
@@ -117,7 +117,7 @@ L0 不调用模型，完整保留 Session 证据。新 L1 经历以标题、目�
 
 Web 和面板开发 patch 选择 `ui-chat.transcriptView: detailed`。[Chat 展示 patch](profiles/chat-view.patch.yml) 可为仅加载 Memorix 的运行选择相同模式。后续 overlay 可选择其他受支持模式。
 
-[Web 面板 patch](profiles/panel.patch.yml) 通过 DSH 现有认证连接及右侧栏加载构建后的独立入口与 Client，开启采集、后台学习及带日志的召回，将已注册项目的数据库保存在各自工作区目录，并为 Connection Provider 声明 `webServer`。完成环境设置及下述构建后，运行 `node --import tsx/esm ../apps/cli/src/bin.ts web --patch ../apps/web/tests/pin-browse-picker.overlay.yml --patch ./profiles/panel.patch.yml --no-open --port 0`，在会话中打开记忆标签页。浏览按已捕获的项目归属限制范围，支持 L0–L3、字面搜索、具体版本详情及自有历史版本；工作区模式禁用共享 L3；集中模式的获批共享投影不显示私有来源。捕获失败会阻止读取及选择，不会改写已记录的元数据。
+[Web 面板 patch](profiles/panel.patch.yml) 通过 DSH 现有认证连接及右侧栏加载构建后的独立入口与 Client，开启采集、后台学习及带日志的召回，将已注册项目的数据库保存在各自工作区目录，并保留官方 Connection 启动依赖。面板通过 Connection 的共享 Fetch API 注册 `POST /api/memory/panel`；记忆条目自身需要 `memory`、`connection` 和 `webServer`。完成环境设置及下述构建后，运行 `node --import tsx/esm ../apps/cli/src/bin.ts web --patch ../apps/web/tests/pin-browse-picker.overlay.yml --patch ./profiles/panel.patch.yml --no-open --port 0`，在会话中打开记忆标签页。浏览按已捕获的项目归属限制范围，支持 L0–L3、字面搜索、具体版本详情及自有历史版本；工作区模式禁用共享 L3；集中模式的获批共享投影不显示私有来源。捕获失败会阻止读取及选择，不会改写已记录的元数据。
 
 侧栏以带名称和说明的 L0–L3 分类卡片组织记忆资产。“已加载”数量仅统计所选层级已加载的分页，不代表项目总量。面板宽度达到 640 像素时，列表和详情并排展示；较窄面板将打开的详情放在列表上方。打开详情时焦点移到标题，关闭时返回仍存在的发起条目，后台刷新保留焦点。主题颜色适配明暗外观。版本详情显示正在查看的版本号与有效状态。历史记录跨页时可以加载更早版本，切换查看版本会保留已加载的历史页。搜索分页使用已提交的查询词；编辑搜索框不会改变它，提交后才开始新的结果页。已保存的待选项在刷新页面后恢复，取消待选项仍保留知识记录。
 

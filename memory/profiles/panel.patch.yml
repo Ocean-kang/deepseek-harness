@@ -1,8 +1,6 @@
 - id: ui-chat
   config:
     transcriptView: detailed
-- id: connection
-  inject: [webRuntime, webServer]
 - insert:
     - id: memory-l0
       name: ../lib/portable.mjs

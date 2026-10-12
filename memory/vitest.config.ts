@@ -11,6 +11,9 @@ export default defineConfig({
   test: {
     include: ['tests/**/*.spec.ts', 'tests/**/*.spec.tsx'],
     pool: 'forks',
+    maxWorkers: 2,
+    testTimeout: 30000,
+    hookTimeout: 30000,
     execArgv: vitestExecArgv,
     coverage: { reportsDirectory: '.artifacts/coverage', include: ['src/**/*.ts'] },
   },

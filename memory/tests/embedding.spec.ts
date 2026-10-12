@@ -25,7 +25,7 @@ it.each([
   { ...payload, data: [{ index: 0, embedding: [0, 0] }, payload.data[0]] },
   { ...payload, data: [{ index: 0, embedding: [null, 1] }, payload.data[0]] },
   { ...payload, usage: { prompt_tokens: -1 } },
-])('rejects malformed responses without retrying or retaining provider text', async body => {
+])('rejects malformed responses without retrying or retaining provider text', async (body: unknown) => {
   let calls = 0
   const client = new HttpEmbedder(spec, 'private', async () => { calls++; return Response.json(body) })
   await expect(client.embed(['a', 'b'], signal)).rejects.toMatchObject({ code: 'output' })

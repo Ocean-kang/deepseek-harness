@@ -1,9 +1,9 @@
-/** Memory panel adapter over the existing authenticated Connection RPC registry. */
+/** Memory panel adapter over Connection's authenticated shared Fetch API. */
 import type { Context } from '@deepseek-ai/cordis'
 import { SessionLogOffset } from '@deepseek-ai/dsh-session'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import { joinAssistantStreamText } from '@deepseek-ai/dsh-llm'
-import type {} from '@deepseek-ai/dsh-client-connection'
+import { clientRequestSchema } from '@deepseek-ai/dsh-client-connection'
 import type { BrowserItem, MemoryBrowser } from './browser.ts'
 import { panelRequest } from './panel-protocol.ts'
 import type { PanelRequest, PanelResponse, PanelRow } from './panel-protocol.ts'
@@ -214,7 +214,7 @@ export async function dispatchPanel(ctx: Context, request: PanelRequest, signal:
   }
 }
 
-/** Register one private plugin channel through Connection's existing authentication and disposal.
+/** Register the panel under Connection's authenticated, body-limited shared API.
  * @param ctx - ready Connection and memory services.
  * @returns registry disposer; pending requests stop with their transport lifetime.
  */
@@ -222,8 +222,7 @@ export function installPanelHost(ctx: Context): () => Promise<void> {
   const browser = ctx.memory.browser
   const abort = new AbortController()
   const pending = new Set<Promise<unknown>>()
-  const stop = ctx.connection.rpc.handle('/memory', async (endpoint, payload, signal) => {
-    if (endpoint !== 'panel') return { ok: false, error: { code: 'NOT_FOUND', message: 'Unknown memory endpoint', details: {} } }
+  const handle = async (payload: unknown, signal: AbortSignal) => {
     const parsed = panelRequest.safeParse(payload)
     if (!parsed.success) return { ok: false, error: { code: 'INVALID_REQUEST', message: 'Invalid memory panel request', details: {} } }
     const work = (async () => {
@@ -236,6 +235,24 @@ export function installPanelHost(ctx: Context): () => Promise<void> {
     })()
     pending.add(work)
     try { return await work } finally { pending.delete(work) }
+  }
+  const stop = ctx.connection.fetch.register({
+    path: '/api/memory/panel', methods: ['POST'], requestBody: 'buffered',
+    async fetch(request) {
+      if (request.headers.get('content-type')?.split(';', 1)[0]?.trim().toLowerCase() !== 'application/json') {
+        return new Response('Memory panel requires application/json', { status: 415 })
+      }
+      let body: unknown
+      try { body = await request.json() } catch (error) {
+        return new Response('Memory panel requires a JSON request', { status: 400 })
+      }
+      const envelope = clientRequestSchema.safeParse(body)
+      if (!envelope.success || envelope.data.method !== 'memory/panel') {
+        return new Response('Invalid memory panel RPC envelope', { status: 400 })
+      }
+      const result = await handle(envelope.data.payload, request.signal)
+      return Response.json({ type: 'server-response', rpcId: envelope.data.rpcId, result })
+    },
   })
   return async () => { stop(); abort.abort(); await Promise.allSettled(pending); stateProjections.delete(browser) }
 }

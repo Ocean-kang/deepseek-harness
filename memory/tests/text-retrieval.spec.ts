@@ -42,7 +42,7 @@ it('ranks literal text, returns an explicit method and preserves whole-entry bud
   expect(item.search.getIndexStatus(item.project)).toMatchObject({ method: 'bm25', ready: true, candidates: 3 })
 })
 
-it.each([false, true])('checks the authorized corpus after a concurrent private commit to same project=%s', async (sameProject) => {
+it.each([false, true])('checks the authorized corpus after a concurrent private commit to same project=%s', async (sameProject: boolean) => {
   const item = await setup({ pageSize: 1 })
   const ref = commitKnowledge(item, 'L2', [item.source], [knowledgeCandidate(item.source, 'ESM')])[0]!
   const project = sameProject ? item.project : 'private-other-project' as ProjectId
@@ -77,7 +77,7 @@ it('filters private memories before scoring and removes revoked grants before ad
   expect((await item.search.retrieve({ projectId: other, text: 'ESM' })).hits).toEqual([])
 })
 
-it.each(['approve', 'revoke'] as const)('rejects a shared corpus change during scanning: %s', async (change) => {
+it.each(['approve', 'revoke'] as const)('rejects a shared corpus change during scanning: %s', async (change: 'approve' | 'revoke') => {
   const item = await setup({ pageSize: 1 })
   const parent = commitKnowledge(item, 'L2', [item.source], [knowledgeCandidate(item.source)])[0]!
   const refs = [...commitKnowledge(item, 'L3', [parent], [knowledgeCandidate(parent, 'ESM first'), knowledgeCandidate(parent, 'ESM second')])]
@@ -236,7 +236,7 @@ it('waits for model teardown and durable expansion settlement before close compl
   cleanup.push(() => search.close())
   commitKnowledge(item, 'L2', [item.source], [knowledgeCandidate(item.source, 'ESM')])
   const append = item.provider.appendRaw.bind(item.provider)
-  const writes = vi.spyOn(item.provider, 'appendRaw').mockImplementation(async request => {
+  const writes = vi.spyOn(item.provider, 'appendRaw').mockImplementation(async (request: Parameters<typeof item.provider.appendRaw>[0]) => {
     if (request.events[0]?.type !== 'memory/extraction-result') return append(request)
     resultStarted()
     await resultGate

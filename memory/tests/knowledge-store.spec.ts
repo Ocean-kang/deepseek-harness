@@ -19,7 +19,7 @@ async function setup() { const item = await knowledgeFixture(); owned.push(item)
 const other = 'other-project' as ProjectId
 
 it.each([{ examinedEvents: [] }, { examinedEvents: [{ sessionId: 'unrelated-session', seq: 1 }] },
-  { examinedEvents: [{ sessionId: 'unrelated-session', seq: -1 }] }])('rejects invalid durable examined-event references $examinedEvents', async ({ examinedEvents }) => {
+  { examinedEvents: [{ sessionId: 'unrelated-session', seq: -1 }] }])('rejects invalid durable examined-event references $examinedEvents', async ({ examinedEvents }: { examinedEvents: { sessionId: string; seq: number }[] }) => {
   const item = await setup()
   const ref = commitKnowledge(item, 'L2', [item.source], [knowledgeCandidate(item.source)])[0]!
   const database = new DatabaseSync(item.spec.databasePath)

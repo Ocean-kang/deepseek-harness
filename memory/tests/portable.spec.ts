@@ -6,15 +6,15 @@ import LlmRuntime from '@deepseek-ai/dsh-llm'
 import DefaultModel from '@deepseek-ai/dsh-agent-default-model'
 import SessionStore from '@deepseek-ai/dsh-session'
 import JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
-import type { ConnectionRpcHandler } from '@deepseek-ai/dsh-client-connection'
+import type { ConnectionFetchRoute } from '@deepseek-ai/dsh-client-connection'
 import * as Portable from '../src/portable.ts'
 import { fixture } from './helpers.ts'
 
 class PanelTransport extends Service {
   readonly channels = new Set<string>()
-  readonly rpc = { handle: (channel: string, _handler: ConnectionRpcHandler) => {
-    this.channels.add(channel)
-    return () => { this.channels.delete(channel) }
+  readonly fetch = { register: (route: ConnectionFetchRoute) => {
+    this.channels.add(route.path)
+    return () => { this.channels.delete(route.path) }
   } }
   constructor(ctx: Context) { super(ctx, 'connection') }
 }
@@ -39,7 +39,7 @@ async function setup() {
   } catch (error) { await ctx.fiber.dispose(); await item.close(); throw error }
 }
 
-it.each([undefined, true, false])('honors panel=%s while defaulting to trigram BM25 and logged injection', async panel => {
+it.each([undefined, true, false])('honors panel=%s while defaulting to trigram BM25 and logged injection', async (panel: boolean | undefined) => {
   const item = await setup()
   try {
     const plugin = await item.ctx.plugin(Portable, { ...item.config, ...(panel === undefined ? {} : { panel }) })
@@ -47,10 +47,10 @@ it.each([undefined, true, false])('honors panel=%s while defaulting to trigram B
     expect(item.ctx.memory.recallMethod(item.spec.projectId)).toBe('trigram')
     expect(item.ctx.memory.browser.spec.refreshIntervalMs).toBe(3000)
     expect(item.ctx.memory.browser.injectionReady).toBe(true)
-    if (panel === false) expect(item.transport.channels.has('/memory')).toBe(false)
-    else await vi.waitFor(() => expect(item.transport.channels.has('/memory')).toBe(true))
+    if (panel === false) expect(item.transport.channels.has('/api/memory/panel')).toBe(false)
+    else await vi.waitFor(() => expect(item.transport.channels.has('/api/memory/panel')).toBe(true))
     await plugin.dispose()
-    expect(item.transport.channels.has('/memory')).toBe(false)
+    expect(item.transport.channels.has('/api/memory/panel')).toBe(false)
   } finally { await item.close() }
 })
 
