@@ -100,7 +100,7 @@ function mergeCandidates(candidates: readonly KnowledgeCandidate[]): KnowledgeCa
 function compactRecord(record: OwnedMemory): object {
   const common = { id: record.id, revision: record.revision, level: record.level }
   if (record.level === 'L1') {
-    const { sources: _sources, ...summary } = record.summary
+    const { sources: _sources, trace: _trace, ...summary } = record.summary
     return { ...common, summary }
   }
   const { sources: _sources, examinedEvents: _examined, description: _description, ...knowledge } = record.knowledge
@@ -121,7 +121,7 @@ export class KnowledgeExtractor {
    * @param readEvidence - required for v3 and v4 tasks; resolves exact cited L0 events inside their owning project.
    */
   constructor(private readonly llm: Pick<LlmRuntime, 'stream'>, private readonly record: KnowledgeRecorder, private readonly sessionId: SessionId,
-    private readonly sourcesCurrent?: (project: ProjectId, ref: MemoryRef) => boolean, private readonly readEvidence?: KnowledgeEvidenceReader) {}
+    private readonly sourcesCurrent?: (project: ProjectId, ref: MemoryRef) => boolean | Promise<boolean>, private readonly readEvidence?: KnowledgeEvidenceReader) {}
 
   /** Select bounded context and inspect complete L0 events in groups before merging checked candidates.
    * @param task - immutable sources and configured budgets.
@@ -129,14 +129,18 @@ export class KnowledgeExtractor {
    * @param reserveCall - durable call-budget charge immediately before dispatch.
    * @returns complete validated candidates; publication stays atomic across groups and description calls.
    */
-  async consolidate(task: KnowledgeTask, signal: AbortSignal, reserveCall: () => void): Promise<readonly KnowledgeCandidate[]> {
+  async consolidate(task: KnowledgeTask, signal: AbortSignal, reserveCall: () => void | Promise<void>): Promise<readonly KnowledgeCandidate[]> {
     signal.throwIfAborted()
     const basePrompt = task.config.promptVersion === 'knowledge-v4' ? cardPrompt : prompt
     const system = (task.config.promptVersion === 'knowledge-v1' ? basePrompt : basePrompt + '\nEvery candidate must cite at least one exact ref from input.sources. Additional direct refs may only come from input.sources or input.existing. input.lineage is ancestry evidence only, not an allowed direct output source. When merging an existing record, cite that record\'s own id and revision to preserve its ancestry; do not copy its nested sources unless those refs also appear in input.sources or input.existing.')
       + (['knowledge-v3', 'knowledge-v4'].includes(task.config.promptVersion) ? '\nRecheck conclusions against the supplied evidence.ref and original evidence.event. Only original events supplied in this request establish support; memory summaries cannot fill gaps in unseen original events. evidenceCoverage may be partial: return only conclusions justified by the supplied events, or [] when they establish no relevant fact. Goals, injected references, recalled text, assistant claims and proposed actions do not establish verified execution or results. Preserve uncertainty when original events do not support a summary.' : '')
     const current = ['knowledge-v3', 'knowledge-v4'].includes(task.config.promptVersion)
     const cache = new Map<string, EvidenceItem>()
-    const frame = (prepared: PreparedInput, index: number, total: number): string => this.frame(task, prepared, index, total)
+    const outdated = new Set<string>()
+    if (this.sourcesCurrent !== undefined) for (const record of task.input.existing) {
+      if (!await this.sourcesCurrent(task.input.projectId, record)) outdated.add(identity(record))
+    }
+    const frame = (prepared: PreparedInput, index: number, total: number): string => this.frame(task, prepared, index, total, outdated)
     const fits = (prepared: PreparedInput): boolean => Buffer.byteLength(system) + Buffer.byteLength(frame(prepared, task.config.maxCalls, task.config.maxCalls)) <= task.config.maxInputBytes
     if (!fits({ input: scopedInput(task.input, [], []) })) throw new MemoryError('budget', 'Knowledge input budget cannot contain the prompt and metadata')
     const groups: PreparedInput[] = []
@@ -175,7 +179,7 @@ export class KnowledgeExtractor {
     if (sources.length > 0) groups.push(await this.prepareInput(task, sources, requiredRecords, cache, signal))
     if (task.calls + groups.length + Number(task.config.promptVersion === 'knowledge-v3') + Number(segmented) > task.config.maxCalls) throw new MemoryError('budget', 'Knowledge verification groups, merge and description exceed the remaining model-call budget')
     let calls = task.calls
-    const charge = () => { reserveCall(); calls++ }
+    const charge = async () => { await reserveCall(); calls++ }
     const selectedGroups: PreparedInput[] = []
     for (const group of groups) {
       let selected = group
@@ -225,7 +229,7 @@ export class KnowledgeExtractor {
   }
 
   private async reconcileTargets(task: KnowledgeTask, candidates: readonly KnowledgeCandidate[], system: string, cache: Map<string, EvidenceItem>, signal: AbortSignal,
-    charge: () => void, calls: () => number): Promise<KnowledgeCandidate[]> {
+    charge: () => void | Promise<void>, calls: () => number): Promise<KnowledgeCandidate[]> {
     const grouped = new Map<string, KnowledgeCandidate[]>()
     const results = candidates.filter(candidate => candidate.target === null)
     for (const candidate of candidates) {
@@ -263,7 +267,7 @@ export class KnowledgeExtractor {
   }
 
   private async mergeChecked(task: KnowledgeTask, candidates: readonly KnowledgeCandidate[], system: string, signal: AbortSignal,
-    charge: () => void, calls: () => number): Promise<KnowledgeCandidate[]> {
+    charge: () => void | Promise<void>, calls: () => number): Promise<KnowledgeCandidate[]> {
     const mergeSystem = system + '\nThis is a merge-evidence stage after all original-event verification groups completed. Original events are retained in preceding recorded requests and are not repeated here. Merge only facts justified by the supplied checked candidates; do not derive additional facts or stronger confidence from memory summaries. Keep their direct sources and targets. Equivalent candidates must become one result; candidates for the same target must become one result. Preserve unresolved contradictions as conflict for L2. examinedEventCount records inspection, not independent factual proof. Never output examinedEvents or evidenceStatus. Preserve the structured card fields and description.'
     const prepare = (items: readonly KnowledgeCandidate[]) => {
       const refs = new Set(items.flatMap(candidate => [...candidate.knowledge.sources.map(source => identity(source.ref)),
@@ -316,30 +320,44 @@ export class KnowledgeExtractor {
         const event = await this.readEvidence(task.input.projectId, ref, signal)
         if (event.seq !== ref.seq) throw new MemoryError('source', 'L0 evidence does not match its cited event')
         item = { ref, event }
-        cache.set(key, item)
+        const size = Buffer.byteLength(JSON.stringify(item))
+        if (size <= task.config.maxInputBytes) {
+          let bytes = [...cache.values()].reduce((sum, value) => sum + Buffer.byteLength(JSON.stringify(value)), 0)
+          for (const [oldKey, value] of cache) {
+            if (bytes + size <= task.config.maxInputBytes) break
+            bytes -= Buffer.byteLength(JSON.stringify(value)); cache.delete(oldKey)
+          }
+          cache.set(key, item)
+        }
       }
       evidence.push(item)
+      if (evidence.reduce((sum, value) => sum + Buffer.byteLength(JSON.stringify(value)), 0) > task.config.maxInputBytes * Math.max(1, task.config.maxCalls - task.calls)) {
+        throw new MemoryError('budget', 'Original evidence exceeds the remaining bounded verification-call budget')
+      }
     }
     return { input, evidence }
   }
 
-  private frame(task: KnowledgeTask, prepared: PreparedInput, index: number, total: number): string {
+  private frame(task: KnowledgeTask, prepared: PreparedInput, index: number, total: number, outdated: ReadonlySet<string>): string {
     const sourcesCurrent = this.sourcesCurrent
     const recheck = sourcesCurrent === undefined ? undefined : {
       target: task.recheck,
-      outdated: prepared.input.existing.filter(record => !sourcesCurrent(task.input.projectId, record))
+      outdated: prepared.input.existing.filter(record => outdated.has(identity(record)))
         .map(({ id, revision }) => ({ id, revision })),
       instruction: 'Outdated existing records require rechecking against current input.sources. Replace the affected target only if current evidence supports the conclusion. Do not use outdated text as supporting evidence. Cite current preceding-level sources; the store retains only eligible ancestry when replacing a target.',
     }
     const current = ['knowledge-v3', 'knowledge-v4'].includes(task.config.promptVersion)
-    return JSON.stringify({ input: current ? compactInput(prepared.input) : prepared.input, evidence: prepared.evidence,
+    const input = current ? compactInput(prepared.input) : { ...prepared.input,
+      sources: prepared.input.sources.map(record => record.level === 'L1' ? { ...record, summary: { ...record.summary, trace: undefined } } : record),
+      lineage: prepared.input.lineage.map(record => record.level === 'L1' ? { ...record, summary: { ...record.summary, trace: undefined } } : record) }
+    return JSON.stringify({ input, evidence: prepared.evidence,
       ...current ? { evidenceCoverage: { provided: prepared.evidence?.length ?? 0, total: eventRefs(prepared.input).length } } : {}, recheck,
       selection: { batch: index, batches: total, existingAvailable: task.input.existing.length, existingOmitted: task.input.existing.length - prepared.input.existing.length },
       scoring: { min: task.config.scoreMin, max: task.config.scoreMax,
       threshold: task.input.level === 'L2' ? task.config.l2Threshold : task.config.l3Threshold } })
   }
 
-  private async call(task: KnowledgeTask, allowed: KnowledgeInput, system: string, input: string, signal: AbortSignal, reserveCall: () => void,
+  private async call(task: KnowledgeTask, allowed: KnowledgeInput, system: string, input: string, signal: AbortSignal, reserveCall: () => void | Promise<void>,
     examined?: readonly EventRef[]): Promise<KnowledgeCandidate[]> {
     const request: L1Request = deepFreeze({ provider: task.config.provider, model: task.config.model, system,
       messages: [{ role: 'user', content: [{ type: 'text', text: input }] }], maxTokens: task.config.maxOutputTokens, sessionId: this.sessionId })

@@ -5,7 +5,7 @@ import { dirname, resolve } from 'node:path'
 import { transform } from 'lightningcss'
 
 export default defineConfig([{
-  entry: ['src/index.ts', 'src/portable.ts'],
+  entry: ['src/index.ts', 'src/portable.ts', 'src/storage-worker.ts'],
   outDir: 'lib',
   format: 'esm',
   platform: 'node',

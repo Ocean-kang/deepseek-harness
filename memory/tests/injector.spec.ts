@@ -92,7 +92,7 @@ it('records exact recall before the real request and replays unchanged after the
 it('mounts recall from the plugin entry and consumes a manual selection only once', async () => {
   const item = await setup(undefined, undefined, true, true, true)
   const ref = commitKnowledge(item, 'L2', [item.source], [knowledgeCandidate(item.source, 'Portable manual ESM rule')])[0]!
-  item.browser!.select(item.project, item.agent.session.id, [ref], false)
+  await item.browser!.select(item.project, item.agent.session.id, [ref], false)
   expect(item.browser!.injectionReady).toBe(true)
   item.agent.followup(user('different topic'))
   await item.agent.whenIdle()
@@ -204,7 +204,7 @@ it('uses selected versions once with automatic recall off and consumes only admi
   const ref = commitKnowledge(item, 'L2', [item.source], [knowledgeCandidate(item.source, 'Manual ESM rule')])[0]!
   await item.retriever.flush()
   item.queries.length = 0
-  const selected = item.browser!.select(item.project, item.agent.session.id, [ref], false)
+  const selected = await item.browser!.select(item.project, item.agent.session.id, [ref], false)
   item.agent.followup(user('different topic'))
   await item.agent.whenIdle()
   expect(item.queries).toEqual([])
@@ -222,7 +222,7 @@ it('uses selected versions once with automatic recall off and consumes only admi
 it('combines BM25 matches and manual versions in the real loop without embedding queries', async () => {
   const item = await setup(undefined, undefined, true, true)
   const refs = commitKnowledge(item, 'L2', [item.source], [knowledgeCandidate(item.source, 'Parser ESM one'), knowledgeCandidate(item.source, 'Parser ESM two')])
-  item.browser!.select(item.project, item.agent.session.id, [refs[0]!], true)
+  await item.browser!.select(item.project, item.agent.session.id, [refs[0]!], true)
   item.agent.followup(user('Parser ESM'))
   await item.agent.whenIdle()
   const recall = item.agent.session.snapshotEvents().find(event => event.type === 'user/message' && event.data.source.kind === 'memory-recall')
@@ -240,7 +240,7 @@ it('deduplicates automatic hits after manual versions under the combined count b
   const refs = commitKnowledge(item, 'L2', [item.source], [knowledgeCandidate(item.source, 'Rule one'), knowledgeCandidate(item.source, 'Rule two')])
   await item.retriever.flush()
   item.queries.length = 0
-  item.browser!.select(item.project, item.agent.session.id, [refs[0]!], true)
+  await item.browser!.select(item.project, item.agent.session.id, [refs[0]!], true)
   item.agent.followup(user('search question'))
   await item.agent.whenIdle()
   const recall = item.agent.session.snapshotEvents().find(event => event.type === 'user/message' && event.data.source.kind === 'memory-recall')
@@ -254,7 +254,7 @@ it('deduplicates automatic hits after manual versions under the combined count b
 it('keeps pending selection when request preparation cancels before admission', async () => {
   const item = await setup(undefined, undefined, true)
   const ref = commitKnowledge(item, 'L2', [item.source], [knowledgeCandidate(item.source)])[0]!
-  const pending = item.browser!.select(item.project, item.agent.session.id, [ref], false)
+  const pending = await item.browser!.select(item.project, item.agent.session.id, [ref], false)
   const entered = Promise.withResolvers<void>()
   item.ctx.on('agent/request', async ({ signal }, next) => {
     const call = await next()

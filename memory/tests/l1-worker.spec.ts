@@ -34,7 +34,9 @@ it('reads the full paginated turn and commits only one version on repeated flush
   let calls = 0
   const state = await setup({ async extractTurn(task, events) {
     calls++
-    expect(events.map(event => event.seq)).toEqual([0, 1, 2])
+    const positions = []
+    for await (const event of events) positions.push(event.seq)
+    expect(positions).toEqual([0, 1, 2])
     return candidate(task)
   } })
   await Promise.all([state.worker.flush(header().id), state.worker.flush(header().id)])
@@ -182,7 +184,7 @@ it('retires an active source without redispatching its cancelled task', async ()
 it('enforces the durable model-call budget across retries', async () => {
   let calls = 0
   const state = await setup({ async extractTurn(_task, _events, _signal, reserve) {
-    reserve()
+    await reserve()
     calls++
     throw new L1ModelError('TRANSPORT', true)
   } }, { maxCalls: 1 })

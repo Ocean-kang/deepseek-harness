@@ -36,6 +36,7 @@ export function apply(ctx, config) {
   const controller = new AbortController()
   const handles = new Set()
   const requests = []
+  const auxiliaryRequests = []
   const knowledgeRequests = []
   let modelRequestCount = 0
   const failures = []
@@ -43,6 +44,10 @@ export function apply(ctx, config) {
   ctx.on('llm/stream', (options, next) => {
     modelRequestCount++
     if (isAgentLoopRequest(options)) requests.push({ provider: options.provider, model: options.model, messages: options.messages })
+    else if (options.system !== undefined && /^(Summarize the recorded execution|Write one short sentence|Extract project knowledge|Consolidate immutable execution episodes|Expand the supplied search query)/u.test(options.system)) {
+      const { signal: _signal, ...request } = options
+      auxiliaryRequests.push(structuredClone(request))
+    }
     if (options.system?.startsWith('Extract project knowledge') || options.system?.startsWith('Consolidate immutable execution episodes')) {
       const text = options.messages[0].content[0].text
       const input = JSON.parse(text)
@@ -110,7 +115,7 @@ export function apply(ctx, config) {
       const source = await acquire(`memory-installed-source-${randomUUID()}`)
       await send(source, '[安装验收长原文样例] Synthetic project constraint: use ESM modules. '
         + 'Synthetic ESM original evidence. '.repeat(1050))
-      const project = ctx.memory.projectOfSession(source.id)
+      const project = await ctx.memory.projectOfSession(source.id)
       assert.ok(project)
       await ctx.memory.flushLearning(project, controller.signal)
       const candidates = async level => {
@@ -162,28 +167,46 @@ export function apply(ctx, config) {
       const ref = { id: l2.id, revision: l2.revision }
       const reader = await acquire(`memory-installed-reader-${randomUUID()}`)
       await ctx.sessions.flush(reader.session)
-      assert.equal(ctx.memory.projectOfSession(reader.id), project)
+      assert.equal(await ctx.memory.projectOfSession(reader.id), project)
       let position = null
       let found = false
       do {
-        const page = ctx.memory.browser.browse(project, 'L2', 'Portable ESM', position)
+        const page = await ctx.memory.browser.browse(project, 'L2', 'Portable ESM', position)
         found ||= page.items.some(item => item.id === ref.id && item.revision === ref.revision)
         position = page.next
       } while (!found && position !== null)
       assert.ok(found)
-      const selected = ctx.memory.browser.select(project, reader.id, [ref], false)
+      const selected = await ctx.memory.browser.select(project, reader.id, [ref], false)
       assert.deepEqual(selected.refs, [ref])
       const first = await send(reader, 'First independent manual memory question.')
       assert.equal(first.length, 1)
       assert.equal(first[0].data.source.selectionId, selected.token)
-      assert.deepEqual(ctx.memory.browser.selection(project, reader.session).refs, [])
+      assert.deepEqual((await ctx.memory.browser.selection(project, reader.session)).refs, [])
       assert.equal((await send(reader, 'Second independent manual memory question.')).length, 0)
-      ctx.memory.browser.select(project, reader.id, [], true)
+      await ctx.memory.browser.select(project, reader.id, [], true)
       for (const text of ['Synthetic fixture ESM first automatic question.', 'Synthetic fixture ESM second automatic question.']) {
+        await ctx.memory.flushLearning(project, controller.signal)
         assert.equal((await send(reader, text)).length, 1)
-        assert.equal(ctx.memory.browser.selection(project, reader.session).automatic, true)
+        assert.equal((await ctx.memory.browser.selection(project, reader.session)).automatic, true)
       }
       await ctx.memory.flushLearning(project, controller.signal)
+      const journalRequests = []
+      let journalPosition = null
+      do {
+        const page = await ctx.memory.browser.browse(project, 'L0', 'memory/extraction-request', journalPosition)
+        for (const item of page.items) {
+          if (item.level === 'L0' && item.event.type === 'memory/extraction-request') journalRequests.push(item.event.data.request)
+        }
+        journalPosition = page.next
+      } while (journalPosition !== null)
+      assert.ok(auxiliaryRequests.length > 0)
+      assert.equal(journalRequests.length, auxiliaryRequests.length, 'Every memory model call must have its own persisted request')
+      const remainingRequests = journalRequests.map(request => JSON.stringify(request))
+      for (const request of auxiliaryRequests) {
+        const index = remainingRequests.indexOf(JSON.stringify(request))
+        assert.notEqual(index, -1, 'Actual memory model input must equal its persisted request')
+        remainingRequests.splice(index, 1)
+      }
       const committedRecords = await Promise.all(records.map(record => ctx.memory.getMemory(project, { id: record.id, revision: record.revision })))
       assert.ok(committedRecords.every(Boolean))
       const logs = await Promise.all([persisted(source), persisted(reader)])
@@ -198,6 +221,7 @@ export function apply(ctx, config) {
       }
       report = { mode: 'run', keyless: true, project, sourceSession: source.id, readerSession: reader.id,
         records: committedRecords, requests, logs, jsonl, manualOnce: true, automaticTurns: 2,
+        auxiliaryRequestsLogged: auxiliaryRequests.length,
         originalEvidence: { bytes: originalBytes.reduce((sum, bytes) => sum + bytes, 0), maxEventBytes: Math.max(...originalBytes),
           refs: l1.summary.sources, requests: sourceKnowledgeRequests.map(({ evidence, ...request }) => ({ ...request, evidenceRefs: evidence.map(item => item.ref) })) },
         recallMethod: ctx.memory.recallMethod(project), refreshIntervalMs: ctx.memory.browser.spec.refreshIntervalMs }
@@ -217,9 +241,9 @@ export function apply(ctx, config) {
       const reader = await acquire(saved.readerSession)
       await ctx.sessions.flush(source.session)
       await ctx.sessions.flush(reader.session)
-      const project = ctx.memory.projectOfSession(reader.id)
+      const project = await ctx.memory.projectOfSession(reader.id)
       assert.equal(project, saved.project)
-      assert.equal(ctx.memory.projectOfSession(source.id), project)
+      assert.equal(await ctx.memory.projectOfSession(source.id), project)
       const recordStates = []
       for (const record of saved.records) {
         const ref = { id: record.id, revision: record.revision }
@@ -246,8 +270,8 @@ export function apply(ctx, config) {
         }
         resumeSuffixes.push({ sessionId: agent.id, count: suffix.length, eventTypes: suffix.map(event => event.type) })
       }
-      assert.deepEqual(ctx.memory.browser.selection(project, reader.session).refs, [])
-      assert.equal(ctx.memory.browser.selection(project, reader.session).automatic, true)
+      assert.deepEqual((await ctx.memory.browser.selection(project, reader.session)).refs, [])
+      assert.equal((await ctx.memory.browser.selection(project, reader.session)).automatic, true)
       assert.equal(requests.length, 0)
       assert.equal(modelRequestCount, 0)
       report = { mode: 'verify', keyless: true, project, sourceSession: source.id, readerSession: reader.id,

@@ -11,7 +11,7 @@ import { en, zh } from '../src/client/locales.ts'
 import { createPanelStateObserver } from '../src/client/state-observer.ts'
 import type { PanelCall } from '../src/client/state-observer.ts'
 import type { PanelRequest, PanelResponse, PanelRow } from '../src/panel-protocol.ts'
-import type { MemoryId, MemoryRef } from '../src/l1-types.ts'
+import type { MemoryId, MemoryRef, OperationId } from '../src/l1-types.ts'
 
 afterEach(() => { cleanup(); vi.useRealTimers() })
 const l2: MemoryRef = { id: 'knowledge-l2' as MemoryId, revision: 2 }
@@ -34,7 +34,7 @@ function mount(failSave = false, paginated = false, wrap: (call: PanelCall) => P
           title: `${request.query}: ${request.after === null ? 'first' : 'next'}` }],
           next: request.after === null ? { level: 'L2', id: l2.id } : null }
         return { action: 'browse', rows: request.level === 'L2' ? [row(l2, 'L2')] : request.level === 'L3' ? [row(l3, 'L3')] : [], next: null }
-      case 'state': return { action: 'state', projectId: 'project', refs, automatic, injectionReady: true, valid: true, bytes: refs.length * 100, limit: 5, maxBytes: 8192,
+      case 'state': return { action: 'state', projectId: 'project', refs, automatic, injectionReady: true, maintenanceReady: false, failedKnowledgeTasks: [], valid: true, bytes: refs.length * 100, limit: 5, maxBytes: 8192,
         pending: refs.map(ref => row(ref, ref.id === l2.id ? 'L2' : 'L3')), revision: 'initial', refreshIntervalMs: 3000, recallMethod: 'trigram',
         learning: { enabled: true, pending: 0, running: 0, failed: 0, generated: 2 },
         used: [{ turn: 1, refs: [l2], body: 'Committed historical reference' }] }
@@ -47,7 +47,9 @@ function mount(failSave = false, paginated = false, wrap: (call: PanelCall) => P
         automatic = request.automatic
         return { action: 'automatic', refs, automatic }
       case 'detail': return { action: 'detail', row: row(request.ref, request.ref.id === l2.id ? 'L2' : 'L3') }
+      case 'trace': return { action: 'trace', found: true, text: 'pnpm test', nextCursor: null }
       case 'history': return request.before > 2 ? { action: 'history', refs: [l2], next: 2 } : { action: 'history', refs: [{ ...l2, revision: 1 }], next: null }
+      default: throw new Error('Unsupported test request')
     }
   }
   const controller = new AbortController()
@@ -73,6 +75,103 @@ it('combines L2 and L3 choices, saves them for the next turn and displays the re
   expect(item.view.getByText('Committed historical reference')).toBeDefined()
   fireEvent.click(item.view.getByRole('button', { name: zh.cancel }))
   await waitFor(() => expect(item.view.getByText(/待注入 0 条/)).toBeDefined())
+})
+
+it('previews workspace history, imports selected sources, restores progress and previews cleanup before execution', async () => {
+  const imported = SessionId('old-workspace-session')
+  const job = { id: 'historical-import' as OperationId, projectId: 'project', status: 'running' as const, createdAt: 1,
+    items: [{ sessionId: imported, targetTo: 20, committedTo: 4, status: 'running' as const, failure: null },
+      { sessionId: SessionId('missing-history'), targetTo: 0, committedTo: 0, status: 'failed' as const, failure: 'source' }] }
+  const preview = { cutoff: 1, eligibleSessions: 2, protectedSessions: 1, eventCount: 10, bytes: 512, protectedEventCount: 5, protectedBytes: 128 }
+  let started = false
+  const item = mount(false, false, base => async (request, signal) => {
+    switch (request.action) {
+      case 'importPreview': return { action: 'importPreview', items: [{ sessionId: imported, createdAt: 1, eventCount: 20, status: 'available' },
+        { sessionId: SessionId('previous-import'), createdAt: 1, eventCount: 20, status: 'imported' },
+        { sessionId: SessionId('unsupported-import'), createdAt: 1, eventCount: null, status: 'unsupported', reason: 'schema' }], nextCursor: null, autoLearning: true }
+      case 'importStart': started = true; return { action: 'importStart', task: job }
+      case 'importStatus': return { action: 'importStatus', task: started ? job : null }
+      case 'importCancel': return { action: 'importCancel', task: { ...job, status: 'cancelled' } }
+      case 'cleanupPreview': return { action: 'cleanupPreview', preview }
+      case 'cleanup': return { action: 'cleanup', task: { ...preview, id: 'cleaned' as OperationId, status: 'done', deletedSessions: 2, completedAt: 2 } }
+      case 'cleanupStatus': return { action: 'cleanupStatus', task: null }
+      default: {
+        const response = await base(request, signal)
+        return response.action === 'state' ? { ...response, maintenanceReady: true } : response
+      }
+    }
+  })
+  fireEvent.click(await item.view.findByText(zh.maintenance))
+  fireEvent.click(item.view.getByRole('button', { name: zh.importPreview }))
+  expect(await item.view.findByText(zh.importLearning)).toBeDefined()
+  expect(item.view.getByText('当前已加载预览：可导入 1 个 · 已导入 1 个 · 无法处理 1 个')).toBeDefined()
+  expect(item.view.getByText(zh.importSchemaFailure)).toBeDefined()
+  fireEvent.click(item.view.getByRole('checkbox', { name: new RegExp(imported) }))
+  fireEvent.click(item.view.getByRole('button', { name: zh.importStart }))
+  expect(await item.view.findByText(zh.importRunning)).toBeDefined()
+  expect(item.view.getByText(/已提交 4\/20/)).toBeDefined()
+  expect(item.view.getByText(zh.importSourceFailure)).toBeDefined()
+  fireEvent.click(item.view.getByRole('button', { name: zh.importCancel }))
+  expect(await item.view.findByText(zh.importCancelled)).toBeDefined()
+  expect(item.view.queryByRole('button', { name: zh.cleanupRun })).toBeNull()
+  fireEvent.click(item.view.getByRole('button', { name: zh.cleanupPreview }))
+  fireEvent.click(await item.view.findByRole('button', { name: zh.cleanupRun }))
+  expect(await item.view.findByText('已清理 2 个对话')).toBeDefined()
+  item.controller.abort()
+})
+
+it('retains an unknown storage outcome and pauses writes while task status remains inspectable', async () => {
+  const preview = { cutoff: 1, eligibleSessions: 1, protectedSessions: 0, eventCount: 10, bytes: 512, protectedEventCount: 0, protectedBytes: 0 }
+  let writes = 0
+  const item = mount(false, false, base => async (request, signal) => {
+    switch (request.action) {
+      case 'importStatus': return { action: 'importStatus', task: null }
+      case 'cleanupStatus': return { action: 'cleanupStatus', task: null }
+      case 'cleanupPreview': return { action: 'cleanupPreview', preview }
+      case 'cleanup': writes++; throw new Error('unknown-outcome')
+      default: {
+        const response = await base(request, signal)
+        return response.action === 'state' ? { ...response, maintenanceReady: true } : response
+      }
+    }
+  })
+  fireEvent.click(await item.view.findByText(zh.maintenance))
+  fireEvent.click(item.view.getByRole('button', { name: zh.cleanupPreview }))
+  fireEvent.click(await item.view.findByRole('button', { name: zh.cleanupRun }))
+  await waitFor(() => expect(item.view.getAllByText(zh.operationUnknown).length).toBeGreaterThan(0))
+  const cleanupButton = item.view.getByRole('button', { name: zh.cleanupRun }) as HTMLButtonElement
+  expect(cleanupButton.disabled).toBe(true)
+  expect((item.view.getByRole('button', { name: zh.applySelection }) as HTMLButtonElement).disabled).toBe(true)
+  fireEvent.click(item.view.getByRole('button', { name: zh.refreshStatus }))
+  await waitFor(() => expect((item.view.getByRole('button', { name: zh.refreshStatus }) as HTMLButtonElement).disabled).toBe(false))
+  expect(item.view.getAllByText(zh.operationUnknown).length).toBeGreaterThan(0)
+  expect(writes).toBe(1)
+  item.controller.abort()
+})
+
+it('loads execution trace only after expansion and replaces the current page when paging', async () => {
+  const traceRequests: PanelRequest[] = []
+  const item = mount(false, false, base => async (request, signal) => {
+    if (request.action === 'trace') {
+      traceRequests.push(request)
+      return { action: 'trace', found: true, text: request.cursor === null ? 'First bounded page' : 'Second bounded page',
+        nextCursor: request.cursor === null ? { chunk: 1, offset: 0 } : null }
+    }
+    const response = await base(request, signal)
+    return response.action === 'detail' && response.row !== null ? { ...response, row: { ...response.row, trace: '' } } : response
+  })
+  fireEvent.click(await item.view.findByRole('button', { name: /查看正文与来源: Project rule/ }))
+  const detail = await item.view.findByRole('article', { name: zh.detail })
+  expect(traceRequests).toHaveLength(0)
+  const disclosure = within(detail).getByText(zh.trace).closest('details')!
+  disclosure.open = true
+  fireEvent(disclosure, new Event('toggle'))
+  expect(await within(detail).findByText('First bounded page')).toBeDefined()
+  fireEvent.click(within(detail).getByRole('button', { name: zh.more }))
+  expect(await within(detail).findByText('Second bounded page')).toBeDefined()
+  expect(within(detail).queryByText('First bounded page')).toBeNull()
+  expect(traceRequests[1]).toMatchObject({ cursor: { chunk: 1, offset: 0 } })
+  item.controller.abort()
 })
 
 it('filters scenarios and stable profiles before browsing, with trace and sources initially collapsed', async () => {
@@ -514,7 +613,7 @@ it('reminds the composer about saved memory, then replaces pending content with 
   const call: PanelCall = async (request, signal) => {
     signal.throwIfAborted()
     requests.push(request)
-    return { action: 'state', projectId: 'project', refs: used ? [] : [l2], automatic: true, injectionReady: true, valid: true,
+    return { action: 'state', projectId: 'project', refs: used ? [] : [l2], automatic: true, injectionReady: true, maintenanceReady: false, failedKnowledgeTasks: [], valid: true,
       bytes: used ? 0 : 100, limit: 5, maxBytes: 8192, pending: used ? [] : [row(l2, 'L2')],
       used: used ? [{ turn: 2, refs: [l2], body: 'Committed exact context' }] : [],
       revision: used ? 'used' : 'pending', refreshIntervalMs: 100, recallMethod: 'trigram',
@@ -573,7 +672,7 @@ it('retries an initial state failure from the composer without requiring a polli
   let states = 0
   const observer = createPanelStateObserver(async () => {
     if (++states === 1) throw new Error('storage')
-    return { action: 'state', projectId: 'project', refs: [l2], automatic: false, injectionReady: true, valid: true,
+    return { action: 'state', projectId: 'project', refs: [l2], automatic: false, injectionReady: true, maintenanceReady: false, failedKnowledgeTasks: [], valid: true,
       bytes: 100, limit: 5, maxBytes: 8192, pending: [row(l2, 'L2')], used: [], revision: 'retry', refreshIntervalMs: 100,
       recallMethod: 'trigram', learning: { enabled: true, pending: 0, running: 0, failed: 0, generated: 1 } }
   })

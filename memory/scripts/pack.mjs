@@ -17,7 +17,7 @@ try {
   delete manifest.devDependencies
   writeFileSync(join(stage, 'package.json'), `${JSON.stringify(manifest, null, 2)}\n`)
   for (const name of ['cordis.patch.yml', 'persistence-source.json']) copyFileSync(join(root, name), join(stage, name))
-  for (const name of ['README.md', 'README.zh.md', 'trigram-upgrade.md', 'trigram-upgrade.zh.md', 'layered-upgrade.md', 'layered-upgrade.zh.md']) copyFileSync(join(root, 'distribution', name), join(stage, name))
+  for (const name of ['README.md', 'README.zh.md', 'trigram-upgrade.md', 'trigram-upgrade.zh.md', 'layered-upgrade.md', 'layered-upgrade.zh.md', 'storage-upgrade.md', 'storage-upgrade.zh.md']) copyFileSync(join(root, 'distribution', name), join(stage, name))
   const seen = new Set()
   function copyArtifact(name) {
     const path = resolve(root, name)
@@ -30,7 +30,7 @@ try {
     const text = readFileSync(path, 'utf8')
     for (const match of text.matchAll(/(?:from\s*|import\s*\()\s*["'](\.[^"']+)["']/g)) copyArtifact(relative(root, resolve(dirname(path), match[1])))
   }
-  for (const name of ['lib/index.mjs', 'lib/portable.mjs', 'lib/client.js']) copyArtifact(name)
+  for (const name of ['lib/index.mjs', 'lib/portable.mjs', 'lib/storage-worker.mjs', 'lib/client.js']) copyArtifact(name)
   const cli = process.env['npm_execpath'] ?? join(dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js')
   if (!existsSync(cli)) throw new Error('Run pack:portable through npm so its CLI path is available')
   const result = spawnSync(process.execPath, [cli, 'pack', '--ignore-scripts', '--pack-destination', destination], {

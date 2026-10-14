@@ -5,7 +5,7 @@ import type { ProjectId } from './types.ts'
 import type { OperationId } from './l1-types.ts'
 import { L1ModelError } from './l1-extractor.ts'
 import type { KnowledgeExtractor } from './knowledge-extractor.ts'
-import type { KnowledgeStore } from './knowledge-store.ts'
+import type { MemoryDatabase } from './sqlite.ts'
 
 /** No production worker is installed until a genuine request recorder is available. */
 export class KnowledgeWorker {
@@ -15,11 +15,13 @@ export class KnowledgeWorker {
   private readonly watched = new Map<ProjectId, (error: unknown) => void>()
   private tail: Promise<void> = Promise.resolve()
   private timer: ReturnType<typeof setTimeout> | undefined
+  private readonly scheduling = new Set<Promise<void>>()
+  private armGeneration = 0
   /** @param store - parent-owned knowledge store.
    * @param extractor - extractor with a mandatory Session recorder.
    * @param now - epoch clock for deterministic recovery tests.
    */
-  constructor(private readonly store: KnowledgeStore, private readonly extractor: Pick<KnowledgeExtractor, 'consolidate'>, private readonly now: () => number = Date.now) {}
+  constructor(private readonly store: MemoryDatabase['knowledge'], private readonly extractor: Pick<KnowledgeExtractor, 'consolidate'>, private readonly now: () => number = Date.now) {}
 
   /** Execute a due task once; subsequent retries are explicit and respect stored backoff.
    * @param project - owning project.
@@ -42,11 +44,11 @@ export class KnowledgeWorker {
   watch(project: ProjectId, report: (error: unknown) => void): void {
     if (this.controller.signal.aborted) throw new MemoryError('closed', 'Knowledge worker is closed')
     this.watched.set(project, report)
-    this.arm()
+    this.requestArm()
   }
 
   /** Recheck durable tasks after an enqueue or source Session change. */
-  notify(): void { this.arm() }
+  notify(): void { this.requestArm() }
 
   /** Stop project scheduling before its request Session is released.
    * @param project - departing project.
@@ -54,19 +56,28 @@ export class KnowledgeWorker {
    */
   async retire(project: ProjectId): Promise<void> {
     this.watched.delete(project)
-    this.arm()
+    this.requestArm()
     await this.tail
     await Promise.allSettled([...this.active])
   }
 
-  private arm(): void {
+  private requestArm(): void {
+    const work = this.arm().catch(error => { for (const report of this.watched.values()) report(error) })
+    this.scheduling.add(work)
+    void work.then(() => this.scheduling.delete(work))
+  }
+
+  private async arm(): Promise<void> {
+    const generation = ++this.armGeneration
     if (this.timer !== undefined) clearTimeout(this.timer)
     this.timer = undefined
     if (this.controller.signal.aborted) return
-    const next = [...this.watched.keys()].flatMap(project => {
-      const due = this.store.nextDue(project)
-      return due === null ? [] : [{ project, ...due }]
-    }).sort((a, b) => a.at - b.at)[0]
+    const candidates = await Promise.all([...this.watched.keys()].map(async project => {
+      const due = (await this.store.nextDue(project))
+      return due === null ? null : { project, ...due }
+    }))
+    if (generation !== this.armGeneration || this.controller.signal.aborted) return
+    const next = candidates.filter(item => item !== null).sort((a, b) => a.at - b.at)[0]
     if (next === undefined) return
     this.timer = setTimeout(() => {
       this.timer = undefined
@@ -76,37 +87,37 @@ export class KnowledgeWorker {
         const attempted = new Set<OperationId>()
         for (;;) {
           if (this.controller.signal.aborted || !this.watched.has(next.project)) return
-          const due = this.store.nextDue(next.project)
+          const due = (await this.store.nextDue(next.project))
           if (due === null || due.at > this.now() || attempted.has(due.operationId)) return
           attempted.add(due.operationId)
           await this.run(next.project, due.operationId, this.controller.signal)
         }
       })
       this.tail = work.catch(() => undefined)
-      void work.then(() => this.arm(), error => { report(error); this.arm() }).catch(report)
+      void work.then(() => this.requestArm(), error => { report(error); this.requestArm() }).catch(report)
     }, Math.min(2147483647, Math.max(1, next.at - this.now())))
     this.timer.unref()
   }
 
   private async execute(project: ProjectId, operation: OperationId, signal: AbortSignal): Promise<void> {
     signal.throwIfAborted()
-    const task = this.store.claim(project, operation, this.owner, this.now())
+    const task = (await this.store.claim(project, operation, this.owner, this.now()))
     if (task === null) return
     try {
       if (task.candidates === null) {
-        const candidates = await this.extractor.consolidate(task, signal, () => this.store.reserveCall(project, operation, this.owner, this.now()))
+        const candidates = await this.extractor.consolidate(task, signal, async () => (await this.store.reserveCall(project, operation, this.owner, this.now())))
         signal.throwIfAborted()
-        this.store.prepare(project, operation, this.owner, candidates)
+        await this.store.prepare(project, operation, this.owner, candidates)
       }
       signal.throwIfAborted()
-      this.store.commit(project, operation, this.owner, this.now())
+      await this.store.commit(project, operation, this.owner, this.now())
     } catch (error) {
-      const current = this.store.getTask(project, operation)
+      const current = (await this.store.getTask(project, operation))
       if (current?.status === 'done' || current?.owner !== this.owner) return
       const sqliteBusy = error instanceof Error && 'errcode' in error && typeof error.errcode === 'number' && [5, 6].includes(error.errcode & 255)
       const code = signal.aborted ? null : error instanceof L1ModelError ? error.failureCode : error instanceof MemoryError ? error.code : sqliteBusy ? 'SQLITE_BUSY' : 'UNCLASSIFIED'
       const retryable = signal.aborted || sqliteBusy || (error instanceof L1ModelError && error.retryable) || (error instanceof MemoryError && ['storage', 'conflict'].includes(error.code))
-      this.store.fail(project, operation, this.owner, code, retryable, this.now())
+      await this.store.fail(project, operation, this.owner, code, retryable, this.now())
     }
   }
 
@@ -118,6 +129,7 @@ export class KnowledgeWorker {
     if (this.timer !== undefined) clearTimeout(this.timer)
     this.timer = undefined
     this.watched.clear()
+    await Promise.allSettled([...this.scheduling])
     await this.tail
     await Promise.allSettled([...this.active])
   }

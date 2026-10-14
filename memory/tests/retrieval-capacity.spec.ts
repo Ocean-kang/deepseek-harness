@@ -27,7 +27,7 @@ it.runIf(process.env.DSH_MEMORY_BENCHMARK === '1')('measures authorized scans at
       retriever = new MemoryRetriever(item.provider, spec, { embed: async texts => ({ vectors: texts.map(() => Array.from({ length: 128 }, (_, i) => i % 2 ? 0 : 1)), tokens: null }) }, error => { throw error })
       retriever.schedule()
       await retriever.flush()
-      expect(retriever.getIndexStatus(item.project).ready).toBe(true)
+      expect((await retriever.getIndexStatus(item.project)).ready).toBe(true)
       const samples: number[] = []
       const scans: number[] = []
       const heapBefore = process.memoryUsage().heapUsed

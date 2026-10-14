@@ -37,6 +37,28 @@ it('selects central storage for direct mounts and accepts the explicit workspace
   expect((await resolveConfig({ projectId: 'stable', databasePath: 'data/test.sqlite', storageMode: 'workspace' })).storageMode).toBe('workspace')
 })
 
+it('resolves byte budgets and opt-in retention through the Loader and rejects unusable limits', async () => {
+  const base = { projectId: 'stable', databasePath: 'data/test.sqlite' }
+  expect(await resolveConfig(base)).toMatchObject({ queueMaxBytes: 8388608, pageMaxBytes: 262144,
+    tracePageMaxBytes: 65536, storageQueueCapacity: 128, storageQueueMaxBytes: 8388608,
+    retention: { intervalMs: 86400000 } })
+  const parsed = Config({ ...base, queueMaxBytes: 4096, pageMaxBytes: 1024, tracePageMaxBytes: 64,
+    storageQueueCapacity: 8, storageQueueMaxBytes: 16384, retention: { maxAgeDays: 7, intervalMs: 60000 } })
+  expect(await resolveConfig(parsed)).toMatchObject({ queueMaxBytes: 4096, pageMaxBytes: 1024,
+    tracePageMaxBytes: 64, storageQueueCapacity: 8, storageQueueMaxBytes: 16384,
+    retention: { maxAgeDays: 7, intervalMs: 60000 } })
+  for (const field of ['queueMaxBytes', 'pageMaxBytes', 'tracePageMaxBytes', 'storageQueueCapacity', 'storageQueueMaxBytes'] as const) {
+    for (const value of [0, -1, 1.5, Infinity]) await expect(resolveConfig({ ...base, [field]: value })).rejects.toMatchObject({ code: 'config' })
+  }
+  await expect(resolveConfig({ ...base, tracePageMaxBytes: 3 })).rejects.toMatchObject({ code: 'config' })
+  for (const value of [0, -1, 1.5, Infinity]) {
+    await expect(resolveConfig({ ...base, retention: { maxAgeDays: value } })).rejects.toMatchObject({ code: 'config' })
+    await expect(resolveConfig({ ...base, retention: { intervalMs: value } })).rejects.toMatchObject({ code: 'config' })
+  }
+  await expect(resolveConfig({ ...base, retention: { maxAgeDays: 104249992 } })).rejects.toMatchObject({ code: 'config' })
+  await expect(resolveConfig({ ...base, retention: { intervalMs: 2147483648 } })).rejects.toMatchObject({ code: 'config' })
+})
+
 it('preserves the configured refresh interval through the Loader configuration declaration', async () => {
     const parsed = Config({ projectId: 'stable', databasePath: 'data/test.sqlite', browser: { refreshIntervalMs: 750, stateCacheSessions: 2 } })
   expect(parsed.browser?.refreshIntervalMs).toBe(750)

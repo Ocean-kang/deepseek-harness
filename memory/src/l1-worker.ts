@@ -4,7 +4,7 @@ import type { SessionId } from '@deepseek-ai/dsh-session'
 import type { ProjectId } from './types.ts'
 import { MemoryError } from './types.ts'
 import type { L1Failure, L1Task } from './l1-types.ts'
-import type { SqliteMemory } from './sqlite.ts'
+import type { MemoryDatabase } from './sqlite.ts'
 import { L1ModelError } from './l1-extractor.ts'
 import type { L1Extractor } from './l1-extractor.ts'
 
@@ -15,6 +15,8 @@ export class L1Worker {
   private tail: Promise<void> = Promise.resolve()
   private closing = false
   private timer: ReturnType<typeof setTimeout> | undefined
+  private armGeneration = 0
+  private readonly arming = new Set<Promise<void>>()
   private readonly watched = new Set<SessionId>()
   private readonly sources = new Map<SessionId, AbortController>()
 
@@ -26,7 +28,7 @@ export class L1Worker {
    * @param report - body-free failure observer that must not throw.
    * @param now - epoch clock, replaceable for deterministic retry tests.
    */
-  constructor(private readonly memory: SqliteMemory, private readonly extractor: Pick<L1Extractor, 'extractTurn'>,
+  constructor(private readonly memory: MemoryDatabase, private readonly extractor: Pick<L1Extractor, 'extractTurn'>,
     private readonly project: ProjectId, private readonly pageSize: number,
     private readonly report: (operation: L1Task['operationId'], failure: L1Failure) => void,
     private readonly now: () => number = Date.now) {}
@@ -46,7 +48,7 @@ export class L1Worker {
       const cutoff = this.now()
       for (;;) {
         if (drainSignal.aborted) return
-        const task = this.memory.l1.claim(this.project, session, this.owner, cutoff)
+        const task = await this.memory.l1.claim(this.project, session, this.owner, cutoff)
         if (task === null) return
         await this.run(task, drainSignal)
       }
@@ -62,7 +64,7 @@ export class L1Worker {
   watch(session: SessionId): void {
     if (this.closing) throw new MemoryError('closed', 'L1 worker is closing')
     this.watched.add(session)
-    this.arm()
+    void this.arm().catch(error => console.error('Memory L1 scheduling failed', classify(error)))
   }
 
   /**
@@ -74,18 +76,25 @@ export class L1Worker {
     this.sources.get(session)?.abort(new Error('L1 source Session retired'))
     this.sources.delete(session)
     this.watched.delete(session)
-    this.arm()
+    await this.arm()
     await this.tail
   }
 
-  private arm(): void {
+  private arm(): Promise<void> {
+    const work = this.calculateArm()
+    this.arming.add(work)
+    void work.then(() => this.arming.delete(work), () => this.arming.delete(work))
+    return work
+  }
+
+  private async calculateArm(): Promise<void> {
+    const generation = ++this.armGeneration
     if (this.timer !== undefined) clearTimeout(this.timer)
     this.timer = undefined
     if (this.closing) return
-    const next = [...this.watched.keys()].flatMap(session => {
-      const due = this.memory.l1.nextDue(this.project, session)
-      return due === null ? [] : [{ ...due, session }]
-    }).sort((a, b) => a.at - b.at)[0]
+    const due = await Promise.all([...this.watched.keys()].map(async session => ({ due: await this.memory.l1.nextDue(this.project, session), session })))
+    if (this.closing || generation !== this.armGeneration) return
+    const next = due.flatMap(({ due, session }) => due === null ? [] : [{ ...due, session }]).sort((a, b) => a.at - b.at)[0]
     if (next === undefined) return
     this.timer = setTimeout(() => {
       this.timer = undefined
@@ -106,34 +115,41 @@ export class L1Worker {
     this.sources.clear()
     this.controller.abort(new Error('L1 worker closed'))
     await this.tail
+    await Promise.allSettled([...this.arming])
   }
 
   private async run(task: L1Task, signal: AbortSignal): Promise<void> {
     try {
-      const existing = this.memory.l1.byOperation(this.project, task.operationId)
+      const existing = await this.memory.l1.byOperation(this.project, task.operationId)
       if (existing !== null) return
       if (task.candidate === null) {
-        const events = []
-        let cursor = task.from
-        do {
-          const page = await this.memory.readRaw({ projectId: this.project, sessionId: task.sessionId,
-            from: task.from, to: task.to, cursor, limit: this.pageSize, signal })
-          if (!page.found || page.missing.length > 0) throw new MemoryError('gap', 'L1 source interval is not fully committed')
-          events.push(...page.events)
-          if (page.nextCursor === null) break
-          cursor = page.nextCursor
-        } while (true)
-        const candidate = await this.extractor.extractTurn(task, events, signal, () => this.memory.l1.reserveCall(this.project, task.operationId, this.owner))
+        const memory = this.memory
+        const project = this.project
+        const pageSize = this.pageSize
+        const events = async function* () {
+          let cursor = task.from
+          for (;;) {
+            const page = await memory.readRaw({ projectId: project, sessionId: task.sessionId,
+              from: task.from, to: task.to, cursor, limit: pageSize, signal })
+            if (!page.found || page.missing.length > 0) throw new MemoryError('gap', 'L1 source interval is not fully committed')
+            for (const event of page.events) yield event
+            if (page.nextCursor === null) return
+            cursor = page.nextCursor
+          }
+        }
+        const candidate = await this.extractor.extractTurn(task, events(), signal,
+          async () => { await this.memory.l1.reserveCall(this.project, task.operationId, this.owner) },
+          async refs => this.memory.l1.successfulRefs(this.project, task.operationId, refs))
         signal.throwIfAborted()
-        this.memory.l1.prepare(this.project, task.operationId, this.owner, candidate)
+        await this.memory.l1.prepare(this.project, task.operationId, this.owner, candidate)
       }
       signal.throwIfAborted()
-      this.memory.l1.commitMemory(this.project, task.operationId, this.owner, this.now())
+      await this.memory.l1.commitMemory(this.project, task.operationId, this.owner, this.now())
     } catch (error) {
       // A transport can report failure after COMMIT; never redo an already committed operation.
-      if (this.memory.l1.byOperation(this.project, task.operationId) !== null || this.memory.l1.getTask(this.project, task.operationId)?.status === 'empty') return
+      if (await this.memory.l1.byOperation(this.project, task.operationId) !== null || (await this.memory.l1.getTask(this.project, task.operationId))?.status === 'empty') return
       const failure = signal.aborted ? null : classify(error)
-      this.memory.l1.fail(this.project, task.operationId, this.owner, failure, this.now())
+      await this.memory.l1.fail(this.project, task.operationId, this.owner, failure, this.now())
       if (failure !== null) this.report(task.operationId, failure)
     }
   }

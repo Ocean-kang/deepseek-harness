@@ -9,6 +9,10 @@ import type {} from '@deepseek-ai/dsh-workspace'
 import { resolveConfig } from './config.ts'
 import type { Config as ConfigInput } from './config.ts'
 import { SqliteMemory } from './sqlite.ts'
+import type { MemoryDatabase } from './sqlite.ts'
+import type { HistoryImporter, ImportPreviewRequest } from './history.ts'
+import type { CleanupRequest } from './maintenance-store.ts'
+import type { TraceCursor } from './l1-types.ts'
 import { HttpEmbedder } from './embedding.ts'
 import { MemoryRetriever } from './retrieval.ts'
 import { HybridMemoryRetriever } from './hybrid-retrieval.ts'
@@ -16,7 +20,6 @@ import type { RetrievalRequest, MemorySearch } from './retrieval.ts'
 import { TextMemoryRetriever } from './text-retrieval.ts'
 import { MemoryPipeline } from './pipeline.ts'
 import { queryExpander } from './query-expansion.ts'
-import { enqueueCandidates } from './knowledge-store.ts'
 import type {} from '@deepseek-ai/dsh-llm'
 import { RawCollector } from './collector.ts'
 import { installShareCommand } from './share-command.ts'
@@ -71,6 +74,8 @@ export const Config: z<Config> = z.object({
   hybrid: z.union([z.object({ rrfK: z.number(), candidateLimit: z.number(), limit: z.number(), maxBytes: z.number() }), z.const(undefined)]),
   projectId: z.string().required(), databasePath: z.string().required(),
   queueCapacity: z.number(), batchSize: z.number(), pageSize: z.number(), busyTimeoutMs: z.number(),
+  queueMaxBytes: z.number(), pageMaxBytes: z.number(), tracePageMaxBytes: z.number(), storageQueueCapacity: z.number(), storageQueueMaxBytes: z.number(),
+  retention: z.object({ maxAgeDays: z.number(), intervalMs: z.number() }),
   learningConcurrency: z.number(), learningQueueCapacity: z.number(),
   textSearch: z.union([z.object({ tokenizer: z.union(['unicode61', 'trigram'] as const), limit: z.number(), maxBytes: z.number(),
     maxCandidates: z.number(), pageSize: z.number(), timeoutMs: z.number(), maxQueryBytes: z.number(), maxTerms: z.number(),
@@ -106,13 +111,20 @@ declare module '@deepseek-ai/cordis' {
 
 /** Project runtime selected by the Workspace storage owner. */
 export interface MemoryRuntime {
-  readonly provider: SqliteMemory
+  readonly provider: MemoryDatabase
   readonly retriever?: MemorySearch
   readonly pipeline?: MemoryPipeline
+  readonly history?: HistoryImporter
 }
 
 /** Loaded project runtimes; capture resolves a route before synchronous browser reads. */
 export interface MemoryRoutes {
+  /** @param project - project owner. @returns whether it is a bound Workspace. */
+  workspaceBound(project: ProjectId): boolean
+  /** @param project - imported owner. @param sessionId - explicitly accepted source. */
+  admit(project: ProjectId, sessionId: import('@deepseek-ai/dsh-session').SessionId): void
+  /** @param project - changed owner. @returns completion of refreshed admission and cleanup markers. */
+  refreshAdmissions(project: ProjectId): Promise<void>
   /** @param project - captured project identity.
    * @returns initialized runtime; unknown identities reject.
    */
@@ -129,12 +141,13 @@ export interface MemoryRoutes {
 
 /** Context-facing minimal persistence API, available after collector initialization. */
 export class MemoryService extends Service implements RawMemory {
+  private readonly owner: Context
   /** Authorized browsing and durable next-turn selection for trusted adapters. */
   readonly browser: MemoryBrowser
   /** @param sessionId - canonical captured Session identity.
    * @returns immutable project owner, or undefined before capture registration.
    */
-  projectOfSession(sessionId: import('@deepseek-ai/dsh-session').SessionId): ProjectId | undefined { return this.routes === undefined ? this.provider.getSessionProject(sessionId) : this.routes.projectOfSession(sessionId) }
+  async projectOfSession(sessionId: import('@deepseek-ai/dsh-session').SessionId): Promise<ProjectId | undefined> { return this.routes === undefined ? (await this.provider.getSessionProject(sessionId)) : this.routes.projectOfSession(sessionId) }
   /**
    * Publish the ready provider through Cordis.
    * @param ctx - owning plugin context.
@@ -145,9 +158,11 @@ export class MemoryService extends Service implements RawMemory {
    * @param pipeline - optional background learner, disposed separately before the database.
    * @param browser - resolved browser and combined injection limits.
    * @param routes - optional initialized Workspace runtimes and activation policy.
+   * @param admission - central-store source exclusion and refresh policy.
    */
-  constructor(ctx: Context, private readonly provider: SqliteMemory, private readonly l1: L1Spec | undefined, private readonly scan: (project: ProjectId) => void, browser: import('./browser.ts').BrowserSpec, private readonly retriever?: MemorySearch, private readonly pipeline?: MemoryPipeline, private readonly routes?: MemoryRoutes) {
+  constructor(ctx: Context, private readonly provider: MemoryDatabase, private readonly l1: L1Spec | undefined, private readonly scan: (project: ProjectId) => void | Promise<void>, browser: import('./browser.ts').BrowserSpec, private readonly retriever?: MemorySearch, private readonly pipeline?: MemoryPipeline, private readonly routes?: MemoryRoutes, private readonly admission?: Pick<MemoryRoutes, 'accepts' | 'refreshAdmissions'>) {
     super(ctx, 'memory')
+    this.owner = ctx
     this.browser = new MemoryBrowser(routes === undefined ? provider : project => routes.get(project).provider, browser)
   }
 
@@ -166,9 +181,9 @@ export class MemoryService extends Service implements RawMemory {
    * @param session - live or persisted Session metadata.
    * @returns false for Sessions predating Workspace storage activation.
    */
-  acceptsSession(session: Pick<import('@deepseek-ai/dsh-session').Session, 'header'>): boolean { return this.routes?.accepts(session) ?? true }
+  acceptsSession(session: Pick<import('@deepseek-ai/dsh-session').Session, 'header'>): boolean { return (this.routes ?? this.admission)?.accepts(session) ?? true }
 
-  private providerFor(project: ProjectId): SqliteMemory { return this.routes === undefined ? this.provider : this.routes.get(project).provider }
+  private providerFor(project: ProjectId): MemoryDatabase { return this.routes === undefined ? this.provider : this.routes.get(project).provider }
   private pipelineFor(project: ProjectId): MemoryPipeline | undefined { return this.routes === undefined ? this.pipeline : this.routes.get(project).pipeline }
 
   /** @param project - captured owner.
@@ -217,9 +232,11 @@ export class MemoryService extends Service implements RawMemory {
    * @returns durable transaction result.
    */
   async appendRaw(request: AppendRawRequest): Promise<AppendRawResult> {
-    if (this.routes !== undefined && !this.routes.accepts({ header: request.header })) throw new MemoryError('excluded', 'Session predates Workspace memory activation')
+    if (!this.acceptsSession({ header: request.header })) throw new MemoryError('excluded', 'Session is excluded from memory capture')
+    const owner = await this.projectOfSession(request.header.id)
+    if (owner !== undefined && owner !== request.projectId) throw new MemoryError('conflict', 'Session already belongs to another memory project')
     const result = await this.providerFor(request.projectId).appendRaw(request)
-    this.scan(request.projectId)
+    await this.scan(request.projectId)
     return result
   }
 
@@ -228,8 +245,8 @@ export class MemoryService extends Service implements RawMemory {
    * @param request - project-owned interval and page.
    * @returns ordered events and missing ranges.
    */
-  readRaw(request: ReadRawRequest): Promise<ReadRawResult> {
-    return this.providerFor(request.projectId).readRaw(request)
+  async readRaw(request: ReadRawRequest): Promise<ReadRawResult> {
+    return (await this.providerFor(request.projectId).readRaw(request))
   }
 
   /**
@@ -239,7 +256,7 @@ export class MemoryService extends Service implements RawMemory {
    * @returns visible memory or null; shared records exclude private sources.
    */
   async getMemory(project: ProjectId, ref: MemoryRef): Promise<OwnedMemory | SharedMemory | null> {
-    return this.providerFor(project).knowledge.getMemory(project, ref)
+    return (await this.providerFor(project).knowledge.getMemory(project, ref))
   }
 
   /** Page active usable memory versions.
@@ -250,7 +267,7 @@ export class MemoryService extends Service implements RawMemory {
    * @returns visible candidates.
    */
   async listCandidates(project: ProjectId, level: 'L1' | KnowledgeLevel, after = '', limit = 100): Promise<Array<OwnedMemory | SharedMemory>> {
-    return this.providerFor(project).knowledge.listCandidates(project, level, after, limit)
+    return (await this.providerFor(project).knowledge.listCandidates(project, level, after, limit))
   }
 
   /** Persist explicit consolidation and wake the background learner when enabled.
@@ -261,7 +278,7 @@ export class MemoryService extends Service implements RawMemory {
    * @returns durable operation identity without awaiting its model call.
    */
   async consolidate(project: ProjectId, level: KnowledgeLevel, sources: readonly MemoryRef[], config: KnowledgeSpec): Promise<OperationId> {
-    const operation = this.providerFor(project).knowledge.enqueue(project, level, sources, config)
+    const operation = (await this.providerFor(project).knowledge.enqueue(project, level, sources, config))
     this.pipelineFor(project)?.wake(project)
     return operation
   }
@@ -271,7 +288,7 @@ export class MemoryService extends Service implements RawMemory {
    * @param operation - identity.
    * @returns visible task or null.
    */
-  async getKnowledgeTask(project: ProjectId, operation: OperationId) { return this.providerFor(project).knowledge.getTask(project, operation) }
+  async getKnowledgeTask(project: ProjectId, operation: OperationId) { return (await this.providerFor(project).knowledge.getTask(project, operation)) }
 
   /** Page consolidation tasks.
    * @param project - owner.
@@ -279,14 +296,14 @@ export class MemoryService extends Service implements RawMemory {
    * @param limit - page size.
    * @returns task page.
    */
-  async listKnowledgeTasks(project: ProjectId, after = '', limit = 100) { return this.providerFor(project).knowledge.listTasks(project, after, limit) }
+  async listKnowledgeTasks(project: ProjectId, after = '', limit = 100) { return (await this.providerFor(project).knowledge.listTasks(project, after, limit)) }
 
   /** Explicitly resume a failed consolidation.
    * @param project - owner.
    * @param operation - task identity.
    */
   async retryKnowledgeTask(project: ProjectId, operation: OperationId): Promise<void> {
-    this.providerFor(project).knowledge.retry(project, operation)
+    await this.providerFor(project).knowledge.retry(project, operation)
     this.pipelineFor(project)?.wake(project)
   }
 
@@ -297,7 +314,7 @@ export class MemoryService extends Service implements RawMemory {
    * @param operation - idempotent identity.
    */
   async invalidateMemory(project: ProjectId, ref: MemoryRef, reason: string, operation: OperationId): Promise<void> {
-    this.providerFor(project).knowledge.invalidateMemory(project, ref, reason, operation)
+    await this.providerFor(project).knowledge.invalidateMemory(project, ref, reason, operation)
   }
 
   /**
@@ -307,7 +324,7 @@ export class MemoryService extends Service implements RawMemory {
    * @returns task or null when invisible.
    */
   async getTask(project: ProjectId, operation: OperationId): Promise<L1Task | null> {
-    return this.providerFor(project).l1.getTask(project, operation)
+    return (await this.providerFor(project).l1.getTask(project, operation))
   }
 
   /**
@@ -318,7 +335,7 @@ export class MemoryService extends Service implements RawMemory {
    * @returns at most limit tasks.
    */
   async listTasks(project: ProjectId, after: string, limit: number): Promise<L1Task[]> {
-    return this.providerFor(project).l1.listTasks(project, after, limit)
+    return (await this.providerFor(project).l1.listTasks(project, after, limit))
   }
 
   /**
@@ -330,10 +347,63 @@ export class MemoryService extends Service implements RawMemory {
    */
   async rerunTask(project: ProjectId, operation: OperationId, mode: 'retry' | 'reextract'): Promise<OperationId> {
     if (this.l1 === undefined) throw new MemoryError('config', 'L1 configuration is required for explicit reruns')
-    const next = this.providerFor(project).l1.rerun(project, operation, mode, this.l1)
+    const next = (await this.providerFor(project).l1.rerun(project, operation, mode, this.l1))
     this.pipelineFor(project)?.wake(project)
     return next
   }
+
+  /** @param project - owner. @returns whether historical operations are available for a bound Workspace. */
+  workspaceBound(project: ProjectId): boolean { return this.routes?.workspaceBound(project) ?? false }
+  private historyFor(project: ProjectId): HistoryImporter {
+    if (!this.workspaceBound(project)) throw new MemoryError('config', 'Historical import requires a bound Workspace')
+    const history = this.routes?.get(project).history
+    if (history === undefined) throw new MemoryError('integration', 'Historical importer is unavailable')
+    return history
+  }
+  /** @param request - owner, creation-time filter and page cursor. @returns verified source metadata. */
+  async previewHistoryImport(request: ImportPreviewRequest) {
+    const preview = await this.historyFor(request.projectId).preview(request)
+    const items = await Promise.all(preview.items.map(async item => {
+      const owner = await this.projectOfSession(item.sessionId)
+      return owner === undefined || owner === request.projectId ? item : { ...item, status: 'unsupported' as const, reason: 'conflict' as const }
+    }))
+    return { ...preview, items }
+  }
+  /** @param project - bound owner. @param sessionIds - selected canonical sources. @returns durable import task. */
+  async importHistory(project: ProjectId, sessionIds: readonly import('@deepseek-ai/dsh-session').SessionId[]) {
+    for (const sessionId of sessionIds) {
+      const owner = await this.projectOfSession(sessionId)
+      if (owner !== undefined && owner !== project) throw new MemoryError('conflict', 'Session already belongs to another memory project')
+    }
+    const task = await this.historyFor(project).start(project, sessionIds)
+    for (const item of task.items) if (item.status !== 'failed') this.routes?.admit(project, item.sessionId)
+    return task
+  }
+  /** @param project - owner. @param id - exact job, omitted for latest. @returns persisted progress or null. */
+  getImportTask(project: ProjectId, id?: OperationId) { return this.historyFor(project).status(project, id) }
+  /** @param project - owner. @param id - job to stop. @returns saved cancellation without discarding copied events. */
+  cancelImport(project: ProjectId, id: OperationId) { return this.historyFor(project).cancel(project, id) }
+  private cleanupRequest(request: CleanupRequest): CleanupRequest {
+    return { ...request, activeSessionIds: this.owner.sessions.list().map(session => session.id) }
+  }
+  /** @param project - owner. @param request - retention age. @returns deletable and protected estimates. */
+  previewCleanup(project: ProjectId, request: CleanupRequest) { return this.providerFor(project).maintenance.cleanupPreview(project, this.cleanupRequest(request)) }
+  /** @param project - owner. @param request - retention age. @returns committed deletion counters. */
+  async cleanup(project: ProjectId, request: CleanupRequest) {
+    const result = await this.providerFor(project).maintenance.cleanup(project, this.cleanupRequest(request))
+    await (this.routes ?? this.admission)?.refreshAdmissions(project)
+    return result
+  }
+  /** @param project - owner. @returns last committed cleanup result. */
+  getCleanupTask(project: ProjectId) { return this.providerFor(project).maintenance.cleanupStatus(project) }
+  /** @param project - owner. @returns settlement of explicit database compaction. */
+  async compact(project: ProjectId): Promise<void> { await this.providerFor(project).maintenance.compact() }
+  /** @param project - owner. @param ref - immutable L1 version. @param cursor - Unicode-safe continuation.
+   * @param maxBytes - optional requested page size. @returns a full-trace fragment without summary expansion.
+   */
+  readTrace(project: ProjectId, ref: MemoryRef, cursor?: TraceCursor, maxBytes?: number) { return this.providerFor(project).l1.readTrace(project, ref, cursor, maxBytes) }
+  /** @param project - owner. @param limit - failed-task page size. @returns failures without decoding successful historical tasks. */
+  listFailedKnowledgeTasks(project: ProjectId, limit = this.browser.spec.pageSize) { return this.providerFor(project).knowledge.getFailedTasks(project, limit) }
 }
 
 /**
@@ -369,24 +439,51 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   let panelDispose: (() => Promise<void>) | undefined
   let injectorDispose: (() => Promise<void>) | undefined
   let shuttingDown = false
-  const enqueueKnowledge = () => {
+  const storageWork = new Set<Promise<void>>()
+  const excluded = new Set<string>()
+  let retentionTimer: ReturnType<typeof setTimeout> | undefined
+  const track = (work: Promise<void>): Promise<void> => {
+    storageWork.add(work)
+    void work.then(() => storageWork.delete(work), () => storageWork.delete(work))
+    return work
+  }
+  const enqueueKnowledgeRun = async () => {
     if (spec.knowledge === undefined) return
     try {
-      for (const project of provider.listProjects()) {
-        for (const level of ['L2', 'L3'] as const) enqueueCandidates(provider.knowledge, project, level, spec.knowledge, spec.pageSize)
+      for (const project of (await provider.listProjects())) {
+        for (const level of ['L2', 'L3'] as const) await provider.knowledge.enqueueCandidates(project, level, spec.knowledge, spec.pageSize)
       }
     } catch (error) {
       report(new MemoryError('storage', 'Knowledge task enqueue failed; pending source versions remain available for retry', error))
     }
   }
-  const scan = (project: ProjectId) => {
+  const runScan = async (project: ProjectId) => {
     if (spec.l1 === undefined) return
-    try { provider.scanTurns(project, spec.l1, spec.pageSize); if (!shuttingDown) pipeline?.wake(project) } catch (error) {
+    try { (await provider.scanTurns(project, spec.l1, spec.pageSize)); if (!shuttingDown) pipeline?.wake(project) } catch (error) {
       report(new MemoryError('source', 'L1 scan failed; its last committed checkpoint is retained', error))
     }
   }
+  const enqueueKnowledge = () => track(enqueueKnowledgeRun())
+  const scan = (project: ProjectId) => track(runScan(project))
+  const refreshExcluded = async () => {
+    for (const project of await provider.listProjects()) for (const item of await provider.maintenance.listAdmissions(project)) {
+      if (item.status === 'cleaned') excluded.add(item.sessionId); else excluded.delete(item.sessionId)
+    }
+  }
+  const armRetention = () => {
+    if (shuttingDown || spec.retention.maxAgeDays === undefined) return
+    retentionTimer = setTimeout(() => {
+      retentionTimer = undefined
+      if (shuttingDown) return
+      void track((async () => {
+        for (const project of await provider.listProjects()) await provider.maintenance.cleanup(project, { maxAgeDays: spec.retention.maxAgeDays!, activeSessionIds: ctx.sessions.list().map(session => session.id) })
+        await refreshExcluded()
+      })().catch(error => report(new MemoryError('storage', 'Automatic cleanup failed; inspect retained source data before retrying', error))).finally(armRetention))
+    }, spec.retention.intervalMs)
+    retentionTimer.unref()
+  }
   const collector = new RawCollector(provider, ctx.sessionPersistence, spec, report, scan, async session => {
-    const stored = provider.getSessionProject(session.id)
+    const stored = (await provider.getSessionProject(session.id))
     if (stored !== undefined) return stored
     const registry = ctx.get('workspaceRegistry')
     const fallback = spec.projectByPath && session.header.cwd !== undefined
@@ -403,6 +500,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   const listeners: Array<() => void> = []
   const dispose = async () => {
     shuttingDown = true
+    if (retentionTimer !== undefined) clearTimeout(retentionTimer)
     for (const dispose of listeners) dispose()
     try {
       await injectorDispose?.()
@@ -410,33 +508,37 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
       await pipeline?.close()
       await retriever?.close()
       await collector.close()
+      await Promise.allSettled([...storageWork])
     } finally {
       await provider.close()
     }
   }
   try {
     ctx.effect(() => dispose, 'memory.capture-and-database')
-    listeners.push(ctx.on('session/created', session => collector.adopt(session)))
-    listeners.push(ctx.on('session/event', (session, event) => collector.capture(session, event)))
-    listeners.push(ctx.on('session/flush', session => collector.flush(session)))
+    await refreshExcluded()
+    listeners.push(ctx.on('session/created', session => { if (!excluded.has(session.id)) collector.adopt(session) }))
+    listeners.push(ctx.on('session/event', (session, event) => { if (!excluded.has(session.id)) collector.capture(session, event) }))
+    listeners.push(ctx.on('session/flush', session => excluded.has(session.id) ? Promise.resolve() : collector.flush(session)))
     listeners.push(ctx.on('session/disposed', session => collector.retire(session)))
     if (spec.knowledge !== undefined) listeners.push(provider.onMemoryChange(enqueueKnowledge))
-    const existing = ctx.sessions.list()
+    const existing = ctx.sessions.list().filter(session => !excluded.has(session.id))
     for (const session of existing) collector.adopt(session)
     await Promise.all(existing.map(session => collector.flush(session)))
-    if (spec.l1 !== undefined) for (const project of provider.listProjects()) scan(project)
-    enqueueKnowledge()
+    if (spec.l1 !== undefined) for (const project of (await provider.listProjects())) await scan(project)
+    await enqueueKnowledge()
     if (spec.l1 !== undefined && pipeline === undefined) report(new MemoryError('integration', 'L1 tasks are persisted; enable autoLearning with L1 and knowledge model configurations to dispatch recorded background requests'))
-    const service = new MemoryService(ctx, provider, spec.l1, scan, spec.browser, retriever, pipeline)
+    const service = new MemoryService(ctx, provider, spec.l1, scan, spec.browser, retriever, pipeline, undefined,
+      { accepts: session => !excluded.has(session.header.id), refreshAdmissions: refreshExcluded })
     if (spec.injection && retriever !== undefined) injectorDispose = installMemoryInjector(ctx, retriever, async agent => {
       await collector.flush(agent.session)
-      const project = provider.getSessionProject(agent.session.id)
+      const project = (await provider.getSessionProject(agent.session.id))
       if (project === undefined) throw new MemoryError('source', 'Session has no captured memory project')
       return project
-    }, report, service.browser)
+    }, report, service.browser, agent => service.acceptsSession(agent.session))
     if (spec.panel) panelDispose = installPanelHost(ctx)
     installShareCommand(ctx, provider)
     retriever?.schedule()
+    armRetention()
   } catch (error) {
     try {
       await dispose()

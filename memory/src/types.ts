@@ -34,6 +34,8 @@ export interface ReadRawRequest extends RawRange {
   readonly sessionId: SessionId
   readonly limit: number
   readonly cursor?: SessionLogOffset
+  /** Target page bytes; a larger single event is returned alone rather than truncated. */
+  readonly maxBytes?: number
   readonly signal?: AbortSignal
 }
 
@@ -63,7 +65,7 @@ export interface RawMemory {
 }
 
 /** Stable diagnostic categories; messages never include event bodies. */
-export type MemoryErrorCode = 'excluded' | 'config' | 'closed' | 'conflict' | 'gap' | 'schema' | 'corrupt' | 'storage' | 'source' | 'backpressure' | 'model' | 'output' | 'budget' | 'integration' | 'index-not-ready' | 'timeout'
+export type MemoryErrorCode = 'excluded' | 'config' | 'closed' | 'conflict' | 'gap' | 'schema' | 'corrupt' | 'storage' | 'source' | 'backpressure' | 'model' | 'output' | 'budget' | 'integration' | 'index-not-ready' | 'timeout' | 'unknown-outcome'
 
 /** A memory failure with an optional underlying cause for local debugging. */
 export class MemoryError extends Error {

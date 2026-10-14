@@ -7,7 +7,7 @@ import type { PanelCall, PanelState, PanelStateUpdate } from '../src/client/stat
 afterEach(() => { vi.useRealTimers() })
 const sessionId = SessionId('observed-session')
 const state = (revision = 'initial'): PanelState => ({ action: 'state', projectId: 'project', refs: [], automatic: false,
-  injectionReady: true, valid: true, bytes: 0, limit: 5, maxBytes: 8192, pending: [], used: [], revision,
+  injectionReady: true, maintenanceReady: false, failedKnowledgeTasks: [], valid: true, bytes: 0, limit: 5, maxBytes: 8192, pending: [], used: [], revision,
   refreshIntervalMs: 100, recallMethod: 'trigram', learning: { enabled: true, pending: 0, running: 0, failed: 0, generated: 0 } })
 
 it('shares in-flight reads and preserves another subscriber when one caller cancels', async () => {

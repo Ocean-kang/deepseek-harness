@@ -29,7 +29,7 @@ it('reports missing vectors, persists them and returns bounded stable authorized
   const item = await setup()
   const refs = commitKnowledge(item, 'L2', [item.source], [knowledgeCandidate(item.source), knowledgeCandidate(item.source, 'Use ESM')])
   await item.retriever.flush()
-  expect(item.retriever.getIndexStatus(item.project)).toMatchObject({ ready: true, candidates: 3, missing: 0 })
+  expect((await item.retriever.getIndexStatus(item.project))).toMatchObject({ ready: true, candidates: 3, missing: 0 })
   const result = await item.retriever.retrieve({ projectId: item.project, text: 'typescript' })
   expect(result.hits.map(hit => hit.ref.id)).toEqual([item.source.id, ...refs.map(ref => ref.id)].sort())
   expect(result.text).toBe(renderRecall(result.hits))
@@ -49,7 +49,7 @@ it('reports missing vectors, persists them and returns bounded stable authorized
 
 it('rejects incomplete or over-capacity scans and never mixes vector spaces', async () => {
   const item = await setup({ maxCandidates: 1, limit: 1 })
-  expect(item.retriever.getIndexStatus(item.project).ready).toBe(false)
+  expect((await item.retriever.getIndexStatus(item.project)).ready).toBe(false)
   await expect(item.retriever.retrieve({ projectId: item.project, text: 'x' })).rejects.toMatchObject({ code: 'index-not-ready' })
   await item.retriever.flush()
   commitKnowledge(item, 'L2', [item.source], [knowledgeCandidate(item.source)])
@@ -57,7 +57,7 @@ it('rejects incomplete or over-capacity scans and never mixes vector spaces', as
   await expect(item.retriever.retrieve({ projectId: item.project, text: 'x' })).rejects.toMatchObject({ code: 'budget' })
   const next = { ...item.embedding, ...resolveEmbeddingConfig({ ...item.embedding, model: 'different' }) }
   expect(item.provider.vectors.read(next, [...item.provider.vectors.documents(item.project, 2)][0]!)).toBeNull()
-  expect(item.retriever.getIndexStatus(item.project)).toMatchObject({ ready: false, truncated: true })
+  expect((await item.retriever.getIndexStatus(item.project))).toMatchObject({ ready: false, truncated: true })
 })
 
 it('removes replaced and revoked versions before admission', async () => {
@@ -73,10 +73,10 @@ it('removes replaced and revoked versions before admission', async () => {
   expect(result.hits[0]).toMatchObject({ ref: l3, shared: true })
   expect(result.text).not.toContain(item.source.id)
   item.provider.knowledge.revokeShare({ ...action, action: 'revoke', operationId: 'revoke' as OperationId, receiptId: 'receipt-2' }, () => true, 12)
-  expect(item.retriever.revalidate(other, result).hits).toEqual([])
+  expect((await item.retriever.revalidate(other, result)).hits).toEqual([])
   const old = await item.retriever.retrieve({ projectId: item.project, text: 'typescript', levels: ['L2'] })
   const newer = commitKnowledge(item, 'L2', [item.source], [{ ...knowledgeCandidate(item.source, 'Use another compiler'), target: l2 }], 'new')[0]!
-  expect(item.retriever.revalidate(item.project, old).hits).toEqual([])
+  expect((await item.retriever.revalidate(item.project, old)).hits).toEqual([])
   await item.retriever.flush()
   expect((await item.retriever.retrieve({ projectId: item.project, text: 'x', levels: ['L2'] })).hits[0]?.ref).toEqual(newer)
 })
@@ -114,10 +114,10 @@ it('atomically rejects an invalid vector batch and recovers a failed index', asy
   item.retriever.schedule()
   await item.retriever.flush()
   expect(item.errors).toEqual(['output'])
-  expect(item.retriever.getIndexStatus(item.project)).toMatchObject({ ready: false, status: 'failed' })
+  expect((await item.retriever.getIndexStatus(item.project))).toMatchObject({ ready: false, status: 'failed' })
   invalid = false
   await item.retriever.rebuildIndex()
-  expect(item.retriever.getIndexStatus(item.project).ready).toBe(true)
+  expect((await item.retriever.getIndexStatus(item.project)).ready).toBe(true)
   const documents = [...item.provider.vectors.documents(item.project, 10)]
   item.provider.vectors.clear(item.embedding)
   expect(() => item.provider.vectors.put(item.embedding, item.project, documents, [[NaN, 1]])).toThrow()
@@ -132,7 +132,7 @@ it('migrates schema 3 transactionally without altering source memories', async (
   try {
     db.exec(`DROP TRIGGER memory_l1_insert; DROP TRIGGER memory_knowledge_insert; DROP TRIGGER memory_knowledge_update;
       DROP TRIGGER memory_grant_insert; DROP TRIGGER memory_grant_delete; DROP INDEX memory_knowledge_candidates;
-      DROP TABLE memory_selections; DROP TABLE memory_vectors; DROP TABLE memory_index_state; DROP TABLE memory_generation; PRAGMA user_version = 3;
+      DROP TABLE memory_imports; DROP TABLE memory_admissions; DROP TABLE memory_cleanup_runs; DROP TABLE l1_trace_chunks; DROP TABLE l1_summary_projections; DROP TABLE l1_candidate_projections; DROP TABLE memory_selections; DROP TABLE memory_vectors; DROP TABLE memory_index_state; DROP TABLE memory_generation; PRAGMA user_version = 3;
       CREATE TABLE memory_index_state (wrong TEXT)`)
     await expect(item.open()).rejects.toThrow()
     expect(db.prepare('PRAGMA user_version').get()?.user_version).toBe(3)
@@ -140,7 +140,7 @@ it('migrates schema 3 transactionally without altering source memories', async (
     db.exec('DROP TABLE memory_index_state')
     const migrated = await item.open()
     expect(migrated.l1.getMemory(item.project, item.source)).toEqual(item.source)
-    expect(db.prepare('PRAGMA user_version').get()?.user_version).toBe(5)
+    expect(db.prepare('PRAGMA user_version').get()?.user_version).toBe(6)
   } finally { db.close() }
 })
 
@@ -251,7 +251,7 @@ it('bounds parallel index batches and discards a version retired during embeddin
   } finally { release.resolve() }
   await item.retriever.flush()
   expect(peak).toBe(2)
-  expect(item.retriever.getIndexStatus(item.project)).toMatchObject({ ready: true, candidates: 1 })
+  expect((await item.retriever.getIndexStatus(item.project))).toMatchObject({ ready: true, candidates: 1 })
   const db = new DatabaseSync(item.spec.databasePath)
   try { expect(db.prepare('SELECT COUNT(*) AS n FROM memory_vectors WHERE id = ?').get(ref.id)?.n).toBe(0) } finally { db.close() }
 })

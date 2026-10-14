@@ -13,12 +13,22 @@ import {
 } from '../../scripts/translation-pairing-record.ts'
 
 const root = fileURLToPath(new URL('../../', import.meta.url))
-const pairSources = ['memory/README.md', 'memory/distribution/README.md', 'memory/distribution/trigram-upgrade.md', 'memory/distribution/layered-upgrade.md']
+const pairSources = ['memory/README.md', 'memory/distribution/README.md', 'memory/distribution/trigram-upgrade.md', 'memory/distribution/layered-upgrade.md', 'memory/distribution/storage-upgrade.md']
 const pairs = pairSources.map(translationPairPaths)
-const files = [...pairs.flatMap(({ source, zh }) => [source, zh]), 'memory/AGENTS.md',
-  ...readdirSync(resolve(root, 'memory/evaluation')).filter(name => name.endsWith('.md')).sort().map(name => `memory/evaluation/${name}`)]
 const args = process.argv.slice(2)
-if (args.length > 1 || args.some(arg => arg !== '--write-pairing')) throw new Error('Use check-docs.mjs [--write-pairing]')
+let evaluation
+for (let index = 0; index < args.length; index++) {
+  if (args[index] === '--write-pairing') continue
+  if (args[index] === '--evaluation' && evaluation === undefined) {
+    evaluation = args[++index]
+    if (evaluation !== undefined && basename(evaluation) === evaluation && evaluation.endsWith('.md')) continue
+  }
+  throw new Error('Use check-docs.mjs [--write-pairing] [--evaluation filename.md]')
+}
+const evaluationFiles = evaluation === undefined
+  ? readdirSync(resolve(root, 'memory/evaluation')).filter(name => name.endsWith('.md')).sort() : [evaluation]
+const files = [...pairs.flatMap(({ source, zh }) => [source, zh]), 'memory/AGENTS.md',
+  ...evaluationFiles.map(name => `memory/evaluation/${name}`)]
 const context = { repoRoot: root, isTranslationPairSource: path => pairSources.includes(path) || isTranslationScopeFile(path) }
 const recordContext = { repoRoot: root, isTranslationPairSource: translationPairSourcePredicate(
   parseTranslationPairingManifest(readFileSync(resolve(root, 'scripts/translation-pairing.manifest.json'), 'utf8')),

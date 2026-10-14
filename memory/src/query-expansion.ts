@@ -5,7 +5,7 @@ import { SessionId } from '@deepseek-ai/dsh-session'
 import type { L1Spec } from './l1-types.ts'
 import type { RetrievalRequest } from './retrieval.ts'
 import type { TextSearchSpec } from './text-retrieval.ts'
-import type { SqliteMemory } from './sqlite.ts'
+import type { MemoryDatabase } from './sqlite.ts'
 import { MemoryRequestJournal } from './request-journal.ts'
 import { generateJSON } from './visual-summary.ts'
 import { MemoryError } from './types.ts'
@@ -21,7 +21,7 @@ Do not answer the query, assert facts, invent memory records, or add unrelated t
  * @param search - resolved expansion deadline and query limits.
  * @returns cancellation-aware expansion for a retriever's single fallback attempt.
  */
-export function queryExpander(provider: SqliteMemory, llm: Pick<LlmRuntime, 'stream'>, model: L1Spec, search: TextSearchSpec):
+export function queryExpander(provider: MemoryDatabase, llm: Pick<LlmRuntime, 'stream'>, model: L1Spec, search: TextSearchSpec):
   (request: RetrievalRequest, signal: AbortSignal) => Promise<string> {
   const journal = new MemoryRequestJournal(provider, llm)
   return async (query, signal) => {

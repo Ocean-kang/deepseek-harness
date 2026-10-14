@@ -35,7 +35,7 @@ export function visualDescription(value: unknown): string {
  */
 export async function summarizeVisual(llm: Pick<LlmRuntime, 'stream'>, base: Pick<L1Request, 'provider' | 'model' | 'maxTokens' | 'sessionId'>,
   content: string, config: { readonly maxInputBytes: number; readonly timeoutMs: number }, signal: AbortSignal,
-  reserveCall: () => void, record: (request: L1Request, signal: AbortSignal) => Promise<void>): Promise<string> {
+  reserveCall: () => void | Promise<void>, record: (request: L1Request, signal: AbortSignal) => Promise<void>): Promise<string> {
   signal.throwIfAborted()
   const input = JSON.stringify({ stage: 'visualize', content })
   const request: L1Request = deepFreeze({ ...base, system: prompt, messages: [{ role: 'user', content: [{ type: 'text', text: input }] }] })
@@ -56,7 +56,7 @@ export async function summarizeVisual(llm: Pick<LlmRuntime, 'stream'>, base: Pic
  */
 export async function generateJSON(llm: Pick<LlmRuntime, 'stream'>, request: L1Request,
   config: { readonly maxInputBytes: number; readonly timeoutMs: number }, signal: AbortSignal,
-  reserveCall: () => void, record: (request: L1Request, signal: AbortSignal) => Promise<void>, timeoutCode: string): Promise<unknown> {
+  reserveCall: () => void | Promise<void>, record: (request: L1Request, signal: AbortSignal) => Promise<void>, timeoutCode: string): Promise<unknown> {
   signal.throwIfAborted()
   const bytes = Buffer.byteLength(request.system ?? '') + request.messages.reduce((total, message) => total +
     message.content.reduce((size, block) => size + (block.type === 'text' ? Buffer.byteLength(block.text) : 0), 0), 0)
@@ -65,7 +65,7 @@ export async function generateJSON(llm: Pick<LlmRuntime, 'stream'>, request: L1R
   try {
     await record(request, limit.signal)
     limit.signal.throwIfAborted()
-    reserveCall()
+    await reserveCall()
     const assembler = new BlockAssembler()
     for await (const chunk of llm.stream({ ...request, signal: limit.signal })) { limit.signal.throwIfAborted(); assembler.push(chunk) }
     limit.signal.throwIfAborted()

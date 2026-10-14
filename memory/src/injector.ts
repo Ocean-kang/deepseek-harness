@@ -29,7 +29,7 @@ declare module '@deepseek-ai/dsh-llm' {
  * @param accepts - Session admission policy, evaluated before capture or retrieval.
  * @returns asynchronous disposer which waits for in-flight listeners.
  */
-export function installMemoryInjector(ctx: Context, retriever: Pick<MemorySearch, 'retrieve' | 'revalidate'>, projectOf: (agent: Agent) => Promise<ProjectId>, report: (error: MemoryError) => void, browser?: MemoryBrowser, accepts: (agent: Agent) => boolean = () => true): () => Promise<void> {
+export function installMemoryInjector(ctx: Context, retriever: Pick<MemorySearch, 'retrieve' | 'revalidate'>, projectOf: (agent: Agent) => Promise<ProjectId>, report: (error: MemoryError) => void, browser?: MemoryBrowser, accepts: (agent: Agent) => boolean | Promise<boolean> = () => true): () => Promise<void> {
   const abort = new AbortController()
   const detachBrowser = browser?.attachInjector()
   const pending = new Set<Promise<unknown>>()
@@ -38,9 +38,11 @@ export function installMemoryInjector(ctx: Context, retriever: Pick<MemorySearch
   const committed = ctx.on('session/event', (session, event) => {
     const project = owners.get(session.id)
     if (project === undefined || browser === undefined) return
-    try { browser.committed(project, session.id, event) } catch (error) {
+    const work = browser.committed(project, session.id, event).catch(error => {
       report(new MemoryError('storage', 'Recall committed; pending selection will reconcile from the Session log', error))
-    }
+    })
+    pending.add(work)
+    void work.then(() => pending.delete(work), () => pending.delete(work))
   })
   const retired = ctx.on('session/disposed', session => { owners.delete(session.id) })
   const stop = ctx.on('agent/pre-step', (payload, next) => {
@@ -48,7 +50,7 @@ export function installMemoryInjector(ctx: Context, retriever: Pick<MemorySearch
       const decision = await next()
       if (decision.kind !== 'enter' || !decision.messages.length || abort.signal.aborted) return decision
       const { agent, turn } = payload
-      if (!accepts(agent)) return decision
+      if (!await accepts(agent)) return decision
       let inTurn = false
       let requested = false
       for (const event of agent.session.snapshotEvents()) {
@@ -67,11 +69,11 @@ export function installMemoryInjector(ctx: Context, retriever: Pick<MemorySearch
         signal.throwIfAborted()
         const project = await projectOf(agent)
         owners.set(agent.session.id, project)
-        const selection = browser?.selection(project, agent.session)
+        const selection = await browser?.selection(project, agent.session)
         let selected: RetrievalHit[] = []
         let selectionValid = true
         if (browser !== undefined && selection !== null && selection !== undefined) {
-          try { selected = browser.manual(project, selection.refs) } catch (error) {
+          try { selected = await browser.manual(project, selection.refs) } catch (error) {
             selectionValid = false
             report(error instanceof MemoryError ? error : new MemoryError('storage', 'Selected memories could not be read'))
           }
@@ -89,13 +91,13 @@ export function installMemoryInjector(ctx: Context, retriever: Pick<MemorySearch
         signal.throwIfAborted()
         if (browser !== undefined && selectionValid && selection !== null && selection !== undefined) {
           // Version and grant checks follow asynchronous automatic retrieval.
-          try { selected = browser.manual(project, selection.refs) } catch (error) {
+          try { selected = await browser.manual(project, selection.refs) } catch (error) {
             selected = []
             selectionValid = false
             report(error instanceof MemoryError ? error : new MemoryError('storage', 'Selected memories could not be rechecked'))
           }
         }
-        const automatic = result === undefined ? [] : retriever.revalidate(project, result).hits
+        const automatic = result === undefined ? [] : (await retriever.revalidate(project, result)).hits
         const hits = [...selected]
         const keys = new Set(hits.map(hit => JSON.stringify(hit.ref)))
         for (const hit of automatic) {

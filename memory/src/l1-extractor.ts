@@ -59,95 +59,115 @@ export class L1Extractor {
   /**
    * Extract a complete committed turn without truncating oversized events.
    * @param task - immutable source identity, end reason and model configuration.
-   * @param events - complete ordered L0 interval, including both turn markers.
+   * @param events - ordered L0 interval, including both turn markers, consumed one bounded group at a time.
    * @param signal - caller cancellation; a cancelled candidate is never returned.
    * @param reserveCall - worker-owned durable call-budget charge, immediately before dispatch.
+   * @param verifyEvidence - exact result/call lookup for streaming inputs; arrays can verify their own recorded events.
    * @returns fully validated candidate or explicit empty result.
    */
-  async extractTurn(task: L1Task, events: readonly SessionEvent[], signal: AbortSignal, reserveCall: () => void): Promise<L1Candidate> {
+  async extractTurn(task: L1Task, events: readonly SessionEvent[] | AsyncIterable<SessionEvent>, signal: AbortSignal,
+    reserveCall: () => void | Promise<void>, verifyEvidence?: (refs: readonly EventRef[]) => Promise<readonly EventRef[]>): Promise<L1Candidate> {
     signal.throwIfAborted()
-    if (events.length !== task.to - task.from || events.some((event, i) => event.seq !== task.from + i)) throw new MemoryError('gap', 'L1 extraction requires the complete source interval')
-    const first = events[0]
-    const last = events.at(-1)
-    if (first?.type !== 'turn/start' || first.data.turn !== task.turn || last?.type !== 'turn/end' || last.data.turn !== task.turn
-      || JSON.stringify(last.data.reason) !== JSON.stringify(task.reason)) throw new MemoryError('source', 'L1 source turn metadata does not match task')
-    const meaningful = events.filter(event => event.type !== 'turn/start' && event.type !== 'turn/end' && !event.type.startsWith('session/') && !event.type.startsWith('memory/'))
-    if (meaningful.length === 0) return { kind: 'empty' }
+    const array = Array.isArray(events) ? events as readonly SessionEvent[] : undefined
+    if (array !== undefined && (array.length !== task.to - task.from || array.some((event, i) => event.seq !== task.from + i))) {
+      throw new MemoryError('gap', 'L1 extraction requires the complete source interval')
+    }
     const prompt = task.config.promptVersion === 'l1-v3' ? episodePrompt : PROMPT
-    let pieces: Piece[] = meaningful.map(event => ({ refs: [{ sessionId: task.sessionId, seq: event.seq }], text: JSON.stringify(event) }))
     const frame = (items: readonly Piece[], merge: boolean): string => JSON.stringify({
       stage: merge ? 'merge' : 'extract', turn: task.turn, endReason: task.reason,
       input: items.map(item => ({ sources: item.refs, text: item.text })),
     })
-    const fits = (items: readonly Piece[], merge: boolean): boolean => Buffer.byteLength(prompt, 'utf8') + Buffer.byteLength(frame(items, merge), 'utf8') <= task.config.maxInputBytes
+    const fits = (items: readonly Piece[], merge: boolean): boolean => Buffer.byteLength(prompt) + Buffer.byteLength(frame(items, merge)) <= task.config.maxInputBytes
     if (!fits([], false)) throw new MemoryError('budget', 'L1 input budget cannot contain the prompt and turn metadata')
-    // Split only at Unicode code-point boundaries; each fragment keeps the same event identity.
-    pieces = pieces.flatMap(piece => {
-      if (fits([piece], false)) return [piece]
-      const fragments: Piece[] = []
-      const chars = Array.from(piece.text)
-      let offset = 0
-      while (offset < chars.length) {
-        let low = 1
-        let high = chars.length - offset
-        let count = 0
-        while (low <= high) {
-          const mid = Math.floor((low + high) / 2)
-          const test = { refs: piece.refs, text: JSON.stringify({ fragmentOffset: offset, totalCodePoints: chars.length, text: chars.slice(offset, offset + mid).join('') }) }
-          if (fits([test], false)) { count = mid; low = mid + 1 } else high = mid - 1
+    const sourcePieces = async function* (): AsyncIterable<Piece> {
+      let expected = task.from
+      let last: SessionEvent | undefined
+      for await (const event of events) {
+        signal.throwIfAborted()
+        if (Number(event.seq) !== Number(expected) || event.seq >= task.to) throw new MemoryError('gap', 'L1 extraction requires the complete source interval')
+        if (Number(event.seq) === Number(task.from) && (event.type !== 'turn/start' || event.data.turn !== task.turn)) throw new MemoryError('source', 'L1 source turn metadata does not match task')
+        expected++
+        last = event
+        if (event.type === 'turn/start' || event.type === 'turn/end' || event.type.startsWith('session/') || event.type.startsWith('memory/')) continue
+        const piece = { refs: [{ sessionId: task.sessionId, seq: event.seq }], text: JSON.stringify(event) }
+        if (fits([piece], false)) { yield piece; continue }
+        // Only this event is materialized; fragments are produced as their request is consumed.
+        const chars = Array.from(piece.text)
+        let offset = 0
+        let fragments = 0
+        while (offset < chars.length) {
+          let low = 1
+          let high = chars.length - offset
+          let count = 0
+          while (low <= high) {
+            const mid = Math.floor((low + high) / 2)
+            const part = { refs: piece.refs, text: JSON.stringify({ fragmentOffset: offset, totalCodePoints: chars.length, text: chars.slice(offset, offset + mid).join('') }) }
+            if (fits([part], false)) { count = mid; low = mid + 1 } else high = mid - 1
+          }
+          if (count === 0) throw new MemoryError('budget', 'L1 input budget cannot contain an event fragment')
+          if (++fragments > task.config.maxCalls) throw new MemoryError('budget', 'L1 event requires too many extraction calls')
+          yield { refs: piece.refs, text: JSON.stringify({ fragmentOffset: offset, totalCodePoints: chars.length, text: chars.slice(offset, offset + count).join('') }) }
+          offset += count
         }
-        if (count === 0) throw new MemoryError('budget', 'L1 input budget cannot contain an event fragment')
-        fragments.push({ refs: piece.refs, text: JSON.stringify({ fragmentOffset: offset, totalCodePoints: chars.length, text: chars.slice(offset, offset + count).join('') }) })
-        if (fragments.length > task.config.maxCalls) throw new MemoryError('budget', 'L1 event requires too many extraction calls')
-        offset += count
       }
-      return fragments
-    })
+      if (expected !== task.to) throw new MemoryError('gap', 'L1 extraction requires the complete source interval')
+      if (last?.type !== 'turn/end' || last.data.turn !== task.turn || JSON.stringify(last.data.reason) !== JSON.stringify(task.reason)) {
+        throw new MemoryError('source', 'L1 source turn metadata does not match task')
+      }
+    }
     let calls = task.calls
+    const call = async (items: readonly Piece[], merge: boolean): Promise<L1Candidate> => {
+      if (++calls > task.config.maxCalls) throw new MemoryError('budget', 'L1 task exceeded its model-call budget')
+      const refs = [...new Map(items.flatMap(item => item.refs).map(ref => [JSON.stringify(ref), ref])).values()]
+      return this.call(task, frame(items, merge), refs, signal, reserveCall)
+    }
+    let input: AsyncIterable<Piece> | readonly Piece[] = sourcePieces()
     let merge = false
     for (;;) {
-      const groups: Piece[][] = []
       let group: Piece[] = []
-      for (const piece of pieces) {
+      const results: L1Candidate[] = []
+      let inputBytes = 0
+      for await (const piece of input) {
+        inputBytes += Buffer.byteLength(piece.text)
         if (!fits([piece], merge)) throw new MemoryError('budget', 'L1 intermediate summary exceeds the input budget')
-        if (group.length > 0 && !fits([...group, piece], merge)) { groups.push(group); group = [] }
+        if (group.length > 0 && !fits([...group, piece], merge)) {
+          results.push(await call(group, merge))
+          group = []
+        }
         group.push(piece)
       }
-      if (group.length > 0) groups.push(group)
-      if (calls + groups.length > task.config.maxCalls) throw new MemoryError('budget', 'L1 task exceeded its model-call budget')
-      const next: Piece[] = []
-      for (const items of groups) {
-        signal.throwIfAborted()
-        calls++
-        const refs = [...new Map(items.flatMap(item => item.refs).map(ref => [JSON.stringify(ref), ref])).values()]
-        const result = await this.call(task, frame(items, merge), refs, signal, reserveCall)
-        if (groups.length === 1) {
-          if (result.kind === 'empty' || task.config.promptVersion === 'l1-v1') return result
-          if (task.config.promptVersion === 'l1-v3') {
-            const summary = result.summary
-            const verified = executionRefs(task.sessionId, events).filter(ref => summary.sources.some(source => source.sessionId === ref.sessionId && source.seq === ref.seq))
-            if (summary.outcome === 'success' && verified.length === 0) throw new MemoryError('output', 'Successful episode requires a checked tool result')
-            return { kind: 'memory', summary: { ...summary, trace: episodeTrace(events, summary.actions),
-              ...verified.length === 0 || summary.outcome !== 'success' ? {} : { executionEvidence: verified } } }
-          }
-          if (calls >= task.config.maxCalls) throw new MemoryError('budget', 'L1 task has no remaining call for its display description')
-          const { sources: _sources, description: _description, ...content } = result.summary
-          const description = await summarizeVisual(this.llm, { provider: task.config.provider, model: task.config.model,
-            maxTokens: task.config.maxOutputTokens, sessionId: task.sessionId }, JSON.stringify(content), task.config, signal, reserveCall,
-          (request, requestSignal) => this.record(task, request, requestSignal))
-          return { kind: 'memory', summary: { ...result.summary, description } }
+      if (group.length > 0) results.push(await call(group, merge))
+      if (results.length === 0) return { kind: 'empty' }
+      if (results.length === 1) {
+        const result = results[0]!
+        if (result.kind === 'empty' || task.config.promptVersion === 'l1-v1') return result
+        if (task.config.promptVersion === 'l1-v3') {
+          const summary = result.summary
+          const checked = verifyEvidence === undefined ? array === undefined ? [] : executionRefs(task.sessionId, array) : await verifyEvidence(summary.sources)
+          const verified = checked.filter(ref => summary.sources.some(source => source.sessionId === ref.sessionId && source.seq === ref.seq))
+          if (summary.outcome === 'success' && verified.length === 0) throw new MemoryError('output', 'Successful episode requires a checked tool result')
+          return { kind: 'memory', summary: { ...summary,
+            ...array === undefined ? {} : { trace: episodeTrace(array, summary.actions) },
+            ...verified.length === 0 || summary.outcome !== 'success' ? {} : { executionEvidence: verified } } }
         }
-        if (result.kind === 'memory') next.push({ refs: result.summary.sources, text: JSON.stringify(result.summary) })
+        if (calls >= task.config.maxCalls) throw new MemoryError('budget', 'L1 task has no remaining call for its display description')
+        const { sources: _sources, description: _description, ...content } = result.summary
+        const description = await summarizeVisual(this.llm, { provider: task.config.provider, model: task.config.model,
+          maxTokens: task.config.maxOutputTokens, sessionId: task.sessionId }, JSON.stringify(content), task.config, signal, reserveCall,
+        (request, requestSignal) => this.record(task, request, requestSignal))
+        return { kind: 'memory', summary: { ...result.summary, description } }
       }
+      const next = results.flatMap(result => result.kind === 'memory' ? [{ refs: result.summary.sources, text: JSON.stringify(result.summary) }] : [])
       if (next.length === 0) return { kind: 'empty' }
-      const previousBytes = Buffer.byteLength(frame(pieces, merge))
-      if (merge && Buffer.byteLength(frame(next, true)) >= previousBytes) throw new MemoryError('budget', 'L1 summary merge did not reduce input')
-      pieces = next
+      if (merge && next.reduce((bytes, piece) => bytes + Buffer.byteLength(piece.text), 0) >= inputBytes) {
+        throw new MemoryError('budget', 'L1 summary merge did not reduce input')
+      }
+      input = next
       merge = true
     }
   }
 
-  private async call(task: L1Task, input: string, refs: readonly EventRef[], signal: AbortSignal, reserveCall: () => void): Promise<L1Candidate> {
+  private async call(task: L1Task, input: string, refs: readonly EventRef[], signal: AbortSignal, reserveCall: () => void | Promise<void>): Promise<L1Candidate> {
     using limit = deadline(signal, task.config.timeoutMs, 'MEMORY_L1_TIMEOUT')
     const request: L1Request = deepFreeze({ provider: task.config.provider, model: task.config.model,
       system: task.config.promptVersion === 'l1-v3' ? episodePrompt : PROMPT, messages: [{ role: 'user', content: [{ type: 'text', text: input }] }],
@@ -155,7 +175,7 @@ export class L1Extractor {
     try {
       await this.record(task, request, limit.signal)
       limit.signal.throwIfAborted()
-      reserveCall()
+      await reserveCall()
       const assembler = new BlockAssembler()
       for await (const chunk of this.llm.stream({ ...request, signal: limit.signal })) {
         limit.signal.throwIfAborted()

@@ -79,6 +79,14 @@ export class VectorStore {
     }
   }
 
+  /** @param project - requester. @param level - memory level. @param after - identity cursor.
+   * @param size - page bound. @returns authorized compact documents.
+   */
+  documentPage(project: ProjectId, level: 'L1' | 'L2' | 'L3', after: string, size: number): VectorDocument[] {
+    this.assertOpen()
+    return this.knowledge.listCandidates(project, level, after, size).map(vectorDocument)
+  }
+
   /** Recheck both current revision and sharing after asynchronous work.
    * @param project - requester.
    * @param document - previously visible content.

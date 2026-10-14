@@ -39,7 +39,7 @@ it('ranks literal text, returns an explicit method and preserves whole-entry bud
   expect((await item.search.retrieve({ projectId: item.project, text: '"ESM" OR (broken*)' })).hits).toHaveLength(2)
   expect((await item.search.retrieve({ projectId: item.project, text: '!?()' })).scanned).toBe(0)
   expect((await item.search.retrieve({ projectId: item.project, text: 'ESM', levels: [] })).hits).toEqual([])
-  expect(item.search.getIndexStatus(item.project)).toMatchObject({ method: 'bm25', ready: true, candidates: 3 })
+  expect((await item.search.getIndexStatus(item.project))).toMatchObject({ method: 'bm25', ready: true, candidates: 3 })
 })
 
 it.each([false, true])('checks the authorized corpus after a concurrent private commit to same project=%s', async (sameProject: boolean) => {
@@ -73,7 +73,7 @@ it('filters private memories before scoring and removes revoked grants before ad
   expect(result.hits[0]).toMatchObject({ ref: l3, shared: true })
   expect(result.text).not.toContain('private detail')
   item.provider.knowledge.revokeShare({ ...action, action: 'revoke', operationId: 'text-revoke' as OperationId, receiptId: 'receipt-2' }, () => true, 12)
-  expect(item.search.revalidate(other, result).hits).toEqual([])
+  expect((await item.search.revalidate(other, result)).hits).toEqual([])
   expect((await item.search.retrieve({ projectId: other, text: 'ESM' })).hits).toEqual([])
 })
 
@@ -98,7 +98,7 @@ it('reads current revisions after updates and database reopen without a persiste
   const oldResult = await item.search.retrieve({ projectId: item.project, text: 'CommonJS' })
   const update = { ...knowledgeCandidate(item.source, 'ESM'), target: old }
   const current = commitKnowledge(item, 'L2', [item.source], [update], 'text-update')[0]!
-  expect(item.search.revalidate(item.project, oldResult).hits).toEqual([])
+  expect((await item.search.revalidate(item.project, oldResult)).hits).toEqual([])
   expect((await item.search.retrieve({ projectId: item.project, text: 'CommonJS' })).hits).toEqual([])
   const reopened = await item.open()
   const search = new TextMemoryRetriever(reopened, resolveTextSearchConfig({}))
@@ -163,7 +163,7 @@ it('does not expand BM25 or literal short-term matches excluded only by the reca
 it('validates expanded term limits before building a second corpus', async () => {
   const item = await setup({ expandQuery: true, maxTerms: 2 }, async () => 'ESM second third')
   commitKnowledge(item, 'L2', [item.source], [knowledgeCandidate(item.source, 'ESM')])
-  const documents = vi.spyOn(item.provider.vectors, 'documents')
+  const documents = vi.spyOn(item.provider, 'textQuery')
   await expect(item.search.retrieve({ projectId: item.project, text: 'absent' })).rejects.toMatchObject({ code: 'budget' })
   expect(documents).toHaveBeenCalledTimes(1)
 })
@@ -274,14 +274,14 @@ it('removes derived text hits when their exact source becomes obsolete', async (
   const before = await item.search.retrieve({ projectId: item.project, text: 'ESM', levels: ['L3'] })
   expect(before.hits.map(hit => hit.ref)).toEqual([l3])
   item.provider.knowledge.invalidateMemory(item.project, l2, 'Withdrawn', 'text-parent-invalidated' as OperationId)
-  expect(item.search.revalidate(item.project, before).hits).toEqual([])
+  expect((await item.search.revalidate(item.project, before)).hits).toEqual([])
   expect((await item.search.retrieve({ projectId: item.project, text: 'ESM', levels: ['L3'] })).hits).toEqual([])
 })
 
 it('rejects invalid modes and configured budgets, cancels scans and drains on close', async () => {
   const item = await setup({ maxCandidates: 1, limit: 1, pageSize: 1, maxQueryBytes: 12, maxTerms: 2 })
   commitKnowledge(item, 'L2', [item.source], [knowledgeCandidate(item.source, 'ESM')])
-  expect(item.search.getIndexStatus(item.project)).toMatchObject({ ready: false, truncated: true })
+  expect((await item.search.getIndexStatus(item.project))).toMatchObject({ ready: false, truncated: true })
   await expect(item.search.retrieve({ projectId: item.project, text: 'ESM' })).rejects.toMatchObject({ code: 'budget' })
   await expect(item.search.retrieve({ projectId: item.project, text: 'abcdefghijklmn' })).rejects.toMatchObject({ code: 'budget' })
   await expect(item.search.retrieve({ projectId: item.project, text: 'a b c' })).rejects.toMatchObject({ code: 'budget' })

@@ -40,9 +40,9 @@ export class HybridMemoryRetriever {
   /** @param project - requesting owner.
    * @returns completeness of both configured searches.
    */
-  getIndexStatus(project: ProjectId) {
-    const text = this.text.getIndexStatus(project)
-    const vector = this.vector.getIndexStatus(project)
+  async getIndexStatus(project: ProjectId) {
+    const text = await this.text.getIndexStatus(project)
+    const vector = await this.vector.getIndexStatus(project)
     return { method: 'hybrid' as const, text, vector, ready: text.ready && vector.ready }
   }
 
@@ -84,7 +84,7 @@ export class HybridMemoryRetriever {
    * @param result - earlier fused exact-version results.
    * @returns results with replaced, stale or revoked references removed.
    */
-  revalidate(project: ProjectId, result: RetrievalResult): RetrievalResult { return this.text.revalidate(project, result) }
+  async revalidate(project: ProjectId, result: RetrievalResult): Promise<RetrievalResult> { return this.text.revalidate(project, result) }
   /** Cancel and drain both searches before the parent database closes. */
   async close(): Promise<void> { await Promise.all([this.text.close(), this.vector.close()]) }
 }

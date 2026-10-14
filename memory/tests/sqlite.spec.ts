@@ -3,7 +3,7 @@ import { afterEach, expect, it } from 'vitest'
 import { DatabaseSync } from 'node:sqlite'
 import { SessionId, SessionLogOffset } from '@deepseek-ai/dsh-session'
 import { resolveConfig } from '../src/config.ts'
-import { SqliteMemory } from '../src/sqlite.ts'
+import { SqliteMemory } from '../src/sqlite-backend.ts'
 import { batch, event, fixture, header } from './helpers.ts'
 
 const owned: Array<Awaited<ReturnType<typeof fixture>>> = []

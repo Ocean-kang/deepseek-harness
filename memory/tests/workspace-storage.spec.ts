@@ -99,14 +99,14 @@ it('stores project conversations together, separates another project and leaves 
     const sessions = await Promise.all([item.create('a', item.workspaces[0]!.path), item.create('a2', item.workspaces[0]!.path), item.create('b', item.workspaces[1]!.path), item.create('global')])
     for (const session of sessions) completeTurn(session)
     await Promise.all(sessions.map(session => item.ctx.sessions.flush(session)))
-    const owners = sessions.map(session => item.ctx.memory.projectOfSession(session.id))
+    const owners = await Promise.all(sessions.map(session => item.ctx.memory.projectOfSession(session.id)))
     expect(owners).toEqual([item.workspaces[0]!.id, item.workspaces[0]!.id, item.workspaces[1]!.id, 'unassigned'])
     for (const [i, workspace] of item.workspaces.entries()) {
       const spec = await resolveConfig({ ...item.config, dataRoot: workspace.path, projectId: workspace.id, databasePath: `memory_${workspace.id}/memory.sqlite` })
       const provider = await SqliteMemory.open(spec)
       try {
-        expect(provider.listSessions(workspace.id as string as ProjectId).map(row => row.header.id)).toEqual(i === 0 ? ['a', 'a2'] : ['b'])
-        expect(provider.listProjects()).toEqual([workspace.id])
+        expect((await provider.listSessions(workspace.id as string as ProjectId)).map(row => row.header.id)).toEqual(i === 0 ? ['a', 'a2'] : ['b'])
+        expect(await provider.listProjects()).toEqual([workspace.id])
       } finally { await provider.close() }
     }
     expect(await readFile(item.spec.databasePath, 'utf8')).toBe('old database sentinel')
@@ -124,7 +124,7 @@ it('excludes old conversations on every restart and reports a dedicated panel ca
     const first = await item.plugin()
     completeTurn(old)
     await item.ctx.sessions.flush(old)
-    expect(item.ctx.memory.projectOfSession(old.id)).toBeUndefined()
+    expect(await item.ctx.memory.projectOfSession(old.id)).toBeUndefined()
     await expect(dispatchPanel(item.ctx, { action: 'state', sessionId: old.id }, new AbortController().signal)).rejects.toMatchObject({ code: 'excluded' })
     await first.dispose()
     await item.plugin()
@@ -140,7 +140,7 @@ it('learns L1–L3 in the project database, browses exact versions, persists sel
     const session = await item.create('learning', item.workspaces[0]!.path)
     completeTurn(session)
     await item.ctx.sessions.flush(session)
-    const project = item.ctx.memory.projectOfSession(session.id)!
+    const project = (await item.ctx.memory.projectOfSession(session.id))!
     await item.ctx.memory.flushLearning(project)
     expect(item.adapter.calls).toBe(3)
     for (const level of ['L1', 'L2', 'L3'] as const) expect(await item.ctx.memory.listCandidates(project, level)).toHaveLength(1)
@@ -148,18 +148,18 @@ it('learns L1–L3 in the project database, browses exact versions, persists sel
     const ref = { id: l3.id, revision: l3.revision }
     const another = await item.create('reader', item.workspaces[0]!.path)
     await item.ctx.sessions.flush(another)
-    item.ctx.memory.browser.select(project, another.id, [ref], true)
-    expect(item.ctx.memory.browser.detail(project, ref)?.level).toBe('L3')
-    expect(item.ctx.memory.browser.history(project, ref.id)).toEqual([ref])
+    await item.ctx.memory.browser.select(project, another.id, [ref], true)
+    expect((await item.ctx.memory.browser.detail(project, ref))?.level).toBe('L3')
+    expect(await item.ctx.memory.browser.history(project, ref.id)).toEqual([ref])
     expect((await item.ctx.memory.retrieve({ projectId: project, text: 'ESM' })).hits.some(hit => hit.ref.id === ref.id)).toBe(true)
     const foreign = await item.create('foreign', item.workspaces[1]!.path)
     await item.ctx.sessions.flush(foreign)
-    expect(item.ctx.memory.browser.detail(item.ctx.memory.projectOfSession(foreign.id)!, ref)).toBeNull()
+    expect(await item.ctx.memory.browser.detail((await item.ctx.memory.projectOfSession(foreign.id))!, ref)).toBeNull()
     await first.dispose()
     await item.plugin()
     await item.ctx.memory.flushLearning(project)
     expect(item.adapter.calls).toBe(3)
-    expect(item.ctx.memory.browser.selection(project, another)).toMatchObject({ refs: [ref], automatic: true })
+    expect(await item.ctx.memory.browser.selection(project, another)).toMatchObject({ refs: [ref], automatic: true })
   } finally { await item.close() }
 })
 
@@ -184,7 +184,7 @@ it('coalesces concurrent project opens and retries a failed target without selec
       await Promise.all(sessions.map(session => owner.resolveSession(session)))
       expect(opens).toHaveBeenCalledTimes(1)
     } finally { opens.mockRestore() }
-    expect(owner.get(workspace.id as string as ProjectId).provider.listProjects()).toEqual([])
+    expect(await owner.get(workspace.id as string as ProjectId).provider.listProjects()).toEqual([])
     expect(sessions.map(session => owner.projectOfSession(session.id))).toEqual([workspace.id, workspace.id])
   } finally { await owner.close(); await item.close() }
 })
@@ -204,7 +204,7 @@ it('logs manual and automatic recall for the selected workspace and disables sha
     const source = await item.create('source', item.workspaces[0]!.path)
     completeTurn(source)
     await item.ctx.sessions.flush(source)
-    const project = item.ctx.memory.projectOfSession(source.id)!
+    const project = (await item.ctx.memory.projectOfSession(source.id))!
     await item.ctx.memory.flushLearning(project)
     const memory = (await item.ctx.memory.listCandidates(project, 'L3'))[0]!
     const ref = { id: memory.id, revision: memory.revision }
@@ -213,18 +213,19 @@ it('logs manual and automatic recall for the selected workspace and disables sha
     for (const [index, name] of ['manual', 'automatic', 'foreign'].entries()) {
       const agent = await item.ctx.agentLoop.create(SessionId(name), { provider: 'mock', model: 'mock' }, { cwd: item.workspaces[index === 2 ? 1 : 0]!.path })
       await item.ctx.sessions.flush(agent.session)
-      const owner = item.ctx.memory.projectOfSession(agent.session.id)!
-      item.ctx.memory.browser.select(owner, agent.session.id, index === 0 ? [ref] : [], index !== 0)
+      const owner = (await item.ctx.memory.projectOfSession(agent.session.id))!
+      await item.ctx.memory.browser.select(owner, agent.session.id, index === 0 ? [ref] : [], index !== 0)
       agent.followup(createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: 'ESM' }] }))
       await agent.whenIdle()
       await item.ctx.sessions.flush(agent.session)
       const recalled = agent.session.snapshotEvents().filter(event => event.type === 'user/message' && event.data.source.kind === 'memory-recall')
       expect(recalled).toHaveLength(index === 2 ? 0 : 1)
       if (recalled[0]?.type === 'user/message') expect(responses.requests[index]!.messages).toContainEqual(recalled[0].data)
-      expect(item.ctx.memory.browser.selection(owner, agent.session)?.refs).toEqual([])
+      const selection = await item.ctx.memory.browser.selection(owner, agent.session)
+      expect(selection?.refs).toEqual([])
       transcript.push({ conversation: name, sameProject: owner === project, recalls: recalled.length,
         loggedInModelRequest: recalled.every(event => event.type === 'user/message' && responses.requests[index]!.messages.includes(event.data)),
-        pending: item.ctx.memory.browser.selection(owner, agent.session)?.refs.length })
+        pending: selection?.refs.length })
       agents.push(agent)
     }
     const result = await item.ctx.commands.execute(agents[0]!, '/memory-share approve example', [], new AbortController().signal)
@@ -287,7 +288,7 @@ it('recovers project learning when the Workspace registry becomes ready after me
     await vi.waitFor(async () => {
       await item.ctx.memory.flushLearning(project)
       expect(await item.ctx.memory.listCandidates(project, 'L3')).toHaveLength(1)
-    })
+    }, { timeout: 10000 })
     expect(item.adapter.calls).toBe(3)
   } finally { release.resolve(undefined); await registryLoad; listing.mockRestore(); await item.close() }
 })
@@ -298,7 +299,7 @@ it('does not extract a partially inherited turn in workspace mode', async () => 
   const provider = await SqliteMemory.open(spec)
   try {
     await provider.appendRaw({ projectId: spec.projectId, header: { ...header('fork'), isSeeded: true }, inheritedEventCount: SessionLogOffset(2), events: turnEvents() })
-    expect(provider.scanTurns(spec.projectId, spec.l1!, 1)).toBe(0)
+    expect(await provider.scanTurns(spec.projectId, spec.l1!, 1)).toBe(0)
   } finally { await provider.close(); await item.close() }
 })
 

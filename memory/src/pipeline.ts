@@ -2,14 +2,13 @@
 import { SessionId, SessionLogOffset } from '@deepseek-ai/dsh-session'
 import type { LlmRuntime } from '@deepseek-ai/dsh-llm'
 import type { Spec } from './config.ts'
-import type { SqliteMemory } from './sqlite.ts'
+import type { MemoryDatabase } from './sqlite.ts'
 import type { AppendRawRequest, AppendRawResult, ProjectId } from './types.ts'
 import { MemoryError } from './types.ts'
 import { L1Extractor } from './l1-extractor.ts'
 import { L1Worker } from './l1-worker.ts'
 import { KnowledgeExtractor } from './knowledge-extractor.ts'
 import { KnowledgeWorker } from './knowledge-worker.ts'
-import { enqueueCandidates } from './knowledge-store.ts'
 import { MemoryRequestJournal } from './request-journal.ts'
 import type { MemorySearch, RetrievalRequest, RetrievalResult } from './retrieval.ts'
 
@@ -38,6 +37,7 @@ export class MemoryPipeline {
   private readonly unsubscribe: () => void
   private readonly abort = new AbortController()
   private closing = false
+  private readonly scheduling = new Set<Promise<void>>()
 
   /** @param memory - caller-owned open database, closed after this pipeline.
    * @param spec - resolved model, paging and concurrency settings; both model configurations are required.
@@ -46,12 +46,12 @@ export class MemoryPipeline {
    * @param retriever - optional caller-owned index on the same provider.
    * @param budget - shared counters for all databases belonging to one plugin instance.
    */
-  constructor(private readonly memory: SqliteMemory, private readonly spec: Pick<Spec, 'l1' | 'knowledge' | 'pageSize' | 'learningConcurrency' | 'learningQueueCapacity'>,
+  constructor(private readonly memory: MemoryDatabase, private readonly spec: Pick<Spec, 'l1' | 'knowledge' | 'pageSize' | 'learningConcurrency' | 'learningQueueCapacity'>,
     llm: Pick<LlmRuntime, 'stream'>, private readonly report: (error: MemoryError) => void, private readonly retriever?: MemorySearch, private readonly budget = new LearningBudget()) {
     if (spec.l1 === undefined || spec.knowledge === undefined) throw new MemoryError('config', 'Independent learning requires L1 and knowledge model configurations')
     this.journal = new MemoryRequestJournal(memory, llm)
     const extractor = new KnowledgeExtractor(this.journal, this.journal.recordKnowledge, SessionId('memory-knowledge'),
-      (project, ref) => memory.knowledge.sourcesCurrent(project, ref), async (project, ref, signal) => {
+      async (project, ref) => memory.knowledge.sourcesCurrent(project, ref), async (project, ref, signal) => {
         const page = await memory.readRaw({ projectId: project, sessionId: ref.sessionId, from: SessionLogOffset(ref.seq),
           to: SessionLogOffset(ref.seq + 1), limit: 1, signal })
         const event = page.events[0]
@@ -210,10 +210,15 @@ export class MemoryPipeline {
   }
 
   private arm(project: ProjectId): void {
+    const work = this.checkNext(project).catch(error => this.reportScheduler(error))
+    this.scheduling.add(work)
+    void work.then(() => this.scheduling.delete(work))
+  }
+  private async checkNext(project: ProjectId): Promise<void> {
     if (this.closing || !this.watched.has(project) || this.tails.has(project)) return
-    let at = this.memory.knowledge.nextDue(project)?.at
-    for (const session of this.sourceSessions(project)) {
-      const due = this.memory.l1.nextDue(project, session)
+    let at = (await this.memory.knowledge.nextDue(project))?.at
+    for (const session of await this.sourceSessions(project)) {
+      const due = (await this.memory.l1.nextDue(project, session))
       if (due !== null) at = at === undefined ? due.at : Math.min(at, due.at)
     }
     const timer = this.timers.get(project)
@@ -224,11 +229,11 @@ export class MemoryPipeline {
 
   private assertOpen(): void { if (this.closing) throw new MemoryError('closed', 'Independent memory pipeline is closing') }
 
-  private sourceSessions(project: ProjectId): Set<SessionId> {
+  private async sourceSessions(project: ProjectId): Promise<Set<SessionId>> {
     let after = ''
     const sessions = new Set<SessionId>()
     for (;;) {
-      const tasks = this.memory.l1.listTasks(project, after, this.spec.pageSize)
+      const tasks = (await this.memory.l1.listTasks(project, after, this.spec.pageSize))
       for (const task of tasks) sessions.add(task.sessionId)
       if (tasks.length < this.spec.pageSize) return sessions
       after = tasks.at(-1)!.operationId
@@ -238,24 +243,24 @@ export class MemoryPipeline {
   private async process(project: ProjectId, signal: AbortSignal): Promise<void> {
     signal.throwIfAborted()
     const l1 = this.spec.l1!
-    this.memory.scanTurns(project, l1, this.spec.pageSize)
+    await this.memory.scanTurns(project, l1, this.spec.pageSize)
     let worker = this.workers.get(project)
     if (worker === undefined) {
       worker = new L1Worker(this.memory, new L1Extractor(this.journal, this.journal.recordL1), project, this.spec.pageSize,
         (_operation, failure) => this.report(new MemoryError('model', `L1 task failed (${failure.code})`)))
       this.workers.set(project, worker)
     }
-    for (const session of this.sourceSessions(project)) { await worker.flush(session, signal); signal.throwIfAborted() }
+    for (const session of await this.sourceSessions(project)) { await worker.flush(session, signal); signal.throwIfAborted() }
     for (const target of ['L2', 'L3'] as const) {
-      enqueueCandidates(this.memory.knowledge, project, target, this.spec.knowledge!, this.spec.pageSize)
+      await this.memory.knowledge.enqueueCandidates(project, target, this.spec.knowledge!, this.spec.pageSize)
       let after = ''
       for (;;) {
-        const tasks = this.memory.knowledge.listTasks(project, after, this.spec.pageSize)
+        const tasks = (await this.memory.knowledge.listTasks(project, after, this.spec.pageSize))
         for (const task of tasks) {
           if (task.input.level !== target) continue
           await this.knowledge.run(project, task.operationId, signal)
           signal.throwIfAborted()
-          const current = this.memory.knowledge.getTask(project, task.operationId)
+          const current = (await this.memory.knowledge.getTask(project, task.operationId))
           if (current?.failure !== null && current?.failure !== undefined) this.report(new MemoryError('model', `${target} task failed (${current.failure})`))
         }
         if (tasks.length < this.spec.pageSize) break
@@ -281,6 +286,7 @@ export class MemoryPipeline {
    */
   async close(): Promise<void> {
     this.closing = true
+    await Promise.allSettled([...this.scheduling])
     this.unsubscribe()
     this.budget.available.delete(this.resumeOverloaded)
     for (const timer of this.timers.values()) clearTimeout(timer)

@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { SessionId, SessionLogOffset, SessionSeq, SESSION_FORMAT_VERSION } from '@deepseek-ai/dsh-session'
 import type { SessionEvent, SessionHeader } from '@deepseek-ai/dsh-session'
 import { memoryPath, resolveConfig } from '../src/config.ts'
-import { SqliteMemory } from '../src/sqlite.ts'
+import { SqliteMemory } from '../src/sqlite-backend.ts'
 import type { AppendRawRequest } from '../src/types.ts'
 
 /**

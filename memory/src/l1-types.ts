@@ -12,6 +12,11 @@ export interface MemoryRef { readonly id: MemoryId; readonly revision: number }
 /** Event identity within the source project's Session. */
 export interface EventRef { readonly sessionId: SessionId; readonly seq: SessionSeq }
 
+/** Opaque position in an immutable trace's JSON stream. */
+export interface TraceCursor { readonly chunk: number; readonly offset: number }
+/** Byte-bounded JSON text; concatenate pages before decoding the complete trace. */
+export interface TracePage { readonly found: boolean; readonly text: string; readonly nextCursor: TraceCursor | null }
+
 /** Optional L1 deployment choices; an absent configuration leaves L0 alone. */
 export interface L1Config {
   provider: string

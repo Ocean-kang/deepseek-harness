@@ -9,7 +9,7 @@ English | [中文](README.zh.md)
 
 ## Summary
 
-Keep complete recorded Session events in project-owned SQLite, browse L0–L3 and select L2/L3 for the next turn. Background learning reuses DSH models and credentials; BM25 retrieval needs no embedding key. The portable bundle enables logged recall through public extension points. See [installation](distribution/README.md) and [verification scope](evaluation/web-startup-0.1.12-2026-10-12.md).
+Keep complete recorded Session events in project-owned SQLite, browse L0–L3 and select L2/L3 for the next turn. Background learning reuses DSH models and credentials; BM25 retrieval needs no embedding key. The portable bundle enables logged recall through public extension points. See [installation](distribution/README.md) and [verification scope](evaluation/storage-0.1.13-2026-10-13.md).
 
 ## Table of Contents
 
@@ -28,7 +28,7 @@ This checkout targets DSH 0.2.1-alpha.2. After building `memory/lib`, run the fo
 pnpm dsh web --patch ./memory/cordis.patch.yml --patch ./memory/profiles/chat-view.patch.yml
 ```
 
-The [source patch](profiles/headless.patch.yml) mounts this plugin in the supported headless profile and makes the runner depend on the ready `memory` service. The [built patch](profiles/headless-built.patch.yml) selects the local build instead. These patches do not install dependencies. Use a matching, prepared DSH checkout; do not run a root installation or build under this directory's write restriction. Run `node scripts/link-profile.mjs` from `memory/` to register this package's directory with the profile resolver. The link and its target both remain inside `memory/`; existing unrelated entries are never replaced.
+The [source patch](profiles/headless.patch.yml) mounts this plugin in the supported headless profile and makes the runner depend on the ready `memory` service. The [built patch](profiles/headless-built.patch.yml) selects the local build instead. These patches do not install dependencies. Use a matching, prepared DSH checkout; do not run a root installation or build under this directory's write restriction. After setting the environment, run `node --import tsx/esm scripts/link-development-deps.mjs --runtime` from `memory/` before loading local build overlays: the plain-Node storage worker needs existing built DSH peers through memory-local read-only links. Missing peers fail plugin activation. The helper installs nothing, never writes through its links and leaves existing test libraries untouched. Run `node scripts/link-profile.mjs` to register this package with the profile resolver; that separate link and its target both remain inside `memory/`.
 
 Dot-source the [PowerShell environment setup](scripts/environment.ps1) with an explicit stable project identifier. It checks output directories for links, sets the Harness home, caches, temporary paths and working directory beneath `memory/`, and disables telemetry. It launches no application. Its environment changes persist in that PowerShell session.
 
@@ -42,7 +42,7 @@ The following source-profile invocation uses the repository's existing `dsh` bin
 node --import tsx/esm ../apps/cli/src/bin.ts --profile headless --patch ./profiles/headless.patch.yml 'Reply with OK without using tools.'
 ```
 
-The portable bundle and full Web overlay default to Workspace storage: `<workspace>/memory_<workspaceUUID>/memory.sqlite` contains the project's L0–L3 data. Only conversations created after the persisted activation time participate; old conversations and old centralized databases are not imported. Unassigned conversations use the new global database. See [data and configuration](distribution/README.md#data-and-configuration) for paths, backups and the explicit central-mode override. Configuration and existing-link checks run before database writes.
+The portable bundle and full Web overlay default to Workspace storage: `<workspace>/memory_<workspaceUUID>/memory.sqlite` contains the project's L0–L3 data. Automatic capture admits conversations created at or after the persisted activation time. The panel can explicitly import older conversations belonging to the current bound workspace; legacy central databases are not imported. Unassigned conversations use a global database. See [data and configuration](distribution/README.md#data-and-configuration) for paths and backup, and the [storage upgrade](distribution/storage-upgrade.md) before updating an existing installation.
 
 | Field | Default | Meaning |
 |---|---|---|
@@ -53,6 +53,11 @@ The portable bundle and full Web overlay default to Workspace storage: `<workspa
 | `projectId` | Required | Fallback project identifier; the patch reads `DSH_MEMORY_PROJECT`. |
 | `databasePath` | Required | SQLite file inside `memory/`; the example uses `data/l0.sqlite`. |
 | `queueCapacity` | 1024 | Global maximum buffered live event count. |
+| `queueMaxBytes` | 8388608 | Maximum detached event bytes retained by live capture. |
+| `pageMaxBytes` | 262144 | Maximum event bytes per recovery or extraction page; one oversized event is allowed. |
+| `tracePageMaxBytes` | 65536 | Maximum UTF-8 bytes per trace page and stored trace chunk. |
+| `storageQueueCapacity` / `storageQueueMaxBytes` | 128 / 8388608 | Maximum accepted requests and serialized bytes waiting for the storage worker. |
+| `retention.maxAgeDays` / `retention.intervalMs` | Unset / 86400000 | Automatic cleanup is disabled without an age; a configured age uses this interval. |
 | `batchSize` | 128 | Maximum events per capture transaction. |
 | `pageSize` | 128 | Maximum source events per recovery read, also limited by batch size. |
 | `learningConcurrency` | 2 | Maximum simultaneous project drains across all Workspace databases. |
@@ -125,6 +130,12 @@ Previously captured conversations remain browsable after restart even when their
 
 L0 cards show conversations and execution. L1 shows the task episode, with trace and evidence collapsed in detail. L2 shows scenario cards led by conclusions; clicking a scenario scopes browsing. L3 has separate knowledge/profile filters applied before pagination. Detail retains reasons, applicability, limitations, confidence origin, source status, immutable history and folded JSON. New summaries are generated in the extraction call; old versions fall back to stored readable fields. Search highlights literal matches; the sidebar and composer share one state poll per Session and preserve the submitted query, detail and scroll. `browser.refreshIntervalMs` controls polling.
 
+In a bound workspace, open “Import and storage maintenance”, optionally set conversation creation dates, then preview and select sources to import. The preview states whether automatic extraction will call the configured model; when disabled, import copies only L0. Saved progress survives restart. Stopping import retains committed pages and already queued learning; format and source failures remain visible. Explicit import admits older Sessions without changing the global activation time.
+
+Enter retention days and preview cleanup before running it. The preview counts eligible conversations, protected conversations and their event bytes. Cleanup rechecks current memory ancestry, pending selections, unfinished tasks, active Sessions and approved sharing before deleting whole expired source Sessions and unreferenced descendants. Cleaned sources are not silently recaptured; explicit import can restore them. “Compact database file” is a separate maintenance action. Referenced evidence can remain indefinitely, so retention does not impose a fixed disk-size ceiling.
+
+Execution details load only after expansion. Each “Load more” replaces the displayed trace page; “Load execution details” returns to its first page. Trusted adapters use `await ctx.memory.readTrace(project, ref, cursor?)`; concatenating returned `text` pages reconstructs the complete JSON trace. L1 browsing and knowledge extraction omit full trace, while precise L0 references remain available for evidence checks. Failed knowledge tasks have an explicit retry action; upgrade does not rerun completed tasks.
+
 L2/L3 selections persist for one admitted recall, with server-side version, sharing, count and rendered-text checks. Cancellation clears only pending references. With `injection: true`, the plugin combines manual selections and optional BM25 matches, logs exact admitted text and references through `user/message`, and consumes selections after commit. The portable bundle and panel patch enable injection; [web.patch.yml](profiles/web.patch.yml) remains capture-only.
 
 Select the checkbox at the start of each eligible L2/L3 card, then choose Add selected to next turn, or add one card directly. L0/L1 remain read-only. The pending area and composer show saved text, count and the rendered-byte budget, including while the sidebar is closed. Manual selection is consumed once after admission; automatic recall remains enabled until switched off. Its switch preserves pending references and their consumption receipt even when a version is stale. New selections still require eligibility and budget checks. After sending, the composer and panel show exact committed context and references; admission does not guarantee that the answer cites every memory.
@@ -194,7 +205,7 @@ The plugin installs the [Injector](src/injector.ts) when `injection` is enabled.
 <details>
 <summary>Storage, recovery, and lifecycle</summary>
 
-The [SQLite provider](src/sqlite.ts) owns a separate database identity and schema version 5. It upgrades schema 1, 2, 3 or 4 transactionally without rewriting L0 events or L1 versions. Events use a `(session_id, seq)` primary key. Session metadata and the next uncommitted position advance in the same transaction as event rows. Unknown newer versions and other database identities are refused.
+The [SQLite provider](src/sqlite.ts) uses a plugin-owned worker for connections, transactions, scans and transient FTS. Its schema version 6 upgrades versions 1–5 transactionally while preserving recorded events and old memory versions. New trace chunks, import progress and admission/cleanup markers belong to this database. Event rows and their committed prefix advance together. Unknown newer versions and other database identities are refused. Storage, browsing and retrieval APIs return promises; consumers await durable writes and results. A worker failure reports an unknown outcome instead of automatically repeating a possibly committed operation.
 
 The [L1 store](src/l1-store.ts) scans committed L0 pages and commits task creation with its scan cursor and open-turn state. Startup scans every stored project, including unloaded Sessions; successful capture and direct appends scan their actual project. It skips fully inherited turns and retains turns ending beyond a fork's inherited prefix. Task keys include project, Session interval, layer and saved extraction settings. Configuration changes affect newly discovered turns; explicit re-extraction creates a new operation for an existing logical memory. Candidate checkpoints precede atomic memory-version and task-completion commits. Operation lookup resolves uncertain commits, and expected revisions reject concurrent replacement. Historical versions remain readable as superseded records.
 
@@ -217,7 +228,7 @@ node scripts/link-profile.mjs
 node ../apps/cli/lib/bin.js --profile headless --patch ./profiles/headless-built.patch.yml 'Reply with OK without using tools.'
 ```
 
-Run `node --import tsx/esm scripts/check-docs.mjs` for directory-local links, bilingual structure and pairing records. After reviewing both languages, use the same command with `--write-pairing` to refresh the four local consistency records.
+Run `node --import tsx/esm scripts/check-docs.mjs` for directory-local links, bilingual structure and pairing records. After reviewing both languages, use the same command with `--write-pairing` to refresh the five local consistency records.
 
 `DSH_MEMORY_VERIFY_COPY=1` enables the opt-in `profile-copy` test, which compares SQLite with the canonical log through the real JSONL decoder. `DSH_MEMORY_VERIFY_DB` selects a memory-relative database and defaults to `data/l0.sqlite`. Run this verification immediately after the corresponding profile run; later activity collected into another database can extend the source log.
 
@@ -248,12 +259,12 @@ The mounted plugin introduces no model tool. With `injection`, admitted memory t
 
 ## Known Limitations and Deferred Work
 
-- Only Sessions loaded while the plugin is active are adopted; no complete disk-history scan is performed.
+- Automatic capture adopts loaded Sessions; explicit history import discovers only the current bound workspace through Session persistence.
 - A lost canonical log prevents recovery of uncopied events. Existing copied events remain readable.
-- Queue capacity counts events, not bytes. A single large event and a recovery page can require substantial memory; use smaller batch and page sizes where necessary.
+- Capture queues and data pages have count and byte limits. One oversized event can exceed a page budget; the upstream JSONL backend can still load a complete Session during a cold read.
 - Source-wide flush may report another Session writer's failure. Recovery treats that failed checkpoint as an error.
-- SQLite calls are synchronous and can block up to the configured lock timeout. Larger workloads may need an independently designed worker-backed provider.
-- Database growth is unbounded; there is no retention policy or attachment backup. The extractor loads one complete turn into memory before partitioning requests; the byte budget limits requests, not peak process memory.
+- SQLite lock waits and native statements occupy the dedicated storage worker; dependent memory operations still wait for it, and one native statement cannot be interrupted.
+- Retention is opt-in and protects referenced evidence. Database pages become reusable after cleanup; compaction is separate. There is no attachment backup or fixed database-size guarantee.
 - L0 copies preserve recorded event data and file references; attachment and spill files are not copied. Missing referenced files cannot be reconstructed from these copies.
 - Direct mounting defaults `autoLearning` and `injection` off; the portable bundle enables both. Each conversation defaults automatic recall off. Real models use credentials already configured in DSH.
 - Keyless fixtures and a single real-model learning sample do not establish general memory quality. The fixed manual quality experiment has not been executed; vector thresholds require calibration for the chosen embedding model.

@@ -3,8 +3,10 @@ import assert from 'node:assert/strict'
 
 export const inject = ['memory', 'connection', 'webServer']
 export function apply(ctx) {
+  console.log('MEMORY_PROFILE_STARTUP_REGISTERED')
   ctx.effect(() => ctx.appReady.onReady(async () => {
     try {
+      console.log('MEMORY_PROFILE_STARTUP_READY')
       const handler = ctx.connection.createSharedFetchHandler('/api')
       const call = body => handler.fetch(new Request('http://localhost/api/memory/panel', {
         method: 'POST', headers: { 'content-type': 'application/json' },

@@ -28,6 +28,27 @@ CREATE TABLE knowledge_grants (id TEXT NOT NULL, revision INTEGER NOT NULL, acti
  PRIMARY KEY(id,revision), FOREIGN KEY(id,revision) REFERENCES knowledge_versions(id,revision)) STRICT;
 `
 
+/** Remove duplicated L1 traces from legacy task snapshots, preserving exact versions and recorded requests.
+ * @param db - owning connection inside the version-6 schema migration transaction.
+ * @returns completion after mutable task inputs contain no duplicated L1 trace arrays.
+ */
+export function compactLegacyKnowledgeTaskTraces(db: DatabaseSync): void {
+  for (const row of db.prepare('SELECT id FROM knowledge_tasks WHERE json_valid(body)').iterate()) {
+    const id = textValue(row.id)
+    for (const section of ['sources', 'existing', 'lineage']) {
+      const path = `$.input.${section}`
+      for (const item of db.prepare(`SELECT entry.key FROM knowledge_tasks task, json_each(task.body, ?) entry
+        WHERE task.id = ? AND json_type(task.body, ?) = 'array'
+        AND CASE WHEN entry.type = 'object' THEN json_extract(entry.value, '$.level') = 'L1'
+          AND json_type(entry.value, '$.summary.trace') IS NOT NULL ELSE 0 END`)
+        .iterate(path, id, path)) {
+        const tracePath = `${path}[${integer(item.key)}].summary.trace`
+        db.prepare('UPDATE knowledge_tasks SET body = json_remove(body, ?) WHERE id = ?').run(tracePath, id)
+      }
+    }
+  }
+}
+
 function storedConfig(value: unknown): KnowledgeSpec {
   const item = object(value)
   if (!['knowledge-v1', 'knowledge-v2', 'knowledge-v3', 'knowledge-v4'].includes(textValue(item.promptVersion))) throw new MemoryError('corrupt', 'Unsupported knowledge prompt version')
@@ -67,6 +88,12 @@ export function enqueueCandidates(store: KnowledgeStore, project: ProjectId, lev
 
 /** Internal store; no model tools or user approval adapter are installed by this class. */
 export class KnowledgeStore {
+  /** @param project - owner. @param level - target. @param config - frozen model settings.
+   * @param pageSize - source page bound. @returns number of newly queued operations.
+   */
+  enqueueCandidates(project: ProjectId, level: KnowledgeLevel, config: KnowledgeSpec, pageSize: number): void {
+    enqueueCandidates(this, project, level, config, pageSize)
+  }
   /** @param db - parent-owned connection.
    * @param l1 - existing L1 reader.
    * @param changed - nonthrowing post-commit notification.
@@ -364,6 +391,18 @@ export class KnowledgeStore {
     this.assertOpen()
     if (!Number.isSafeInteger(limit) || limit < 1) throw new MemoryError('config', 'Task limit must be positive')
     return this.db.prepare('SELECT id FROM knowledge_tasks WHERE project = ? AND id > ? ORDER BY id LIMIT ?').all(project, after, limit)
+      .map(row => this.getTask(project, textValue(row.id) as OperationId)!)
+  }
+
+  /** List failed extraction tasks without scanning completed tasks.
+   * @param project - owner.
+   * @param limit - positive display page size.
+   * @returns failed tasks in identity order, limited for the panel.
+   */
+  getFailedTasks(project: ProjectId, limit = 100): KnowledgeTask[] {
+    this.assertOpen()
+    if (!Number.isSafeInteger(limit) || limit < 1) throw new MemoryError('config', 'Task limit must be positive')
+    return this.db.prepare("SELECT id FROM knowledge_tasks WHERE project = ? AND json_extract(body, '$.status') = 'failed' ORDER BY id LIMIT ?").all(project, limit)
       .map(row => this.getTask(project, textValue(row.id) as OperationId)!)
   }
 

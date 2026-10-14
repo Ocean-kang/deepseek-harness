@@ -11,7 +11,7 @@ import type { L1Task, OperationId } from './l1-types.ts'
 import type { KnowledgeTask } from './knowledge-types.ts'
 import type { ProjectId } from './types.ts'
 import { MemoryError } from './types.ts'
-import type { SqliteMemory } from './sqlite.ts'
+import type { MemoryDatabase } from './sqlite.ts'
 
 declare module '@deepseek-ai/dsh-session/types' {
   interface SessionEventMap {
@@ -43,7 +43,7 @@ export class MemoryRequestJournal implements Pick<LlmRuntime, 'stream'> {
   /** @param memory - owning L0 provider.
    * @param llm - existing provider-neutral model service.
    */
-  constructor(private readonly memory: SqliteMemory, private readonly llm: Pick<LlmRuntime, 'stream'>) {}
+  constructor(private readonly memory: MemoryDatabase, private readonly llm: Pick<LlmRuntime, 'stream'>) {}
 
   /** Persist one L1 request in its own auxiliary Session.
    * @param task - immutable source task.

@@ -688,7 +688,7 @@ it('recognizes a successful commit even when its acknowledgement fails', async (
 it('honors backoff and lifetime call budgets across explicit retries', async () => {
   const item = await setup({ maxAttempts: 1, maxCalls: 1 })
   let now = 10
-  const worker = new KnowledgeWorker(item.store, { consolidate: async (_task, _signal, charge) => { charge(); throw new L1ModelError('TRANSIENT', true) } }, () => now)
+  const worker = new KnowledgeWorker(item.store, { consolidate: async (_task, _signal, charge) => { await charge(); throw new L1ModelError('TRANSIENT', true) } }, () => now)
   cleanups.push(() => worker.close())
   await worker.run(item.project, item.operation, new AbortController().signal)
   expect(item.store.getTask(item.project, item.operation)).toMatchObject({ status: 'failed', calls: 1 })

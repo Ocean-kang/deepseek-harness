@@ -5,7 +5,7 @@ import { unitVector } from './embedding.ts'
 import type { MemoryRef } from './l1-types.ts'
 import type { ProjectId } from './types.ts'
 import { MemoryError } from './types.ts'
-import type { SqliteMemory } from './sqlite.ts'
+import type { MemoryDatabase } from './sqlite.ts'
 import { vectorDocument } from './vector-store.ts'
 import type { VectorDocument } from './vector-store.ts'
 import type { HybridMemoryRetriever } from './hybrid-retrieval.ts'
@@ -68,13 +68,14 @@ export function renderRecall(hits: readonly RetrievalHit[]): string {
  * @param result - earlier budgeted response.
  * @returns response with revoked, replaced or changed entries removed.
  */
-export function revalidateRecall(provider: SqliteMemory, project: ProjectId, result: RetrievalResult): RetrievalResult {
-  const hits = result.hits.filter(hit => {
-    const memory = provider.knowledge.getMemory(project, hit.ref)
-    if (memory === null) return false
+export async function revalidateRecall(provider: MemoryDatabase, project: ProjectId, result: RetrievalResult): Promise<RetrievalResult> {
+  const hits: RetrievalHit[] = []
+  for (const hit of result.hits) {
+    const memory = await provider.knowledge.getMemory(project, hit.ref)
+    if (memory === null) continue
     const document = vectorDocument(memory)
-    return provider.vectors.current(project, document) && document.text === hit.text
-  })
+    if (await provider.vectors.current(project, document) && document.text === hit.text) hits.push(hit)
+  }
   return { ...result, hits, text: renderRecall(hits) }
 }
 
@@ -94,7 +95,7 @@ export class MemoryRetriever {
    * @param embedder - real provider or explicit test adapter.
    * @param report - nonthrowing body-free diagnostic sink.
    */
-  constructor(private readonly provider: SqliteMemory, readonly spec: EmbeddingSpec, private readonly embedder: Embedder, private readonly report: (error: MemoryError) => void) {
+  constructor(private readonly provider: MemoryDatabase, readonly spec: EmbeddingSpec, private readonly embedder: Embedder, private readonly report: (error: MemoryError) => void) {
     this.unsubscribe = provider.onMemoryChange(() => this.schedule())
   }
 
@@ -109,7 +110,7 @@ export class MemoryRetriever {
         try { await this.build() } catch (error) {
           if (this.closed) break
           const failure = error instanceof MemoryError ? error : new MemoryError('storage', 'memory indexing failed')
-          try { this.provider.vectors.state(this.spec, 'failed', failure.code) } catch (stateError) {
+          try { (await this.provider.vectors.state(this.spec, 'failed', failure.code)) } catch (stateError) {
             this.report(new MemoryError('storage', 'index failure status could not be saved'))
           }
           this.report(failure)
@@ -129,7 +130,7 @@ export class MemoryRetriever {
     this.assertOpen()
     await this.flush()
     this.assertOpen()
-    this.provider.vectors.clear(this.spec)
+    await this.provider.vectors.clear(this.spec)
     this.schedule()
     await this.flush()
   }
@@ -148,23 +149,23 @@ export class MemoryRetriever {
 
   private async build(): Promise<void> {
     const store = this.provider.vectors
-    store.state(this.spec, 'building')
-    const generation = store.generation()
-    for (const project of store.projects()) {
+    await store.state(this.spec, 'building')
+    const generation = (await store.generation())
+    for (const project of (await store.projects())) {
       const pending = new Set<Promise<void>>()
       let batch: VectorDocument[] = []
       const dispatch = (documents: VectorDocument[]) => {
-        const job = this.embed(documents.map(document => document.text), this.abort.signal).then(vectors => {
+        const job = this.embed(documents.map(document => document.text), this.abort.signal).then(async vectors => {
           this.abort.signal.throwIfAborted()
-          store.put(this.spec, project, documents, vectors)
+          await store.put(this.spec, project, documents, vectors)
         })
         void job.catch(() => undefined) // The batch barrier owns reporting after all requests settle.
         pending.add(job)
       }
       try {
-        for (const document of store.documents(project, this.spec.pageSize)) {
+        for await (const document of store.documents(project, this.spec.pageSize)) {
           this.abort.signal.throwIfAborted()
-          if ('shared' in document.memory || store.read(this.spec, document) !== null) continue
+          if ('shared' in document.memory || (await store.read(this.spec, document)) !== null) continue
           batch.push(document)
           if (batch.length < this.spec.batchSize) continue
           dispatch(batch)
@@ -176,25 +177,25 @@ export class MemoryRetriever {
         await Promise.all(pending)
       } finally { await Promise.allSettled(pending) }
     }
-    if (store.generation() !== generation) this.dirty = true
-    else store.state(this.spec, 'ready')
+    if ((await store.generation()) !== generation) this.dirty = true
+    else (await store.state(this.spec, 'ready'))
   }
 
   /** Inspect exact current-project completeness, even after another connection committed.
    * @param project - requester.
    * @returns counts and persisted worker state; capped scans report truncated.
    */
-  getIndexStatus(project: ProjectId) {
+  async getIndexStatus(project: ProjectId) {
     this.assertOpen()
     let candidates = 0
     let missing = 0
     let truncated = false
-    for (const document of this.provider.vectors.documents(project, this.spec.pageSize)) {
+    for await (const document of this.provider.vectors.documents(project, this.spec.pageSize)) {
       if (candidates === this.spec.maxCandidates) { truncated = true; break }
       candidates++
-      if (this.provider.vectors.read(this.spec, document) === null) missing++
+      if ((await this.provider.vectors.read(this.spec, document)) === null) missing++
     }
-    return { method: 'vector' as const, space: this.spec.space, ...this.provider.vectors.status(this.spec), candidates, missing, truncated, ready: !truncated && missing === 0 }
+    return { method: 'vector' as const, space: this.spec.space, ...(await this.provider.vectors.status(this.spec)), candidates, missing, truncated, ready: !truncated && missing === 0 }
   }
 
   /** Retrieve only current, visible versions; failures reject rather than masquerade as no matches.
@@ -223,13 +224,13 @@ export class MemoryRetriever {
       const empty = (): RetrievalResult => ({ hits: [], text: '', scanned: 0, elapsedMs: performance.now() - start, method: 'vector' })
       if (!request.text.trim() || request.levels?.length === 0) return empty()
       const store = this.provider.vectors
-      const generation = store.generation()
+      const generation = (await store.generation())
       const candidates: Array<{ document: VectorDocument; vector: number[] }> = []
-      for (const document of store.documents(request.projectId, this.spec.pageSize)) {
+      for await (const document of store.documents(request.projectId, this.spec.pageSize)) {
         check()
         if (!matchesRetrieval(document, request)) continue
         if (candidates.length === this.spec.maxCandidates) throw new MemoryError('budget', 'memory candidate scan exceeds configured limit')
-        const vector = store.read(this.spec, document)
+        const vector = (await store.read(this.spec, document))
         if (vector === null) { this.schedule(); throw new MemoryError('index-not-ready', 'current memory vector is missing') }
         candidates.push({ document, vector })
         if (candidates.length % this.spec.pageSize === 0) await yieldHost()
@@ -245,16 +246,16 @@ export class MemoryRetriever {
       const hits: RetrievalHit[] = []
       for (const { document, similarity } of ranked) {
         check()
-        if (!store.current(request.projectId, document)) continue
+        if (!(await store.current(request.projectId, document))) continue
         const memory = document.memory
         const hit: RetrievalHit = { ref: { id: memory.id, revision: memory.revision }, projectId: memory.projectId, shared: 'shared' in memory, text: document.text, similarity }
         if (Buffer.byteLength(renderRecall([...hits, hit]), 'utf8') > maxBytes) continue
         hits.push(hit)
         if (hits.length === limit) break
       }
-      if (store.generation() !== generation) {
+      if ((await store.generation()) !== generation) {
         const expected = new Map(candidates.map(({ document }) => [document.memory.id, `${document.memory.revision}:${document.digest}`]))
-        for (const document of store.documents(request.projectId, this.spec.pageSize)) {
+        for await (const document of store.documents(request.projectId, this.spec.pageSize)) {
           check()
           if (!matchesRetrieval(document, request)) continue
           if (expected.get(document.memory.id) !== `${document.memory.revision}:${document.digest}`) throw new MemoryError('conflict', 'memory candidates changed during retrieval')
@@ -277,7 +278,7 @@ export class MemoryRetriever {
    * @param result - previously selected exact text.
    * @returns result with revoked or replaced entries removed.
    */
-  revalidate(project: ProjectId, result: RetrievalResult): RetrievalResult {
+  async revalidate(project: ProjectId, result: RetrievalResult): Promise<RetrievalResult> {
     this.assertOpen()
     return revalidateRecall(this.provider, project, result)
   }

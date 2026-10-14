@@ -9,6 +9,7 @@ import { panelRequest } from './panel-protocol.ts'
 import type { PanelRequest, PanelResponse, PanelRow } from './panel-protocol.ts'
 import { MemoryError } from './types.ts'
 import type { ProjectId } from './types.ts'
+import type { ImportTask } from './maintenance-store.ts'
 import { evidenceStatus } from './evidence.ts'
 import { renderRecall } from './retrieval.ts'
 import type {} from './index.ts'
@@ -20,6 +21,7 @@ interface StateProjection {
   tail: Promise<void>
 }
 const stateProjections = new WeakMap<MemoryBrowser, Map<SessionId, StateProjection>>()
+const importTaskOf = (task: ImportTask): Extract<PanelResponse, { action: 'importStart' }>['task'] => ({ ...task, items: task.items.map(item => ({ ...item })) })
 
 async function recallState(ctx: Context, project: ProjectId, sessionId: SessionId,
   signal: AbortSignal): Promise<{ offset: number; used: PanelUsed }> {
@@ -46,7 +48,7 @@ async function recallState(ctx: Context, project: ProjectId, sessionId: SessionI
           to: stored.committedTo, cursor: SessionLogOffset(offset), limit: browser.spec.pageSize, signal })
         if (!page.found || page.missing.length !== 0 || page.events.length === 0) throw new MemoryError('source', 'Conversation memory capture cannot supply the observed prefix')
         for (const event of page.events) {
-          browser.committed(project, sessionId, event)
+          await browser.committed(project, sessionId, event)
           if (event.type !== 'user/message' || event.data.source.kind !== 'memory-recall') continue
           used.push({ turn: event.data.source.turn,
             body: event.data.content.flatMap(block => block.type === 'text' ? [block.text] : []).join('\n'),
@@ -119,9 +121,9 @@ export function panelRowOf(item: BrowserItem): PanelRow {
     shared: true, ref, state: 'active', selectable: true, sources: [], sections: [{ label: 'principle', text: item.body }] }
   const generation = { provider: item.config.provider, model: item.config.model, createdAt: item.createdAt }
   if (item.level === 'L1') return { ...extra, generation, level: 'L1', title: item.summary.title ?? item.summary.goal, description: item.summary.description ?? null,
-    ...item.summary.trace === undefined ? { trace: item.summary.actions.join('\n') } : { trace: JSON.stringify(item.summary.trace, null, 2) },
+    trace: '',
     body: [item.summary.goal, item.summary.problem, item.summary.summary, item.summary.result, item.summary.solution].filter(Boolean).join('\n'),
-    raw: JSON.stringify(item, null, 2), outcome: item.summary.outcome,
+    raw: JSON.stringify({ ...item, summary: { ...item.summary, trace: undefined } }, null, 2), outcome: item.summary.outcome,
     sections: [{ label: 'topic', text: item.summary.goal }, ...item.summary.problem === undefined ? [] : [{ label: 'problem' as const, text: item.summary.problem }],
       ...item.summary.summary === undefined ? [] : [{ label: 'summary' as const, text: item.summary.summary }],
       { label: 'result', text: item.summary.result }, ...item.summary.solution === null ? [] : [{ label: 'solution' as const, text: item.summary.solution }]],
@@ -152,61 +154,90 @@ export async function dispatchPanel(ctx: Context, request: PanelRequest, signal:
   const stored = session === undefined ? await ctx.sessionPersistence.stat(request.sessionId, { signal }) : undefined
   const header = session?.header ?? stored?.header
   if (header === undefined) throw new MemoryError('source', 'Conversation is unavailable for memory browsing')
-  if (!ctx.memory.acceptsSession({ header })) throw new MemoryError('excluded', 'Memory is disabled for Sessions created before Workspace storage activation')
+  if (!await ctx.memory.acceptsSession({ header })) throw new MemoryError('excluded', 'Memory is disabled for Sessions created before Workspace storage activation')
   if (session !== undefined) {
     try { await ctx.sessions.flush(session) } catch (error) {
       throw new MemoryError('source', 'Session memory capture could not confirm the current log prefix', error)
     }
   }
   signal.throwIfAborted()
-  const project = ctx.memory.projectOfSession(request.sessionId)
+  const project = await ctx.memory.projectOfSession(request.sessionId)
   if (project === undefined) throw new MemoryError('source', 'Session memory capture is not ready')
   const browser = ctx.memory.browser
-  const rowOf = (item: BrowserItem): PanelRow => {
+  const rowOf = async (item: BrowserItem): Promise<PanelRow> => {
     const row = panelRowOf(item)
     if (item.level === 'L0') return { ...row, projectId: project }
-    const current = browser.sourcesCurrent(project, item)
+    const current = await browser.sourcesCurrent(project, item)
     if (row.trust !== null && !current) row.trust.evidenceStatus = 'stale'
     return { ...row, sourceStatus: current ? 'current' : 'needs-review', selectable: row.selectable && current }
   }
   switch (request.action) {
+    case 'trace': return { action: 'trace', ...await ctx.memory.readTrace(project, request.ref, request.cursor ?? undefined) }
+    case 'importPreview': {
+      const preview = await ctx.memory.previewHistoryImport({ projectId: project,
+      ...request.fromCreatedAt === undefined ? {} : { fromCreatedAt: request.fromCreatedAt },
+      ...request.toCreatedAt === undefined ? {} : { toCreatedAt: request.toCreatedAt },
+        ...request.after === null ? {} : { after: request.after }, limit: browser.spec.pageSize })
+      return { action: 'importPreview', ...preview, items: preview.items.map(item => ({ ...item })) }
+    }
+    case 'importStart': return { action: 'importStart', task: importTaskOf(await ctx.memory.importHistory(project, request.sessionIds)) }
+    case 'importStatus': {
+      const task = await ctx.memory.getImportTask(project, request.id ?? undefined)
+      return { action: 'importStatus', task: task === null ? null : importTaskOf(task) }
+    }
+    case 'importCancel': {
+      const task = await ctx.memory.cancelImport(project, request.id)
+      return { action: 'importCancel', task: task === null ? null : importTaskOf(task) }
+    }
+    case 'cleanupPreview': return { action: 'cleanupPreview', preview: await ctx.memory.previewCleanup(project, { maxAgeDays: request.maxAgeDays }) }
+    case 'cleanup': return { action: 'cleanup', task: await ctx.memory.cleanup(project, { maxAgeDays: request.maxAgeDays }) }
+    case 'cleanupStatus': return { action: 'cleanupStatus', task: await ctx.memory.getCleanupTask(project) }
+    case 'compact': await ctx.memory.compact(project); return { action: 'compact' }
+    case 'retryKnowledge': {
+      const task = await ctx.memory.getKnowledgeTask(project, request.id)
+      if (task === null || task.status !== 'failed') throw new MemoryError('conflict', 'Only failed knowledge extraction can be retried')
+      await ctx.memory.retryKnowledgeTask(project, request.id)
+      return { action: 'retryKnowledge' }
+    }
+
     case 'browse': {
-      const page = browser.browse(project, request.level, request.query, request.after, { ...request.kind === undefined ? {} : { kind: request.kind }, ...request.scenario === undefined ? {} : { scenario: request.scenario } })
-      return { action: 'browse', rows: page.items.map(rowOf), next: page.next }
+      const page = await browser.browse(project, request.level, request.query, request.after, { ...request.kind === undefined ? {} : { kind: request.kind }, ...request.scenario === undefined ? {} : { scenario: request.scenario } })
+      return { action: 'browse', rows: await Promise.all(page.items.map(rowOf)), next: page.next }
     }
     case 'detail': {
-      const item = browser.detail(project, request.ref)
-      return { action: 'detail', row: item === null ? null : rowOf(item) }
+      const item = await browser.detail(project, request.ref)
+      return { action: 'detail', row: item === null ? null : await rowOf(item) }
     }
     case 'history': {
-      const refs = browser.history(project, request.id, request.before)
+      const refs = await browser.history(project, request.id, request.before)
       return { action: 'history', refs, next: refs.length === browser.spec.pageSize ? refs.at(-1)!.revision : null }
     }
     case 'select': {
-      const saved = browser.select(project, request.sessionId, request.refs, request.automatic)
+      const saved = await browser.select(project, request.sessionId, request.refs, request.automatic)
       return { action: 'select', refs: [...saved.refs], automatic: saved.automatic }
     }
     case 'automatic': {
-      const saved = browser.setAutomatic(project, request.sessionId, request.automatic)
+      const saved = await browser.setAutomatic(project, request.sessionId, request.automatic)
       return { action: 'automatic', refs: [...saved.refs], automatic: saved.automatic }
     }
     case 'state': {
       const { offset, used } = await recallState(ctx, project, request.sessionId, signal)
       signal.throwIfAborted()
-      const selection = browser.selectionFromEvents(project, request.sessionId, [])
+      const selection = await browser.selectionFromEvents(project, request.sessionId, [])
       let valid = true
       let bytes = 0
-      try { bytes = Buffer.byteLength(renderRecall(browser.manual(project, selection?.refs ?? [])), 'utf8') } catch (error) {
+      try { bytes = Buffer.byteLength(renderRecall(await browser.manual(project, selection?.refs ?? [])), 'utf8') } catch (error) {
         if (!(error instanceof MemoryError) || (error.code !== 'conflict' && error.code !== 'budget')) throw error
         valid = false
       }
-      const pending = (selection?.refs ?? []).flatMap((ref) => {
-        const item = browser.detail(project, ref)
-        return item === null ? [] : [rowOf(item)]
-      })
-      const { generation, ...learning } = browser.status(project)
+      const pending: PanelRow[] = []
+      for (const ref of selection?.refs ?? []) {
+        const item = await browser.detail(project, ref)
+        if (item !== null) pending.push(await rowOf(item))
+      }
+      const { generation, ...learning } = await browser.status(project)
       return { action: 'state', projectId: project, refs: [...selection?.refs ?? []], automatic: selection?.automatic ?? false,
-        injectionReady: browser.injectionReady, valid, bytes, limit: browser.spec.limit, maxBytes: browser.spec.maxBytes, used, pending,
+        injectionReady: browser.injectionReady, maintenanceReady: ctx.memory.workspaceBound(project), failedKnowledgeTasks: (await ctx.memory.listFailedKnowledgeTasks(project, browser.spec.pageSize)).map(task => ({ id: task.operationId, level: task.input.level, failure: task.failure })), valid, bytes, limit: browser.spec.limit, maxBytes: browser.spec.maxBytes, used, pending,
         revision: `${generation}:${offset}`, refreshIntervalMs: browser.spec.refreshIntervalMs,
         recallMethod: ctx.memory.recallMethod(project),
         learning: { ...learning, enabled: ctx.memory.learningEnabled(project) } }

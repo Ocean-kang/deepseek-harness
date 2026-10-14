@@ -1,388 +1,233 @@
-/** Independent L0 database; events and their continuous prefix commit atomically. */
-import { mkdir, open } from 'node:fs/promises'
-import { dirname } from 'node:path'
-import { DatabaseSync } from 'node:sqlite'
-import { isDeepStrictEqual } from 'node:util'
-import { SessionLogOffset, SESSION_FORMAT_VERSION } from '@deepseek-ai/dsh-session'
-import type { SessionEvent, SessionHeader, SessionId } from '@deepseek-ai/dsh-session'
-import { assertContiguous, materializeAppendBatch, materializeCreateHeader, validateStoredEvents } from '@deepseek-ai/dsh-session-persistence'
-import { memoryPath } from './config.ts'
+/** Async facade over the plugin-owned SQLite worker. */
+import { getEnvironmentData, Worker } from 'node:worker_threads'
+import { serialize } from 'node:v8'
+import type { SqliteMemory as Backend } from './sqlite-backend.ts'
+import type { L1Store } from './l1-store.ts'
+import type { KnowledgeStore } from './knowledge-store.ts'
+import type { SelectionStore } from './selection-store.ts'
+import type { MaintenanceStore } from './maintenance-store.ts'
+import type { VectorStore, VectorDocument } from './vector-store.ts'
 import type { Spec } from './config.ts'
+import type { ProjectId, AppendRawRequest, ReadRawRequest } from './types.ts'
 import { MemoryError } from './types.ts'
-import type { AppendRawRequest, AppendRawResult, RawMemory, ReadRawRequest, ReadRawResult } from './types.ts'
-import type { ProjectId } from './types.ts'
-import type { L1Spec } from './l1-types.ts'
-import { L1_SCHEMA, L1Store } from './l1-store.ts'
-import { KNOWLEDGE_SCHEMA, KnowledgeStore } from './knowledge-store.ts'
-import { VECTOR_SCHEMA, VectorStore } from './vector-store.ts'
-import { SELECTION_SCHEMA, SelectionStore } from './selection-store.ts'
+import { storageResponse } from './storage-protocol.ts'
+import type { storageMethods } from './storage-protocol.ts'
+import type { RetrievalRequest, RetrievalResult } from './retrieval.ts'
+import type { TextSearchSpec } from './text-retrieval.ts'
+import type { ShareAction } from './knowledge-types.ts'
+export { SCHEMA_VERSION } from './sqlite-backend.ts'
 
-/** Physical L0 schema version; future migrations must increase it. */
-export const SCHEMA_VERSION = 5
-const APPLICATION_ID = 0x4453484d
-
-function parseJson(value: string): unknown {
-  try {
-    return JSON.parse(value)
-  } catch (error) {
-    throw new MemoryError('corrupt', 'invalid JSON in memory database', error)
-  }
+/** Synchronous stores are supported only by isolated backend unit fixtures. */
+export type AwaitableStore<S> = { [K in keyof S]: S[K] extends (...args: infer A) => infer R ? (...args: A) => R | Promise<Awaited<R>> : S[K] }
+type AsyncStore<S> = { [K in keyof S]: S[K] extends (...args: infer A) => infer R ? (...args: A) => Promise<Awaited<R>> : S[K] }
+/** Shared consumer capability for production async storage and synchronous unit fixtures. */
+export type MemoryDatabase = Omit<AwaitableStore<Backend>, 'vectors' | 'l1' | 'knowledge' | 'selections' | 'maintenance' | 'onMemoryChange'> & {
+  onMemoryChange(listener: () => void): () => void;
+  readonly l1: AwaitableStore<L1Store>; readonly knowledge: AwaitableStore<KnowledgeStore>;
+  readonly selections: AwaitableStore<SelectionStore>; readonly maintenance: AwaitableStore<MaintenanceStore>;
+  readonly vectors: Omit<AwaitableStore<VectorStore>, 'documents'> & { documents(project: ProjectId, size: number): Iterable<VectorDocument> | AsyncIterable<VectorDocument> };
 }
+interface Pending { readonly resolve: (value: unknown) => void; readonly reject: (error: Error) => void; readonly bytes: number }
 
-function parseProject(value: unknown): ProjectId {
-  if (typeof value !== 'string' || value.trim() === '' || value !== value.trim()) {
-    throw new MemoryError('corrupt', 'invalid stored project identifier')
-  }
-  return value as ProjectId
-}
-
-/** Read and validate database-owned JSON before passing it to Session validation. */
-function parseHeader(value: unknown): SessionHeader {
-  if (typeof value !== 'string') throw new MemoryError('corrupt', 'invalid stored Session header')
-  const parsed = parseJson(value)
-  if (parsed === null || typeof parsed !== 'object' || !('id' in parsed) || typeof parsed.id !== 'string'
-    || !('version' in parsed) || parsed.version !== SESSION_FORMAT_VERSION
-    || !('createdAt' in parsed) || !Number.isSafeInteger(parsed.createdAt)
-    || !('isSeeded' in parsed) || typeof parsed.isSeeded !== 'boolean') {
-    throw new MemoryError('corrupt', 'unsupported or invalid stored Session header')
-  }
-  return materializeCreateHeader(parsed as SessionHeader)
-}
-
-function sameHeader(left: SessionHeader, right: SessionHeader): boolean {
-  // SessionHeader defines an absent delegationDepth as zero; keep stored JSON intact.
-  return isDeepStrictEqual({ ...left, delegationDepth: left.delegationDepth ?? 0 }, { ...right, delegationDepth: right.delegationDepth ?? 0 })
-}
-
-function decodeEvent(value: unknown, header: SessionHeader, seq: number): SessionEvent {
-  if (typeof value !== 'string') throw new MemoryError('corrupt', 'invalid stored event JSON')
-  const event = parseJson(value)
-  if (event === null || typeof event !== 'object' || !('seq' in event) || event.seq !== seq
-    || !('type' in event) || typeof event.type !== 'string' || !('time' in event) || !Number.isSafeInteger(event.time)
-    || !('data' in event)) throw new MemoryError('corrupt', `invalid event envelope at seq ${seq}`)
-  const events = validateStoredEvents(header, [event as SessionEvent])
-  return events[0]!
-}
-
-/** SQLite implementation of the minimal memory capability. */
-export class SqliteMemory implements RawMemory {
+/** Shared owner of all memory connections belonging to one plugin instance. */
+export class StorageWorker {
+  private readonly worker: Worker
+  private readonly pending = new Map<number, Pending>()
+  private readonly listeners = new Map<number, Set<() => void>>()
+  private serial = 0
+  private databaseSerial = 0
+  private bytes = 0
   private closed = false
-  /** L1 operations share this provider's connection and close lifetime. */
-  readonly l1: L1Store
-
-  /** Long-term operations share the provider connection and lifetime. */
-  readonly knowledge: KnowledgeStore
-
-  /** Version-bound vector storage. */
-  readonly vectors: VectorStore
-  /** Pending selections share the parent connection and durability. */
-  readonly selections: SelectionStore
-  private readonly changes = new Set<() => void>()
-  private generation = 0
-
-  /** Subscribe to committed memory changes; callbacks must not throw.
-   * @param listener - nonthrowing scheduling notification.
-   * @returns disposer.
-   */
-  onMemoryChange(listener: () => void): () => void { this.changes.add(listener); return () => { this.changes.delete(listener) } }
-
-  private notify = (): void => {
-    const generation = this.vectors.generation()
-    if (generation === this.generation) return
-    this.generation = generation
-    for (const listener of this.changes) listener()
-  }
-
-  private constructor(private readonly db: DatabaseSync, private readonly excludeInheritedTurns = false) {
-    this.l1 = new L1Store(db, () => this.assertOpen(), this.notify)
-    this.knowledge = new KnowledgeStore(db, this.l1, () => this.assertOpen(), this.notify)
-    this.vectors = new VectorStore(db, this.knowledge, () => this.assertOpen())
-    this.selections = new SelectionStore(db, () => this.assertOpen())
-    this.generation = this.vectors.generation()
-  }
-
-  /**
-   * Read immutable ownership before adopting a Session.
-   * @param sessionId - canonical Session identity.
-   * @returns stored project, or undefined for a Session not yet copied.
-   */
-  getSessionProject(sessionId: SessionId): ProjectId | undefined {
-    this.assertOpen()
-    const row = this.db.prepare('SELECT project FROM sessions WHERE id = ?').get(sessionId)
-    return row === undefined ? undefined : parseProject(row.project)
-  }
-
-  /**
-   * Enumerate owners for startup L1 recovery, including unloaded Sessions.
-   * @returns distinct stored projects in identifier order.
-   */
-  listProjects(): ProjectId[] {
-    this.assertOpen()
-    return this.db.prepare('SELECT DISTINCT project FROM sessions ORDER BY project').all().map(row => parseProject(row.project))
-  }
-
-  /** Aggregate project learning state without decoding all historical task inputs.
-   * @param project - authoritative owner.
-   * @returns generation and counts; retries count as pending, failures remain visible after partial success.
-   */
-  learningStatus(project: ProjectId) {
-    this.assertOpen()
-    const counts = { pending: 0, running: 0, failed: 0, generated: 0 }
-    const rows = this.db.prepare(`SELECT status, count(*) AS count FROM (
-      SELECT status FROM l1_tasks WHERE project = ? UNION ALL SELECT json_extract(body,'$.status') AS status FROM knowledge_tasks WHERE project = ?
-    ) GROUP BY status`).all(project, project)
-    for (const row of rows) {
-      const status = String(row.status)
-      if (status === 'pending' || status === 'retry') counts.pending += Number(row.count)
-      if (status === 'running' || status === 'prepared') counts.running += Number(row.count)
-      if (status === 'failed') counts.failed += Number(row.count)
+  private readonly ready: Promise<void>
+  private readonly exited: Promise<void>
+  private rejectReady!: (error: Error) => void
+  /** @param spec - resolved request queue bounds. */
+  constructor(private readonly spec: Pick<Spec, 'storageQueueCapacity' | 'storageQueueMaxBytes'>) {
+    const source = import.meta.url.endsWith('.ts')
+    const execArgv = source ? ['--import', 'tsx/esm'] : []
+    if (getEnvironmentData('@deepseek-ai/dsh-app-boot/profile-resolution') !== undefined) {
+      execArgv.unshift('--import', import.meta.resolve('@deepseek-ai/dsh-app-boot/worker/profile-resolution-bootstrap'))
     }
-    const generated = this.db.prepare(`SELECT
-      (SELECT count(*) FROM l1_memories WHERE project = ?) +
-      (SELECT count(*) FROM knowledge_versions WHERE project = ?) AS count`).get(project, project)
-    if (generated === undefined) throw new MemoryError('corrupt', 'Memory generation count is unavailable')
-    counts.generated = Number(generated.count)
-    return { generation: this.vectors.generation(), ...counts }
-  }
-
-  /** Page stored source and auxiliary Session metadata within one project.
-   * @param project - owning project.
-   * @param after - exclusive Session id, empty for the first page.
-   * @param limit - positive page size.
-   * @returns headers and committed prefixes in identity order.
-   */
-  listSessions(project: ProjectId, after = '', limit = 100): Array<{ header: SessionHeader; committedTo: SessionLogOffset }> {
-    this.assertOpen()
-    if (!Number.isSafeInteger(limit) || limit < 1) throw new MemoryError('config', 'Session page size must be positive')
-    return this.db.prepare('SELECT header, committed_to FROM sessions WHERE project = ? AND id > ? ORDER BY id LIMIT ?').all(project, after, limit)
-      .map(row => ({ header: parseHeader(row.header), committedTo: this.offset(row.committed_to) }))
-  }
-
-  /** Browse project-owned raw events with a literal substring and a stable composite cursor.
-   * @param project - requesting project.
-   * @param after - exclusive Session/event position, or null for the first page.
-   * @param limit - bounded page size supplied by the browser.
-   * @param query - literal substring in stored event JSON.
-   * @returns source headers and complete events in Session/sequence order.
-   */
-  browseRaw(project: ProjectId, after: { sessionId: SessionId; seq: number } | null, limit: number, query: string): Array<{ header: SessionHeader; event: SessionEvent }> {
-    this.assertOpen()
-    return this.db.prepare(`SELECT s.header,e.seq,e.body FROM events e JOIN sessions s ON s.id = e.session_id
-      WHERE s.project = ? AND (s.id > ? OR (s.id = ? AND e.seq > ?)) AND instr(lower(e.body),lower(?)) > 0
-      ORDER BY s.id,e.seq LIMIT ?`).all(project, after?.sessionId ?? '', after?.sessionId ?? '', after?.seq ?? -1, query, limit)
-      .map(row => {
-        const header = parseHeader(row.header)
-        return { header, event: decodeEvent(row.body, header, Number(row.seq)) }
-      })
-  }
-
-  /**
-   * Open a database without overwriting another database's schema.
-   * @param spec - configuration already resolved by resolveConfig.
-   * @returns ready provider; callers must await close before disposal completes.
-   */
-  static async open(spec: Spec): Promise<SqliteMemory> {
-    const path = await memoryPath(spec.databasePath, spec.dataRoot)
-    await mkdir(dirname(path), { recursive: true, mode: 0o700 })
-    await memoryPath(path, spec.dataRoot)
-    for (const suffix of ['-wal', '-shm', '-journal']) await memoryPath(path + suffix, spec.dataRoot)
-    try {
-      const file = await open(path, 'wx', 0o600)
-      await file.close()
-    } catch (error) {
-      if (!(error instanceof Error && 'code' in error && error.code === 'EEXIST')) throw error
-    }
-    const db = new DatabaseSync(path)
-    try {
-      db.exec(`PRAGMA busy_timeout = ${spec.busyTimeoutMs}`)
-      db.exec('PRAGMA temp_store = MEMORY; PRAGMA foreign_keys = ON')
-      db.exec('BEGIN IMMEDIATE')
-      try {
-        const version = db.prepare('PRAGMA user_version').get()?.user_version
-        const identity = db.prepare('PRAGMA application_id').get()?.application_id
-        if (version === 0 && identity === 0 && db.prepare("SELECT name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'").all().length === 0) {
-          db.exec(`CREATE TABLE sessions (
-            id TEXT PRIMARY KEY, project TEXT NOT NULL, header TEXT NOT NULL,
-            inherited_count INTEGER NOT NULL CHECK(inherited_count >= 0),
-            committed_to INTEGER NOT NULL CHECK(committed_to >= 0)
-          ) STRICT;
-          CREATE TABLE events (
-            session_id TEXT NOT NULL REFERENCES sessions(id), seq INTEGER NOT NULL CHECK(seq >= 0),
-            body TEXT NOT NULL, PRIMARY KEY(session_id, seq)
-          ) STRICT;
-          CREATE INDEX sessions_project ON sessions(project, id);
-          PRAGMA application_id = ${APPLICATION_ID}; PRAGMA user_version = 1`)
-        } else if ((version !== 1 && version !== 2 && version !== 3 && version !== 4 && version !== SCHEMA_VERSION) || identity !== APPLICATION_ID) {
-          throw new MemoryError('schema', 'unrecognized memory database identity or schema version')
-        }
-        // Prepare exact columns before accepting a stamped but malformed database.
-        db.prepare('SELECT id, project, header, inherited_count, committed_to FROM sessions LIMIT 0').all()
-        db.prepare('SELECT session_id, seq, body FROM events LIMIT 0').all()
-        if (version === 0 || version === 1) {
-          db.exec(L1_SCHEMA)
-        }
-        if (version === 0 || version === 1 || version === 2) {
-          db.exec(KNOWLEDGE_SCHEMA)
-        }
-        if (version !== 4 && version !== SCHEMA_VERSION) db.exec(VECTOR_SCHEMA)
-        if (version !== SCHEMA_VERSION) { db.exec(SELECTION_SCHEMA); db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`) }
-        db.prepare('SELECT session_id,project,token,refs,automatic FROM memory_selections LIMIT 0').all()
-        db.prepare('SELECT space,id,revision,digest,vector FROM memory_vectors LIMIT 0').all()
-        db.prepare('SELECT space,status,failure FROM memory_index_state LIMIT 0').all()
-        db.prepare('SELECT generation FROM memory_generation WHERE singleton = 1').get()
-        db.prepare('SELECT session_id, cursor, open_turn, open_from FROM l1_scans LIMIT 0').all()
-        db.prepare('SELECT id, project, session_id, from_seq, to_seq, turn, reason, config, memory_id, expected_revision, status, attempts, calls, next_retry_at, failure, candidate, lease_until, owner FROM l1_tasks LIMIT 0').all()
-        db.prepare('SELECT id, revision, project, operation_id, summary, created_at FROM l1_memories LIMIT 0').all()
-        db.prepare('SELECT id, revision, project, level, operation_id, content_key, knowledge, config, created_at, state FROM knowledge_versions LIMIT 0').all()
-        db.prepare('SELECT id, project, body FROM knowledge_tasks LIMIT 0').all()
-        db.prepare('SELECT id, request, result FROM knowledge_operations LIMIT 0').all()
-        db.prepare('SELECT id, receipt_id, request FROM knowledge_share_actions LIMIT 0').all()
-        db.prepare('SELECT id, revision, action_id FROM knowledge_grants LIMIT 0').all()
-        db.exec('COMMIT')
-      } catch (error) {
-        db.exec('ROLLBACK')
-        throw error
+    this.worker = new Worker(new URL(source ? './storage-worker.ts' : './storage-worker.mjs', import.meta.url), {
+      name: 'memory-storage', execArgv,
+    })
+    let resolveReady!: () => void
+    let rejectReady!: (error: Error) => void
+    this.ready = new Promise((resolve, reject) => { resolveReady = resolve; rejectReady = reject })
+    this.rejectReady = rejectReady
+    this.exited = new Promise(resolve => this.worker.once('exit', () => resolve()))
+    this.worker.on('message', (value: unknown) => {
+      const parsed = storageResponse.safeParse(value)
+      if (!parsed.success) { this.fail(new MemoryError('unknown-outcome', 'Invalid storage response; reopen and inspect committed operations')); return }
+      const response = parsed.data
+      if (response.kind === 'ready') { resolveReady(); return }
+      if (response.kind === 'change') { for (const listener of this.listeners.get(response.database) ?? []) listener(); return }
+      const pending = this.pending.get(response.id)
+      if (pending === undefined) return
+      this.pending.delete(response.id); this.bytes -= pending.bytes
+      if (response.kind === 'result') pending.resolve(response.value)
+      else {
+        const error = new MemoryError(response.failure.code, response.failure.message)
+        if (response.failure.errcode !== undefined) Object.assign(error, { errcode: response.failure.errcode })
+        pending.reject(error)
       }
-      db.exec(`PRAGMA journal_mode = ${spec.journalMode}; PRAGMA synchronous = FULL`)
-      return new SqliteMemory(db, spec.storageMode === 'workspace')
-    } catch (error) {
-      db.close()
-      throw error
-    }
+    })
+    this.worker.on('error', error => { rejectReady(error); this.fail(new MemoryError('unknown-outcome', 'Storage worker failed; reopen and inspect committed operations', error)) })
+    this.worker.on('exit', code => {
+      if (!this.closed || this.pending.size > 0) {
+        const error = new MemoryError('unknown-outcome', `Storage worker exited (${code}); reopen and inspect committed operations`)
+        rejectReady(error); this.fail(error)
+      }
+    })
   }
-
-  /**
-   * Commit the batch and prefix together, or roll back all changes.
-   * @param request - ordered batch with immutable source identity.
-   * @returns committed counts and prefix.
-   */
-  async appendRaw(request: AppendRawRequest): Promise<AppendRawResult> {
-    this.assertOpen()
-    request.signal?.throwIfAborted()
-    const header = materializeCreateHeader(request.header)
-    if (header.version !== SESSION_FORMAT_VERSION) throw new MemoryError('schema', 'unsupported source Session format')
-    const events = materializeAppendBatch(request.events)
-    const start = events[0]?.seq
-    if (start !== undefined) assertContiguous(header.id, events, start)
-    this.db.exec('BEGIN IMMEDIATE')
-    try {
-      let row = this.db.prepare('SELECT * FROM sessions WHERE id = ?').get(header.id)
-      if (row === undefined) {
-        this.db.prepare('INSERT INTO sessions VALUES (?, ?, ?, ?, 0)').run(header.id, request.projectId, JSON.stringify(header), request.inheritedEventCount)
-        row = this.db.prepare('SELECT * FROM sessions WHERE id = ?').get(header.id)!
-      }
-      if (row.project !== request.projectId || !sameHeader(parseHeader(row.header), header)
-        || row.inherited_count !== request.inheritedEventCount) {
-        throw new MemoryError('conflict', `Session ${header.id} already has different project or source metadata`)
-      }
-      let committedTo = this.offset(row.committed_to)
-      if (start !== undefined && start > committedTo) throw new MemoryError('gap', `Session ${header.id} requires seq ${committedTo}`)
-      let inserted = 0
-      let duplicates = 0
-      for (const event of events) {
-        const body = JSON.stringify(event)
-        if (event.seq < committedTo) {
-          const old = this.db.prepare('SELECT body FROM events WHERE session_id = ? AND seq = ?').get(header.id, event.seq)
-          if (old === undefined) throw new MemoryError('corrupt', `Session ${header.id} is missing committed seq ${event.seq}`)
-          if (!isDeepStrictEqual(decodeEvent(old.body, header, event.seq), event)) throw new MemoryError('conflict', `Session ${header.id} conflicts at seq ${event.seq}`)
-          duplicates++
-        } else {
-          this.db.prepare('INSERT INTO events VALUES (?, ?, ?)').run(header.id, event.seq, body)
-          committedTo = SessionLogOffset(event.seq + 1)
-          inserted++
-        }
-      }
-      this.db.prepare('UPDATE sessions SET committed_to = ? WHERE id = ?').run(committedTo, header.id)
-      request.signal?.throwIfAborted()
-      this.db.exec('COMMIT')
-      return { range: { from: SessionLogOffset(start ?? committedTo), to: SessionLogOffset(start === undefined ? committedTo : start + events.length) }, inserted, duplicates, committedTo }
-    } catch (error) {
-      this.db.exec('ROLLBACK')
-      throw error
-    }
-  }
-
-  /**
-   * Read one transactionally consistent page; corrupt rows reject.
-   * @param request - requested project, interval and page.
-   * @returns ordered data and interval-wide missing ranges.
-   */
-  async readRaw(request: ReadRawRequest): Promise<ReadRawResult> {
-    this.assertOpen()
-    request.signal?.throwIfAborted()
-    const cursor = request.cursor ?? request.from
-    if (![request.from, request.to, cursor].every(n => Number.isSafeInteger(n) && n >= 0)
-      || request.to < request.from || cursor < request.from || cursor > request.to
-      || !Number.isSafeInteger(request.limit) || request.limit < 1) throw new MemoryError('config', 'invalid raw read interval or page')
-    this.db.exec('BEGIN')
-    try {
-      const row = this.db.prepare('SELECT * FROM sessions WHERE id = ? AND project = ?').get(request.sessionId, request.projectId)
-      const committedTo = row === undefined ? SessionLogOffset(0) : this.offset(row.committed_to)
-      const end = Math.min(request.to, committedTo, cursor + request.limit)
-      const rows = row === undefined ? [] : this.db.prepare('SELECT seq, body FROM events WHERE session_id = ? AND seq >= ? AND seq < ? ORDER BY seq').all(request.sessionId, cursor, end)
-      if (rows.length !== Math.max(0, end - cursor)) throw new MemoryError('corrupt', `Session ${request.sessionId} has a gap in its committed prefix`)
-      const header = row === undefined ? undefined : parseHeader(row.header)
-      const events = rows.map((event, i) => {
-        if (event.seq !== cursor + i || header === undefined || header.id !== request.sessionId) throw new MemoryError('corrupt', 'stored Session identity or sequence mismatch')
-        return decodeEvent(event.body, header, cursor + i)
-      })
-      this.db.exec('COMMIT')
-      const missingFrom = Math.max(request.from, committedTo)
-      return {
-        found: row !== undefined, events, committedTo,
-        nextCursor: end > cursor && end < Math.min(request.to, committedTo) ? SessionLogOffset(end) : null,
-        missing: missingFrom < request.to ? [{ from: SessionLogOffset(missingFrom), to: request.to }] : [],
-      }
-    } catch (error) {
-      this.db.exec('ROLLBACK')
-      throw error
-    }
-  }
-
-  /**
-   * Close the connection once; no operations are accepted afterwards.
-   * @returns resolution after SQLite releases all file handles.
-   */
-  async close(): Promise<void> {
-    if (this.closed) return
+  private fail(error: Error): void {
     this.closed = true
-    this.db.close()
+    this.rejectReady(error)
+    for (const item of this.pending.values()) item.reject(error)
+    this.pending.clear(); this.bytes = 0
+    void this.worker.terminate().catch(() => undefined)
   }
-
-  /**
-   * Discover ended turns exclusively from complete committed L0 pages.
-   * @param project - owning project; other projects are not scanned.
-   * @param config - immutable extraction settings saved on every new task.
-   * @param pageSize - positive maximum decoded events per scan transaction.
-   * @returns number of newly created extraction tasks.
+  /** @param spec - validated database configuration. @returns initialized worker-local identity. */
+  async open(spec: Spec): Promise<number> {
+    await this.ready
+    const id = ++this.databaseSerial
+    await this.call(id, 'open', 'open', [spec])
+    return id
+  }
+  /** @param database - worker-local owner. @param scope - public storage capability.
+   * @param method - operation name. @param args - structured-clone inputs.
+   * @returns settled result; worker loss reports an unknown commit outcome.
    */
-  scanTurns(project: ProjectId, config: L1Spec, pageSize: number): number {
-    this.assertOpen()
-    if (!Number.isSafeInteger(pageSize) || pageSize < 1) throw new MemoryError('config', 'L1 scan page size must be positive')
-    let created = 0
-    for (const row of this.db.prepare('SELECT id, header, committed_to FROM sessions WHERE project = ? ORDER BY id').all(project)) {
-      const header = parseHeader(row.header)
-      let position = this.l1.cursor(project, header.id)
-      const end = this.offset(row.committed_to)
-      if (position > end) throw new MemoryError('corrupt', 'L1 scan checkpoint exceeds L0 prefix')
-      while (position < end) {
-        const stop = Math.min(end, position + pageSize)
-        const rows = this.db.prepare('SELECT body FROM events WHERE session_id = ? AND seq >= ? AND seq < ? ORDER BY seq').all(header.id, position, stop)
-        if (rows.length !== stop - position) throw new MemoryError('gap', 'L1 source has missing committed events')
-        const events = rows.map((event, i) => decodeEvent(event.body, header, position + i))
-        created += this.l1.scanPage(project, header.id, config, events, this.excludeInheritedTurns)
-        position = stop
+  async call<T>(database: number, scope: keyof typeof storageMethods | 'open', method: string, args: readonly unknown[]): Promise<T> {
+    await this.ready
+    if (this.closed) throw new MemoryError('closed', 'Storage worker is closed')
+    const copied = args.map(value => {
+      if (typeof value === 'object' && value !== null && 'signal' in value) {
+        const { signal, ...rest } = value
+        if (signal instanceof AbortSignal) signal.throwIfAborted()
+        return rest
+      }
+      return value
+    })
+    const request = { id: ++this.serial, database, scope, method, args: copied }
+    const bytes = serialize(request).byteLength
+    // One oversized event may occupy an otherwise empty channel without truncation.
+    // Closing control messages follow accepted writes even when the data queue is full.
+    const closing = scope === 'database' && method === 'close'
+    if (!closing && (this.pending.size >= this.spec.storageQueueCapacity || (this.pending.size > 0 && this.bytes + bytes > this.spec.storageQueueMaxBytes))) throw new MemoryError('backpressure', 'Storage queue is full; source logs remain available for retry')
+    const result = new Promise<unknown>((resolve, reject) => {
+      this.pending.set(request.id, { resolve, reject, bytes }); this.bytes += bytes
+      try { this.worker.postMessage(request) } catch (error) {
+        this.pending.delete(request.id); this.bytes -= bytes
+        reject(new MemoryError('integration', 'Storage request could not be sent; no operation was dispatched', error))
+      }
+    })
+    return await result as T
+  }
+  /** @param database - initialized owner. @param listener - nonthrowing commit notification. @returns disposer. */
+  onChange(database: number, listener: () => void): () => void {
+    let set = this.listeners.get(database)
+    if (set === undefined) { set = new Set(); this.listeners.set(database, set) }
+    set.add(listener)
+    return () => { set.delete(listener) }
+  }
+  /** Await worker exit after the owning databases and dependent operations close. */
+  async close(): Promise<void> {
+    if (!this.closed) { this.closed = true; await this.worker.terminate() }
+    await this.exited
+  }
+}
+
+/** Public async provider; all capabilities share one worker and database lifetime. */
+export class SqliteMemory {
+  readonly l1: AsyncStore<L1Store>
+  readonly knowledge: AsyncStore<KnowledgeStore>
+  readonly vectors: Omit<AsyncStore<VectorStore>, 'documents'> & { documents(project: ProjectId, size: number): AsyncIterable<VectorDocument> }
+  readonly selections: AsyncStore<SelectionStore>
+  readonly maintenance: AsyncStore<MaintenanceStore>
+  private closed = false
+  private closing: Promise<void> | undefined
+  private constructor(private readonly worker: StorageWorker, private readonly id: number, private readonly spec: Spec, private readonly ownsWorker: boolean) {
+    this.l1 = this.store<L1Store>('l1'); this.knowledge = this.store<KnowledgeStore>('knowledge')
+    this.selections = this.store<SelectionStore>('selections'); this.maintenance = this.store<MaintenanceStore>('maintenance')
+    const vectors = this.store<Omit<VectorStore, 'documents'>>('vectors')
+    this.vectors = Object.assign(vectors, { documents: (project: ProjectId, size: number) => this.documents(project, size) })
+  }
+  private store<S>(scope: keyof typeof storageMethods): AsyncStore<S> {
+    return new Proxy({} as AsyncStore<S>, { get: (target, name) => {
+      if (Reflect.has(target, name)) return Reflect.get(target, name)
+      if (typeof name !== 'string' || name === 'then') return undefined
+      return (...args: unknown[]) => {
+        if (scope === 'knowledge' && ['approveShare', 'revokeShare'].includes(name)) {
+          const [action, verify] = args as [ShareAction, (action: ShareAction) => boolean]
+          args[1] = verify(action)
+        }
+        return this.call(scope, name, args)
+      }
+    } })
+  }
+  private call<T>(scope: keyof typeof storageMethods, method: string, args: readonly unknown[]): Promise<T> {
+    if (this.closed) return Promise.reject(new MemoryError('closed', 'memory database is closed'))
+    return this.worker.call<T>(this.id, scope, method, args)
+  }
+  private async *documents(project: ProjectId, size: number): AsyncIterable<VectorDocument> {
+    for (const level of ['L1', 'L2', 'L3'] as const) {
+      let after = ''
+      for (;;) {
+        const page = await this.vectors.documentPage(project, level, after, size)
+        for (const document of page) yield document
+        if (page.length < size) break
+        after = page.at(-1)!.memory.id
       }
     }
-    return created
   }
-
-  private assertOpen(): void {
-    if (this.closed) throw new MemoryError('closed', 'memory database is closed')
+  /** @param spec - resolved paths and limits. @param worker - optional shared Workspace owner. @returns ready provider. */
+  static async open(spec: Spec, worker?: StorageWorker): Promise<SqliteMemory> {
+    const owner = worker ?? new StorageWorker(spec)
+    try { return new SqliteMemory(owner, await owner.open(spec), spec, worker === undefined) }
+    catch (error) { if (worker === undefined) await owner.close(); throw error }
   }
-
-  private offset(value: unknown): SessionLogOffset {
-    if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) throw new MemoryError('corrupt', 'invalid committed position')
-    return SessionLogOffset(value)
+  /** @param listener - nonthrowing commit notification. @returns disposer. */
+  onMemoryChange(listener: () => void): () => void { return this.worker.onChange(this.id, listener) }
+  /** @param args - source identity. @returns stored owner. */
+  getSessionProject(...args: Parameters<Backend['getSessionProject']>) { return this.call<ReturnType<Backend['getSessionProject']>>('database', 'getSessionProject', args) }
+  /** @returns stored project identities. */
+  listProjects() { return this.call<ReturnType<Backend['listProjects']>>('database', 'listProjects', []) }
+  /** @param args - owner. @returns persisted learning counters. */
+  learningStatus(...args: Parameters<Backend['learningStatus']>) { return this.call<ReturnType<Backend['learningStatus']>>('database', 'learningStatus', args) }
+  /** @param args - owner and identity page. @returns source metadata page. */
+  listSessions(...args: Parameters<Backend['listSessions']>) { return this.call<ReturnType<Backend['listSessions']>>('database', 'listSessions', args) }
+  /** @param args - project, cursor, size and literal query. @returns raw event page. */
+  browseRaw(...args: Parameters<Backend['browseRaw']>) { return this.call<ReturnType<Backend['browseRaw']>>('database', 'browseRaw', args) }
+  /** @param request - ordered source events. @returns durable prefix after COMMIT. */
+  appendRaw(request: AppendRawRequest) { return this.call<Awaited<ReturnType<Backend['appendRaw']>>>('database', 'appendRaw', [request]) }
+  /** @param request - exact interval. @returns byte-bounded page and missing ranges. */
+  readRaw(request: ReadRawRequest) { return this.call<Awaited<ReturnType<Backend['readRaw']>>>('database', 'readRaw', [{ ...request, maxBytes: request.maxBytes ?? this.spec.pageMaxBytes }]) }
+  /** @param args - project, frozen extraction settings and page size. @returns newly enqueued turns. */
+  async scanTurns(...args: Parameters<Backend['scanTurns']>): Promise<number> {
+    let created = 0
+    for (;;) {
+      const page = await this.call<{ created: number; pending: boolean }>('database', 'scanTurnsPage', args)
+      created += page.created
+      if (!page.pending) return created
+    }
+  }
+  /** @param args - owner, extraction settings and page bound. @returns one committed scan page. */
+  scanTurnsPage(...args: Parameters<Backend['scanTurnsPage']>) { return this.call<Awaited<ReturnType<Backend['scanTurnsPage']>>>('database', 'scanTurnsPage', args) }
+  /** @param spec - text limits. @param request - authorized query. @returns transient FTS result. */
+  textQuery(spec: TextSearchSpec, request: RetrievalRequest): Promise<{ result: RetrievalResult; matched: boolean; fingerprint: string }> { return this.call('database', 'textQuery', [spec, request]) }
+  /** @param spec - corpus scan limits. @param request - owner and filters. @returns exact authorized-version digest. */
+  textSnapshot(spec: TextSearchSpec, request: RetrievalRequest): Promise<string> { return this.call('database', 'textSnapshot', [spec, request]) }
+  /** @param spec - text limits. @param project - owner. @returns candidate completeness. */
+  textStatus(spec: TextSearchSpec, project: ProjectId): Promise<{ method: 'bm25'; candidates: number; truncated: boolean; ready: boolean }> { return this.call('database', 'textStatus', [spec, { projectId: project }]) }
+  /** Drain dependents first; shared workers remain available to other databases. */
+  async close(): Promise<void> {
+    if (this.closing !== undefined) return this.closing
+    this.closed = true
+    this.closing = (async () => {
+      try { await this.worker.call(this.id, 'database', 'close', []) }
+      finally { if (this.ownsWorker) await this.worker.close() }
+    })()
+    return this.closing
   }
 }

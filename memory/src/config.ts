@@ -41,6 +41,17 @@ export interface Config {
   projectId: string
   databasePath: string
   queueCapacity?: number
+  /** Maximum detached live-event bytes; overflow recovers from the canonical log. */
+  queueMaxBytes?: number
+  /** Target raw page bytes; one oversized event is returned alone. */
+  pageMaxBytes?: number
+  /** Maximum serialized trace bytes per page. */
+  tracePageMaxBytes?: number
+  /** Storage-worker queued data request count and bytes, including the active request; closing control messages are excluded. */
+  storageQueueCapacity?: number
+  storageQueueMaxBytes?: number
+  /** Unset maxAgeDays disables automatic deletion. */
+  retention?: { maxAgeDays?: number; intervalMs?: number }
   learningConcurrency?: number
   learningQueueCapacity?: number
   batchSize?: number
@@ -66,6 +77,12 @@ export interface Spec {
   readonly projectId: ProjectId
   readonly databasePath: string
   readonly queueCapacity: number
+  readonly queueMaxBytes: number
+  readonly pageMaxBytes: number
+  readonly tracePageMaxBytes: number
+  readonly storageQueueCapacity: number
+  readonly storageQueueMaxBytes: number
+  readonly retention: Readonly<{ maxAgeDays?: number; intervalMs: number }>
   readonly learningConcurrency: number
   readonly learningQueueCapacity: number
   readonly batchSize: number
@@ -127,6 +144,11 @@ export async function resolveConfig(input: Config): Promise<Spec> {
   }
   const numbers = {
     queueCapacity: input.queueCapacity ?? 1024,
+    queueMaxBytes: input.queueMaxBytes ?? 8 * 1024 * 1024,
+    pageMaxBytes: input.pageMaxBytes ?? 256 * 1024,
+    tracePageMaxBytes: input.tracePageMaxBytes ?? 64 * 1024,
+    storageQueueCapacity: input.storageQueueCapacity ?? 128,
+    storageQueueMaxBytes: input.storageQueueMaxBytes ?? 8 * 1024 * 1024,
     learningConcurrency: input.learningConcurrency ?? 2,
     learningQueueCapacity: input.learningQueueCapacity ?? 128,
     batchSize: input.batchSize ?? 128,
@@ -139,7 +161,13 @@ export async function resolveConfig(input: Config): Promise<Spec> {
     }
   }
   const journalMode = input.journalMode ?? 'wal'
+  if (numbers.tracePageMaxBytes < 4) throw new MemoryError('config', 'tracePageMaxBytes must contain one Unicode code point')
   if (!['wal', 'delete', 'truncate', 'persist'].includes(journalMode)) throw new MemoryError('config', 'invalid journalMode')
+  const retention = { ...input.retention, intervalMs: input.retention?.intervalMs ?? 86400000 }
+  for (const [name, value] of Object.entries(retention)) {
+    if (!Number.isSafeInteger(value) || value < 1 || value > 2147483647) throw new MemoryError('config', `retention ${name} must be a positive bounded integer`)
+  }
+  if (retention.maxAgeDays !== undefined && retention.maxAgeDays > Math.floor(Number.MAX_SAFE_INTEGER / 86400000)) throw new MemoryError('config', 'retention maxAgeDays exceeds the safe timestamp range')
   return Object.freeze({
     storageMode: input.storageMode ?? 'central',
     dataRoot: resolve(input.dataRoot ?? MEMORY_ROOT),
@@ -154,6 +182,7 @@ export async function resolveConfig(input: Config): Promise<Spec> {
     ...(input.l1 === undefined ? {} : { l1: resolveL1Config(input.l1) }),
     ...(input.knowledge === undefined ? {} : { knowledge: resolveKnowledgeConfig(input.knowledge) }),
     projectId: input.projectId as ProjectId,
+    retention: Object.freeze(retention),
     databasePath: await memoryPath(input.databasePath, input.dataRoot),
     ...numbers,
     journalMode,

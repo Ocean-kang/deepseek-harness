@@ -11,6 +11,7 @@ interface Capture {
   projectId?: ProjectId
   readonly session: Session
   readonly buffered: Map<number, SessionEvent>
+  readonly bytes: Map<number, number>
   target: number
   dirty: boolean
   retired: boolean
@@ -25,6 +26,7 @@ export class RawCollector {
   private tail: Promise<void> = Promise.resolve()
   private scheduled = false
   private bufferedCount = 0
+  private bufferedBytes = 0
   private closing = false
   private closePromise: Promise<void> | undefined
 
@@ -51,7 +53,7 @@ export class RawCollector {
    */
   adopt(session: Session): void {
     if (this.closing || this.adopted.has(session)) return
-    const state: Capture = { session, buffered: new Map(), target: session.seq, dirty: true, retired: false, failure: undefined, backpressure: false }
+    const state: Capture = { session, buffered: new Map(), bytes: new Map(), target: session.seq, dirty: true, retired: false, failure: undefined, backpressure: false }
     this.adopted.set(session, state)
     this.states.add(state)
     this.schedule()
@@ -69,10 +71,13 @@ export class RawCollector {
     if (state.retired) return
     state.target = Math.max(state.target, event.seq + 1)
     if (state.failure !== undefined) return
-    if (this.bufferedCount < this.spec.queueCapacity) {
+    const bytes = this.bufferedCount < this.spec.queueCapacity ? Buffer.byteLength(JSON.stringify(event)) : 0
+    if (this.bufferedCount < this.spec.queueCapacity && this.bufferedBytes + bytes <= this.spec.queueMaxBytes) {
       if (!state.buffered.has(event.seq)) {
         state.buffered.set(event.seq, materializeAppendBatch([event])[0]!)
         this.bufferedCount++
+        state.bytes.set(event.seq, bytes)
+        this.bufferedBytes += bytes
       }
     } else if (!state.backpressure) {
       state.backpressure = true
@@ -192,10 +197,14 @@ export class RawCollector {
     try {
       while (position < target) {
         const batch: SessionEvent[] = []
+        let batchBytes = 0
         for (let seq = position; seq < Math.min(target, position + this.spec.batchSize); seq++) {
           const event = state.buffered.get(seq)
           if (event === undefined) break
+          const bytes = state.bytes.get(seq)!
+          if (batch.length > 0 && batchBytes + bytes > this.spec.pageMaxBytes) break
           batch.push(event)
+          batchBytes += bytes
         }
         if (batch.length === 0) {
           if (handle === undefined) {
@@ -208,12 +217,20 @@ export class RawCollector {
               throw new MemoryError('source', `Session ${state.session.id}: canonical log unavailable`, error)
             }
           }
-          const count = Math.min(this.spec.pageSize, this.spec.batchSize, target - position)
-          const page = await handle.read(position, count)
-          if (page.events.length === 0 || page.events.length > count || page.events[0]?.seq !== Number(position)) {
-            throw new MemoryError('source', `Session ${state.session.id}: source missing range [${position}, ${target})`)
+          // Source reads retain one event at a time; append batches also obey the byte budget.
+          while (position + batch.length < target && batch.length < this.spec.batchSize) {
+            const seq = position + batch.length
+            const page = await handle.read(seq, 1)
+            if (page.events.length !== 1 || page.events[0]?.seq !== seq) {
+              throw new MemoryError('source', `Session ${state.session.id}: source missing range [${seq}, ${target})`)
+            }
+            const event = page.events[0]
+            const bytes = Buffer.byteLength(JSON.stringify(event))
+            if (batch.length > 0 && batchBytes + bytes > this.spec.pageMaxBytes) break
+            batch.push(event)
+            batchBytes += bytes
+            if (batchBytes >= this.spec.pageMaxBytes) break
           }
-          batch.push(...page.events)
           // A feed value overlapping a recovery page must match that page.
           for (const event of batch) {
             const captured = state.buffered.get(event.seq)
@@ -237,12 +254,16 @@ export class RawCollector {
       if (seq < position) {
         state.buffered.delete(seq)
         this.bufferedCount--
+        this.bufferedBytes -= state.bytes.get(seq)!
+        state.bytes.delete(seq)
       }
     }
   }
 
   private release(state: Capture): void {
     this.bufferedCount -= state.buffered.size
+    for (const bytes of state.bytes.values()) this.bufferedBytes -= bytes
+    state.bytes.clear()
     state.buffered.clear()
     this.states.delete(state)
   }

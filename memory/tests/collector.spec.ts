@@ -1,11 +1,14 @@
 /** Deterministic capture/recovery races with real transactions and controlled source reads. */
 import { afterEach, expect, it, vi } from 'vitest'
+import { writeFile } from 'node:fs/promises'
 import { Session, SessionId, SessionLogOffset } from '@deepseek-ai/dsh-session'
+import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { SessionHandle, SessionPersistence } from '@deepseek-ai/dsh-session-persistence'
 import { RawCollector } from '../src/collector.ts'
 import type { RawMemory } from '../src/types.ts'
 import type { MemoryError } from '../src/types.ts'
 import { fixture } from './helpers.ts'
+import { memoryPath } from '../src/config.ts'
 
 const collectors = new Set<RawCollector>()
 const roots: Array<Awaited<ReturnType<typeof fixture>>> = []
@@ -93,6 +96,58 @@ it('recovers bounded-queue overflow while history recovery is paused', async () 
   }
   await collector.flush(item.session)
   expect((await item.read()).events).toEqual(item.session.snapshotEvents())
+})
+
+it('caps detached capture bytes at the configured budget across a tenfold event increase and recovers every event', async () => {
+  const metrics = []
+  for (const count of [100, 1000]) {
+    const item = await setup()
+    item.session.append('turn/start', { turn: 1 })
+    const entered = Promise.withResolvers<void>()
+    const release = Promise.withResolvers<void>()
+    item.source.flush = async () => { entered.resolve(); await release.promise }
+    const budget = 8192
+    let transactions = 0
+    const memory: Pick<RawMemory, 'appendRaw'> = { async appendRaw(request) {
+      transactions++
+      expect(request.events.length).toBeLessThanOrEqual(128)
+      expect(request.events.reduce((bytes, event) => bytes + Buffer.byteLength(JSON.stringify(event)), 0)).toBeLessThanOrEqual(256 * 1024)
+      return item.provider.appendRaw(request)
+    } }
+    const collector = new RawCollector(memory, item.source,
+      { ...item.spec, queueCapacity: 2000, queueMaxBytes: budget, batchSize: 128, pageMaxBytes: 256 * 1024 }, item.report)
+    collectors.add(collector)
+    collector.adopt(item.session)
+    await entered.promise
+    let peak = 0
+    const started = performance.now()
+    try {
+      for (let index = 0; index < count; index++) {
+        collector.capture(item.session, item.session.append('user/message', createUserMessage({
+          source: { kind: 'user' }, content: [{ type: 'text', text: 'x'.repeat(1024) }],
+        }), { surfaceOp: 'append' }))
+        const retained: unknown = Object.getOwnPropertyDescriptor(collector, 'bufferedBytes')?.value
+        if (typeof retained !== 'number') throw new Error('Capture byte accounting is unavailable')
+        expect(retained).toBeLessThanOrEqual(budget)
+        peak = Math.max(peak, retained)
+      }
+    } finally { release.resolve() }
+    await collector.flush(item.session)
+    let cursor = SessionLogOffset(0)
+    do {
+      const recorded = await item.provider.readRaw({ projectId: item.spec.projectId, sessionId: item.session.id,
+        from: SessionLogOffset(0), to: item.session.seq, cursor, limit: 100, maxBytes: 4096 })
+      const next = recorded.nextCursor ?? item.session.seq
+      expect(recorded.events).toEqual(item.session.snapshotEvents(cursor, next))
+      cursor = next
+    } while (cursor < item.session.seq)
+    metrics.push({ events: count, peakCaptureBytes: peak, budget, transactions, elapsedMs: Math.round(performance.now() - started) })
+  }
+  expect(metrics[1]!.peakCaptureBytes).toBe(metrics[0]!.peakCaptureBytes)
+  console.info('Capture cache metrics', JSON.stringify(metrics))
+  if (process.env.DSH_MEMORY_CAPTURE_METRICS !== undefined) {
+    await writeFile(await memoryPath(process.env.DSH_MEMORY_CAPTURE_METRICS), JSON.stringify(metrics, null, 2) + '\n')
+  }
 })
 
 it('keeps the committed prefix on failure and resumes on an explicit flush', async () => {

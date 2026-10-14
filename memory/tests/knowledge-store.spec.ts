@@ -55,14 +55,14 @@ it('pauses derived recall and sharing after source invalidation while retaining 
   store.approveShare(action(item, l3, 'derived-grant'), () => true, 10)
   const browser = new MemoryBrowser(item.provider, resolveBrowserConfig({}))
   const document = vectorDocument(store.getMemory(item.project, l3)!)
-  browser.select(item.project, header().id, [l3], true)
+  await browser.select(item.project, header().id, [l3], true)
   const queued = store.enqueue(item.project, 'L3', [l2], { ...item.config, model: 'queued-before-invalidation' })
   store.invalidateMemory(item.project, l2, 'Constraint withdrawn', 'invalidate-parent' as OperationId)
   expect(store.sourcesCurrent(item.project, l3)).toBe(false)
   expect(store.listCandidates(item.project, 'L3')).toEqual([])
   expect(store.getMemory(other, l3)).toBeNull()
   expect(item.provider.vectors.current(item.project, document)).toBe(false)
-  expect(() => browser.manual(item.project, [l3])).toThrow(/eligible/)
+  await expect(browser.manual(item.project, [l3])).rejects.toThrow(/eligible/)
   expect(() => store.approveShare(action(item, l3, 'stale-derived-grant'), () => true, 12)).toThrow(/supported/)
   expect(store.claim(item.project, queued, 'worker', 20)).toBeNull()
   expect(store.getTask(item.project, queued)).toMatchObject({ status: 'failed', failure: 'SOURCE_CHANGED', calls: 0 })
@@ -184,12 +184,12 @@ it('migrates populated schema 2 while retaining exact L0 and L1 records', async 
   const raw = await item.provider.readRaw({ projectId: item.project, sessionId: header().id, from: SessionLogOffset(0), to: SessionLogOffset(3), limit: 10 })
   await item.provider.close()
   const db = new DatabaseSync(item.spec.databasePath)
-  try { db.exec('DROP TRIGGER memory_l1_insert; DROP TRIGGER memory_knowledge_insert; DROP TRIGGER memory_knowledge_update; DROP TRIGGER memory_grant_insert; DROP TRIGGER memory_grant_delete; DROP INDEX memory_knowledge_candidates; DROP TABLE memory_selections; DROP TABLE memory_vectors; DROP TABLE memory_index_state; DROP TABLE memory_generation; DROP TABLE knowledge_grants; DROP TABLE knowledge_share_actions; DROP TABLE knowledge_operations; DROP TABLE knowledge_tasks; DROP TABLE knowledge_versions; PRAGMA user_version = 2') } finally { db.close() }
+  try { db.exec('DROP TRIGGER memory_l1_insert; DROP TRIGGER memory_knowledge_insert; DROP TRIGGER memory_knowledge_update; DROP TRIGGER memory_grant_insert; DROP TRIGGER memory_grant_delete; DROP INDEX memory_knowledge_candidates; DROP TABLE memory_imports; DROP TABLE memory_admissions; DROP TABLE memory_cleanup_runs; DROP TABLE l1_trace_chunks; DROP TABLE l1_summary_projections; DROP TABLE l1_candidate_projections; DROP TABLE memory_selections; DROP TABLE memory_vectors; DROP TABLE memory_index_state; DROP TABLE memory_generation; DROP TABLE knowledge_grants; DROP TABLE knowledge_share_actions; DROP TABLE knowledge_operations; DROP TABLE knowledge_tasks; DROP TABLE knowledge_versions; PRAGMA user_version = 2') } finally { db.close() }
   const provider = await item.open()
   expect(provider.l1.getMemory(item.project, item.source)).toEqual(item.source)
   expect(await provider.readRaw({ projectId: item.project, sessionId: header().id, from: SessionLogOffset(0), to: SessionLogOffset(3), limit: 10 })).toEqual(raw)
   const check = new DatabaseSync(item.spec.databasePath)
-  try { expect(check.prepare('PRAGMA user_version').get()?.user_version).toBe(5) } finally { check.close() }
+  try { expect(check.prepare('PRAGMA user_version').get()?.user_version).toBe(6) } finally { check.close() }
 })
 
 it('rolls back schema 3 migration failures without changing schema 2 data', async () => {
@@ -197,7 +197,7 @@ it('rolls back schema 3 migration failures without changing schema 2 data', asyn
   await item.provider.close()
   const db = new DatabaseSync(item.spec.databasePath)
   try {
-    db.exec('DROP TRIGGER memory_l1_insert; DROP TRIGGER memory_knowledge_insert; DROP TRIGGER memory_knowledge_update; DROP TRIGGER memory_grant_insert; DROP TRIGGER memory_grant_delete; DROP INDEX memory_knowledge_candidates; DROP TABLE memory_selections; DROP TABLE memory_vectors; DROP TABLE memory_index_state; DROP TABLE memory_generation; DROP TABLE knowledge_grants; DROP TABLE knowledge_share_actions; DROP TABLE knowledge_operations; DROP TABLE knowledge_tasks; DROP TABLE knowledge_versions; CREATE TABLE knowledge_tasks (wrong TEXT); PRAGMA user_version = 2')
+    db.exec('DROP TRIGGER memory_l1_insert; DROP TRIGGER memory_knowledge_insert; DROP TRIGGER memory_knowledge_update; DROP TRIGGER memory_grant_insert; DROP TRIGGER memory_grant_delete; DROP INDEX memory_knowledge_candidates; DROP TABLE memory_imports; DROP TABLE memory_admissions; DROP TABLE memory_cleanup_runs; DROP TABLE l1_trace_chunks; DROP TABLE l1_summary_projections; DROP TABLE l1_candidate_projections; DROP TABLE memory_selections; DROP TABLE memory_vectors; DROP TABLE memory_index_state; DROP TABLE memory_generation; DROP TABLE knowledge_grants; DROP TABLE knowledge_share_actions; DROP TABLE knowledge_operations; DROP TABLE knowledge_tasks; DROP TABLE knowledge_versions; CREATE TABLE knowledge_tasks (wrong TEXT); PRAGMA user_version = 2')
     await expect(item.open()).rejects.toThrow()
     expect(db.prepare('PRAGMA user_version').get()?.user_version).toBe(2)
     expect(db.prepare('SELECT COUNT(*) AS n FROM l1_memories').get()?.n).toBe(1)

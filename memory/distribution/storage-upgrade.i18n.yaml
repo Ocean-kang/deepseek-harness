@@ -1,0 +1,16 @@
+# Bilingual-pair consistency record for storage-upgrade.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
+#   node --import tsx/esm scripts/check-docs.mjs --write-pairing
+/:
+  en: 1e1da11343673e3e
+  zh: 9a454f929f176993
+/asynchronous-memory-storage-upgrade:
+  en: adb883d671a6c4d7
+  zh: 9eeb6f88e5171f94
+/asynchronous-memory-storage-upgrade/change:
+  en: bc1c239351581a0c
+  zh: 341768f66358ea85
+/asynchronous-memory-storage-upgrade/migration:
+  en: efc89766466d80dc
+  zh: c9f4e685005d0a1e

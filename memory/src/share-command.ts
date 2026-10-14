@@ -6,7 +6,7 @@ import type { SessionId } from '@deepseek-ai/dsh-session'
 import type { MemoryRef, OperationId } from './l1-types.ts'
 import { knowledgeRef } from './knowledge-validation.ts'
 import type { ShareAction } from './knowledge-types.ts'
-import type { SqliteMemory } from './sqlite.ts'
+import type { MemoryDatabase } from './sqlite.ts'
 import type { ProjectId } from './types.ts'
 
 const PREVIEW_MS = 5 * 60 * 1000
@@ -24,7 +24,7 @@ function refFrom(value: string): MemoryRef | null {
  * @param ctx - owning plugin context with a Session durability checkpoint.
  * @param provider - open local memory database.
  */
-export function installShareCommand(ctx: Context, provider: SqliteMemory): void {
+export function installShareCommand(ctx: Context, provider: MemoryDatabase): void {
   const previews = new Map<SessionId, { token: string; project: ProjectId; ref: MemoryRef; expiresAt: number }>()
   ctx.effect(() => () => previews.clear(), 'memory.share-previews')
   ctx.on('session/disposed', session => { previews.delete(session.id) })
@@ -41,14 +41,14 @@ export function installShareCommand(ctx: Context, provider: SqliteMemory): void 
         signal.throwIfAborted()
         if (!await ctx.sessions.flush(agent.session)) return { kind: 'error', text: 'Session persistence is unavailable.' }
         signal.throwIfAborted()
-        const project = provider.getSessionProject(agent.session.id)
+        const project = await provider.getSessionProject(agent.session.id)
         if (project === undefined) return { kind: 'error', text: 'This Session has no recorded memory project.' }
         if (action === 'approve') {
           const preview = previews.get(agent.session.id)
           if (preview === undefined || preview.token !== value || preview.project !== project || preview.expiresAt <= Date.now()) {
             return { kind: 'error', text: 'The sharing preview expired or belongs to another Session.' }
           }
-          const memory = provider.knowledge.getMemory(project, preview.ref)
+          const memory = await provider.knowledge.getMemory(project, preview.ref)
           if (memory === null || 'shared' in memory || memory.level !== 'L3' || memory.state !== 'active' || memory.knowledge.evidence !== 'supported') {
             return { kind: 'error', text: 'This L3 version is no longer eligible for sharing.' }
           }
@@ -57,14 +57,14 @@ export function installShareCommand(ctx: Context, provider: SqliteMemory): void 
           const receiptId = String(commandId)
           const share: ShareAction = { operationId: receiptId as OperationId, projectId: project, ref: preview.ref,
             action: 'approve', userId: USER_ID, receiptId, occurredAt: now, expiresAt: now + PREVIEW_MS }
-          provider.knowledge.approveShare(share, candidate => candidate === share && agent.session.snapshotEvents().some(event =>
+          await provider.knowledge.approveShare(share, candidate => candidate === share && agent.session.snapshotEvents().some(event =>
             event.type === 'command/run' && event.data.commandId === commandId && event.data.name === 'memory-share' && event.data.source.kind === 'user'), now)
           previews.delete(agent.session.id)
           return { kind: 'success', text: `Shared ${preview.ref.id}@${preview.ref.revision} for future requests.` }
         }
         const ref = refFrom(value)
         if (ref === null) return { kind: 'error', text: 'Expected an exact memory id and positive revision.' }
-        const memory = provider.knowledge.getMemory(project, ref)
+        const memory = await provider.knowledge.getMemory(project, ref)
         if (memory === null || 'shared' in memory || memory.level !== 'L3' || memory.projectId !== project) {
           return { kind: 'error', text: 'The requested L3 version is unavailable in this project.' }
         }
@@ -80,7 +80,7 @@ export function installShareCommand(ctx: Context, provider: SqliteMemory): void 
         const receiptId = String(commandId)
         const share: ShareAction = { operationId: receiptId as OperationId, projectId: project, ref,
           action: 'revoke', userId: USER_ID, receiptId, occurredAt: now, expiresAt: now + PREVIEW_MS }
-        provider.knowledge.revokeShare(share, candidate => candidate === share && agent.session.snapshotEvents().some(event =>
+        await provider.knowledge.revokeShare(share, candidate => candidate === share && agent.session.snapshotEvents().some(event =>
           event.type === 'command/run' && event.data.commandId === commandId && event.data.name === 'memory-share' && event.data.source.kind === 'user'), now)
         return { kind: 'success', text: `Revoked sharing of ${ref.id}@${ref.revision} for future requests.` }
       },

@@ -75,11 +75,12 @@ it('extracts and commits a readable episode in one recorded call while retaining
     provider.l1.prepare(item.spec.projectId, task.operationId, 'worker', candidate)
     const memory = provider.l1.commitMemory(item.spec.projectId, task.operationId, 'worker', 2)!
     expect(memory.summary.executionEvidence).toEqual([{ sessionId: task.sessionId, seq: 3 }])
-    expect(memory.summary.trace?.commands.join()).toContain('pnpm test')
+    expect(memory.summary.trace).toBeUndefined()
+    expect(provider.l1.readTrace(item.spec.projectId, memory).text).toContain('pnpm test')
     expect(vectorDocument(memory).text).not.toContain('pnpm test')
     const panel = panelRowOf(memory)
     expect(panel.sections.map(section => section.label)).not.toContain('actions')
-    expect(panel.trace).toContain('pnpm test')
+    expect(panel.trace).toBe('')
     const spec = resolveKnowledgeConfig({ provider: 'test', model: 'test' })
     let source: MemoryRef = memory
     for (const level of ['L2', 'L3'] as const) {

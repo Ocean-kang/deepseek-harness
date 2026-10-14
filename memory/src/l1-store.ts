@@ -1,6 +1,6 @@
 /** SQLite-owned L1 scans, leased tasks, candidate checkpoints and immutable versions. */
 import { randomUUID } from 'node:crypto'
-import { executionRefs } from './evidence.ts'
+import { executionSucceeded, traceIncludes, utf8End } from './evidence.ts'
 import type { DatabaseSync } from 'node:sqlite'
 import { isDeepStrictEqual } from 'node:util'
 import { SessionId, SessionLogOffset } from '@deepseek-ai/dsh-session'
@@ -9,7 +9,7 @@ import type { ProjectId } from './types.ts'
 import { MemoryError } from './types.ts'
 import { l1Key } from './l1-config.ts'
 import { integer, json, object, parseCandidate, storedReason, storedSpec, textValue } from './l1-validation.ts'
-import type { EventRef, L1Candidate, L1Failure, L1Memory, L1Spec, L1Task, L1TaskStatus, MemoryId, MemoryRef, OperationId } from './l1-types.ts'
+import type { EventRef, L1Candidate, L1Failure, L1Memory, L1Spec, L1Task, L1TaskStatus, MemoryId, MemoryRef, OperationId, TraceCursor, TracePage } from './l1-types.ts'
 
 /** Version-2 tables; called only inside the owning schema migration transaction. */
 export const L1_SCHEMA = `
@@ -31,12 +31,43 @@ CREATE TABLE l1_memories (
   PRIMARY KEY(id, revision)
 ) STRICT;`
 
+const COMPACT_TASK_COLUMNS = `id, project, session_id, from_seq, to_seq, turn, reason, config, memory_id, expected_revision,
+  status, attempts, calls, next_retry_at, failure, lease_until, owner,
+  COALESCE((SELECT candidate FROM l1_candidate_projections WHERE operation_id = l1_tasks.id),
+    CASE WHEN candidate IS NULL THEN NULL WHEN json_valid(candidate) THEN json_remove(candidate, '$.summary.trace') END) AS candidate,
+  CASE WHEN EXISTS(SELECT 1 FROM l1_candidate_projections WHERE operation_id = l1_tasks.id) THEN 1
+    ELSE (candidate IS NULL OR json_valid(candidate)) END AS candidate_valid`
+
+interface LegacyTraceSource {
+  readonly table: 'l1_memories' | 'l1_tasks'
+  readonly path: '$.trace' | '$.summary.trace'
+  readonly id: MemoryId | OperationId
+  readonly revision?: number
+}
+
+/** Version-6 immutable trace stream; old inline JSON remains untouched. */
+export const TRACE_SCHEMA = `
+CREATE TABLE l1_trace_chunks (
+  memory_id TEXT NOT NULL, revision INTEGER NOT NULL, chunk_index INTEGER NOT NULL, body TEXT NOT NULL,
+  PRIMARY KEY(memory_id, revision, chunk_index),
+  FOREIGN KEY(memory_id, revision) REFERENCES l1_memories(id, revision) ON DELETE CASCADE
+) STRICT;
+CREATE TABLE l1_summary_projections (
+  memory_id TEXT NOT NULL, revision INTEGER NOT NULL, summary TEXT NOT NULL,
+  PRIMARY KEY(memory_id, revision),
+  FOREIGN KEY(memory_id, revision) REFERENCES l1_memories(id, revision) ON DELETE CASCADE
+) STRICT;
+CREATE TABLE l1_candidate_projections (
+  operation_id TEXT PRIMARY KEY REFERENCES l1_tasks(id) ON DELETE CASCADE, candidate TEXT NOT NULL
+) STRICT;`
+
 function taskRefs(task: Pick<L1Task, 'sessionId' | 'from' | 'to'>): (ref: EventRef) => boolean {
   return ref => ref.sessionId === task.sessionId && ref.seq >= task.from && ref.seq < task.to
 }
 
 function decodeTask(value: unknown): L1Task {
   const row = object(value)
+  if (row.candidate_valid === 0) throw new MemoryError('output', 'L1 invalid JSON')
   const from = SessionLogOffset(integer(row.from_seq))
   const to = SessionLogOffset(integer(row.to_seq))
   if (from >= to) throw new MemoryError('corrupt', 'L1 task source interval is empty')
@@ -62,9 +93,11 @@ export class L1Store {
   /**
    * @param db - the parent provider's version-2 connection.
    * @param changed - nonthrowing post-commit notification.
+   * @param traceChunkBytes - maximum UTF-8 bytes per immutable trace chunk.
    * @param assertOpen - parent-owned lifetime check.
    */
-  constructor(private readonly db: DatabaseSync, private readonly assertOpen: () => void, private readonly changed: () => void = () => {}) {}
+  constructor(private readonly db: DatabaseSync, private readonly assertOpen: () => void, private readonly changed: () => void = () => {},
+    private readonly traceChunkBytes = 65536) {}
 
   private transaction<T>(run: () => T): T {
     this.assertOpen()
@@ -142,7 +175,8 @@ export class L1Store {
    */
   getTask(project: ProjectId, operation: OperationId): L1Task | null {
     this.assertOpen()
-    const row = this.db.prepare('SELECT * FROM l1_tasks WHERE project = ? AND id = ?').get(project, operation)
+    this.projectLegacyCandidate(project, operation)
+    const row = this.db.prepare(`SELECT ${COMPACT_TASK_COLUMNS} FROM l1_tasks WHERE project = ? AND id = ?`).get(project, operation)
     return row === undefined ? null : decodeTask(row)
   }
 
@@ -156,7 +190,9 @@ export class L1Store {
   listTasks(project: ProjectId, after: string, limit: number): L1Task[] {
     this.assertOpen()
     if (!Number.isSafeInteger(limit) || limit < 1) throw new MemoryError('config', 'L1 task page limit must be positive')
-    return this.db.prepare('SELECT * FROM l1_tasks WHERE project = ? AND id > ? ORDER BY id LIMIT ?').all(project, after, limit).map(decodeTask)
+    const tasks = this.db.prepare(`SELECT ${COMPACT_TASK_COLUMNS} FROM l1_tasks WHERE project = ? AND id > ? ORDER BY id LIMIT ?`).all(project, after, limit).map(decodeTask)
+    for (const task of tasks) this.projectLegacyCandidate(project, task.operationId)
+    return tasks
   }
 
   /**
@@ -182,7 +218,7 @@ export class L1Store {
    */
   claim(project: ProjectId, session: SessionId, owner: string, now: number): L1Task | null {
     return this.transaction(() => {
-      const rows = this.db.prepare(`SELECT * FROM l1_tasks WHERE project = ? AND session_id = ? AND
+      const rows = this.db.prepare(`SELECT ${COMPACT_TASK_COLUMNS} FROM l1_tasks WHERE project = ? AND session_id = ? AND
         ((status IN ('pending', 'retry') AND next_retry_at <= ?) OR (status IN ('running', 'prepared') AND lease_until <= ?))
         ORDER BY from_seq, id`).all(project, session, now, now)
       for (const row of rows) {
@@ -200,7 +236,7 @@ export class L1Store {
   }
 
   private owned(project: ProjectId, operation: OperationId, owner: string): L1Task {
-    const row = this.db.prepare('SELECT * FROM l1_tasks WHERE project = ? AND id = ? AND owner = ?').get(project, operation, owner)
+    const row = this.db.prepare(`SELECT ${COMPACT_TASK_COLUMNS} FROM l1_tasks WHERE project = ? AND id = ? AND owner = ?`).get(project, operation, owner)
     if (row === undefined || (row.status !== 'running' && row.status !== 'prepared')) throw new MemoryError('conflict', 'L1 task lease is no longer owned')
     return decodeTask(row)
   }
@@ -231,14 +267,26 @@ export class L1Store {
       const task = this.owned(project, operation, owner)
       const valid = parseCandidate(candidate, taskRefs(task), task.reason)
       if (valid.kind === 'memory' && valid.summary.executionEvidence !== undefined) {
-        const events = this.db.prepare('SELECT body FROM events WHERE session_id = ? AND seq >= ? AND seq < ? ORDER BY seq').all(task.sessionId, task.from, task.to)
-          .map(row => object(json(row.body)) as SessionEvent)
-        const verified = executionRefs(task.sessionId, events)
+        const verified = this.successfulRefs(project, operation, valid.summary.executionEvidence)
         if (valid.summary.executionEvidence.some(ref => !verified.some(source => source.sessionId === ref.sessionId && source.seq === ref.seq))
           || valid.summary.outcome !== 'success') throw new MemoryError('output', 'Invalid program-owned execution evidence')
       }
-      if (task.candidate !== null && !isDeepStrictEqual(task.candidate, valid)) throw new MemoryError('conflict', 'L1 operation already has another candidate')
-      this.db.prepare("UPDATE l1_tasks SET candidate = ?, status = 'prepared' WHERE id = ?").run(JSON.stringify(valid), operation)
+      const compact = valid.kind === 'empty' ? valid : { kind: 'memory', summary: this.compactSummary(valid.summary) }
+      if (task.candidate !== null) {
+        if (!isDeepStrictEqual(task.candidate, compact)) throw new MemoryError('conflict', 'L1 operation already has another candidate')
+        if (valid.kind === 'memory' && valid.summary.trace !== undefined) {
+          const equal = this.db.prepare(`WITH stored AS (
+            SELECT fullkey, type, atom FROM json_tree((SELECT candidate FROM l1_tasks WHERE id = ?), '$.summary.trace')
+          ), incoming AS (
+            SELECT '$.summary.trace' || substr(fullkey, 2) AS fullkey, type, atom FROM json_tree(?)
+          ) SELECT NOT EXISTS(SELECT * FROM stored EXCEPT SELECT * FROM incoming)
+            AND NOT EXISTS(SELECT * FROM incoming EXCEPT SELECT * FROM stored) AS equal`)
+            .get(operation, JSON.stringify(valid.summary.trace))?.equal
+          if (equal !== 1) throw new MemoryError('conflict', 'L1 operation already has another trace')
+        }
+        this.db.prepare("UPDATE l1_tasks SET status = 'prepared' WHERE id = ?").run(operation)
+      } else this.db.prepare("UPDATE l1_tasks SET candidate = ?, status = 'prepared' WHERE id = ?").run(JSON.stringify(valid), operation)
+      this.db.prepare('INSERT OR REPLACE INTO l1_candidate_projections VALUES (?, ?)').run(operation, JSON.stringify(compact))
     })
   }
 
@@ -260,7 +308,16 @@ export class L1Store {
       if (task.candidate.kind === 'memory') {
         const current = this.currentRevision(project, task.memoryId)
         if (current !== task.expectedRevision) throw new MemoryError('conflict', 'L1 memory revision changed')
-        this.db.prepare('INSERT INTO l1_memories VALUES (?, ?, ?, ?, ?, ?)').run(task.memoryId, (current ?? 0) + 1, project, operation, JSON.stringify(task.candidate.summary), now)
+        const revision = (current ?? 0) + 1
+        const summary = task.candidate.summary
+        this.db.prepare('INSERT INTO l1_memories VALUES (?, ?, ?, ?, ?, ?)').run(task.memoryId, revision, project, operation, JSON.stringify(summary), now)
+        const traceType = this.db.prepare(`SELECT json_type(candidate, '$.summary.trace') AS type FROM l1_tasks WHERE id = ?`).get(operation)?.type
+        if (traceType === null) this.writeTrace(task, revision)
+        else {
+          if (traceType !== 'object') throw new MemoryError('output', 'L1 expected a trace object')
+          this.copyStoredTrace(project, { id: task.memoryId, revision }, { table: 'l1_tasks', path: '$.summary.trace', id: operation })
+        }
+        this.db.prepare('INSERT INTO l1_summary_projections VALUES (?, ?, ?)').run(task.memoryId, revision, JSON.stringify(summary))
       }
       this.db.prepare('UPDATE l1_tasks SET status = ?, owner = NULL, lease_until = 0, failure = NULL WHERE id = ?').run(task.candidate.kind === 'empty' ? 'empty' : 'done', operation)
       return this.byOperation(project, operation)
@@ -337,7 +394,10 @@ export class L1Store {
    */
   getMemory(project: ProjectId, ref: MemoryRef): L1Memory | null {
     this.assertOpen()
-    const row = this.db.prepare('SELECT * FROM l1_memories WHERE project = ? AND id = ? AND revision = ?').get(project, ref.id, ref.revision)
+    this.projectLegacyMemory(project, ref)
+    const row = this.db.prepare(`SELECT m.id, m.revision, m.project, m.operation_id, m.created_at, p.summary
+      FROM l1_memories m JOIN l1_summary_projections p ON p.memory_id = m.id AND p.revision = m.revision
+      WHERE m.project = ? AND m.id = ? AND m.revision = ?`).get(project, ref.id, ref.revision)
     if (row === undefined) return null
     const task = this.getTask(project, textValue(row.operation_id) as OperationId)
     if (task === null || task.memoryId !== ref.id || task.status !== 'done') throw new MemoryError('corrupt', 'L1 memory has no matching completed task')
@@ -345,6 +405,190 @@ export class L1Store {
     if (candidate.kind !== 'memory') throw new MemoryError('corrupt', 'L1 memory has no summary')
     return { ...ref, projectId: project, operationId: task.operationId, level: 'L1', sessionId: task.sessionId,
       turn: task.turn, reason: task.reason, range: { from: task.from, to: task.to }, config: task.config,
-      summary: candidate.summary, createdAt: integer(row.created_at), state: this.currentRevision(project, ref.id) === ref.revision ? 'active' : 'superseded' }
+      summary: this.compactSummary(candidate.summary), createdAt: integer(row.created_at), state: this.currentRevision(project, ref.id) === ref.revision ? 'active' : 'superseded' }
   }
+
+  private compactSummary(summary: L1Memory['summary']): L1Memory['summary'] {
+    const { trace: _trace, ...compact } = summary
+    return compact
+  }
+
+  private projectLegacyCandidate(project: ProjectId, operation: OperationId): void {
+    if (this.db.prepare('SELECT 1 FROM l1_candidate_projections WHERE operation_id = ?').get(operation) !== undefined) return
+    this.db.prepare(`INSERT OR IGNORE INTO l1_candidate_projections
+      SELECT id, json_remove(candidate, '$.summary.trace') FROM l1_tasks
+      WHERE project = ? AND id = ? AND candidate IS NOT NULL AND json_valid(candidate)`).run(project, operation)
+  }
+
+  /** Populate compatibility projections while the owning schema transaction is open.
+   * @param db - connection owned by the schema migration.
+   * @param maxTraceBytes - configured immutable chunk byte limit.
+   * @returns completion after each legacy record's compact metadata and trace are durable.
+   */
+  static backfillProjections(db: DatabaseSync, maxTraceBytes: number): void {
+    const store = new L1Store(db, () => {}, () => {}, maxTraceBytes)
+    db.prepare(`INSERT OR IGNORE INTO l1_candidate_projections
+      SELECT id, json_remove(candidate, '$.summary.trace') FROM l1_tasks WHERE candidate IS NOT NULL AND json_valid(candidate)`).run()
+    for (const row of db.prepare('SELECT project, id, revision FROM l1_memories').iterate()) {
+      store.projectLegacyMemory(textValue(row.project) as ProjectId, { id: textValue(row.id) as MemoryId, revision: integer(row.revision) })
+    }
+  }
+
+  private projectLegacyMemory(project: ProjectId, ref: MemoryRef): void {
+    if (this.db.prepare(`SELECT 1 FROM l1_summary_projections p JOIN l1_memories m ON p.memory_id = m.id AND p.revision = m.revision
+      WHERE m.project = ? AND p.memory_id = ? AND p.revision = ?`).get(project, ref.id, ref.revision) !== undefined) return
+    const row = this.db.prepare(`SELECT CASE WHEN json_valid(summary) THEN json_remove(summary, '$.trace') END AS summary,
+      json_valid(summary) AS valid FROM l1_memories WHERE project = ? AND id = ? AND revision = ?`).get(project, ref.id, ref.revision)
+    if (row === undefined) return
+    if (row.valid !== 1) throw new MemoryError('output', 'L1 invalid JSON')
+    this.db.exec('SAVEPOINT memory_legacy_projection')
+    try {
+      const modern = this.db.prepare('SELECT 1 FROM l1_trace_chunks WHERE memory_id = ? AND revision = ? LIMIT 1').get(ref.id, ref.revision) !== undefined
+      if (!modern) {
+        this.copyStoredTrace(project, ref, { table: 'l1_memories', path: '$.trace', id: ref.id, revision: ref.revision })
+      }
+      this.db.prepare('INSERT INTO l1_summary_projections VALUES (?, ?, ?)').run(ref.id, ref.revision, textValue(row.summary))
+      this.db.exec('RELEASE memory_legacy_projection')
+    } catch (error) {
+      this.db.exec('ROLLBACK TO memory_legacy_projection')
+      this.db.exec('RELEASE memory_legacy_projection')
+      throw error
+    }
+  }
+
+  /** Verify cited results against their preceding recorded tool invocation.
+   * @param project - source owner.
+   * @param operation - extraction task.
+   * @param refs - exact citations, bounded by model output.
+   * @returns only successful matched result identities.
+   */
+  successfulRefs(project: ProjectId, operation: OperationId, refs: readonly EventRef[]): EventRef[] {
+    this.assertOpen()
+    const task = this.getTask(project, operation)
+    if (task === null) throw new MemoryError('source', 'L1 task is unavailable')
+    const verified: EventRef[] = []
+    for (const ref of refs) {
+      if (!taskRefs(task)(ref)) throw new MemoryError('source', 'Execution citation is outside the source turn')
+      const row = this.db.prepare('SELECT body FROM events WHERE session_id = ? AND seq = ?').get(task.sessionId, ref.seq)
+      if (row === undefined) throw new MemoryError('gap', 'Execution citation is unavailable')
+      const result = object(json(row.body)) as SessionEvent
+      if (result.type !== 'tool/result') continue
+      const callRow = this.db.prepare(`SELECT body FROM events WHERE session_id = ? AND seq >= ? AND seq < ?
+        AND json_extract(body, '$.type') = 'tool/call' AND json_extract(body, '$.data.callId') = ? ORDER BY seq DESC LIMIT 1`)
+        .get(task.sessionId, task.from, ref.seq, result.data.message.toolCallId)
+      if (callRow === undefined) continue
+      const call = object(json(callRow.body)) as SessionEvent
+      if (call.type === 'tool/call' && executionSucceeded(call, result)) verified.push(ref)
+    }
+    return verified
+  }
+
+  private writeTrace(task: L1Task, revision: number): void {
+    const insert = this.db.prepare('INSERT INTO l1_trace_chunks VALUES (?, ?, ?, ?)')
+    let chunk = ''
+    let chunkBytes = 0
+    let index = 0
+    const append = (text: string): void => {
+      let offset = 0
+      while (offset < text.length) {
+        const end = utf8End(text, offset, this.traceChunkBytes - chunkBytes)
+        if (end === offset) {
+          if (chunk === '') throw new MemoryError('config', 'Trace chunk budget cannot contain a Unicode code point')
+          insert.run(task.memoryId, revision, index++, chunk)
+          chunk = ''; chunkBytes = 0
+          continue
+        }
+        const part = text.slice(offset, end)
+        chunk += part; chunkBytes += Buffer.byteLength(part); offset = end
+      }
+    }
+    append('{"actions":' + JSON.stringify(task.candidate?.kind === 'memory' ? task.candidate.summary.actions : []))
+    for (const category of ['commands', 'files', 'errors'] as const) {
+      append(',"' + category + '":[')
+      let first = true
+      const item = (value: string): void => { if (!first) append(','); first = false; append(JSON.stringify(value)) }
+      for (const row of this.db.prepare('SELECT body FROM events WHERE session_id = ? AND seq >= ? AND seq < ? ORDER BY seq').iterate(task.sessionId, task.from, task.to)) {
+        const event = object(json(row.body)) as SessionEvent
+        if (traceIncludes(event, category)) item(JSON.stringify(event))
+      }
+      append(']')
+    }
+    append('}')
+    if (chunk !== '') insert.run(task.memoryId, revision, index, chunk)
+  }
+
+  /** Read byte-bounded JSON text from an exact immutable trace, including legacy inline trace.
+   * @param project - owning project.
+   * @param ref - exact L1 version.
+   * @param cursor - previous nextCursor, omitted for the beginning.
+   * @param maxBytes - maximum UTF-8 response bytes.
+   * @returns JSON stream page; concatenate all pages before decoding.
+   */
+  readTrace(project: ProjectId, ref: MemoryRef, cursor: TraceCursor = { chunk: 0, offset: 0 }, maxBytes = this.traceChunkBytes): TracePage {
+    this.assertOpen()
+    if (!Number.isSafeInteger(maxBytes) || maxBytes < 4 || !Number.isSafeInteger(cursor.chunk) || cursor.chunk < 0
+      || !Number.isSafeInteger(cursor.offset) || cursor.offset < 0) throw new MemoryError('config', 'Invalid trace page budget or cursor')
+    this.projectLegacyMemory(project, ref)
+    const memory = this.db.prepare('SELECT 1 FROM l1_memories WHERE project = ? AND id = ? AND revision = ?').get(project, ref.id, ref.revision)
+    if (memory === undefined) return { found: false, text: '', nextCursor: null }
+    const modern = this.db.prepare('SELECT 1 FROM l1_trace_chunks WHERE memory_id = ? AND revision = ? LIMIT 1').get(ref.id, ref.revision) !== undefined
+    if (!modern) return this.readLegacyTrace(project, ref, cursor, maxBytes)
+    const read = (index: number): string | undefined => {
+      const row = this.db.prepare('SELECT body FROM l1_trace_chunks WHERE memory_id = ? AND revision = ? AND chunk_index = ?').get(ref.id, ref.revision, index)
+      return row === undefined ? undefined : textValue(row.body)
+    }
+    let index = cursor.chunk
+    let offset = cursor.offset
+    let text = ''
+    let remaining = maxBytes
+    for (;;) {
+      const body = read(index)
+      if (body === undefined) return { found: true, text, nextCursor: null }
+      if (offset > body.length || (offset > 0 && /[\uDC00-\uDFFF]/u.test(body[offset]!))) throw new MemoryError('config', 'Trace cursor is outside a Unicode boundary')
+      const end = utf8End(body, offset, remaining)
+      const part = body.slice(offset, end)
+      text += part; remaining -= Buffer.byteLength(part)
+      if (end < body.length) return { found: true, text, nextCursor: { chunk: index, offset: end } }
+      index++; offset = 0
+      if (remaining < 4) return { found: true, text, nextCursor: read(index) === undefined ? null : { chunk: index, offset: 0 } }
+    }
+  }
+
+  private readLegacyTrace(project: ProjectId, ref: MemoryRef, cursor: TraceCursor, maxBytes: number): TracePage {
+    return this.readStoredTrace(project, { table: 'l1_memories', path: '$.trace', id: ref.id, revision: ref.revision }, cursor, maxBytes)
+  }
+
+  private copyStoredTrace(project: ProjectId, ref: MemoryRef, source: LegacyTraceSource): void {
+    let cursor: TraceCursor | undefined
+    let index = 0
+    do {
+      const page = this.readStoredTrace(project, source, cursor ?? { chunk: 0, offset: 0 }, this.traceChunkBytes)
+      if (page.text !== '') this.db.prepare('INSERT INTO l1_trace_chunks VALUES (?, ?, ?, ?)').run(ref.id, ref.revision, index++, page.text)
+      cursor = page.nextCursor ?? undefined
+    } while (cursor !== undefined)
+  }
+
+  private readStoredTrace(project: ProjectId, source: LegacyTraceSource, cursor: TraceCursor, maxBytes: number): TracePage {
+    // SQLite may materialize the legacy TEXT internally; only a bounded Unicode window enters JavaScript.
+    const count = Math.max(1, Math.floor(maxBytes / 4))
+    const column = source.table === 'l1_memories' ? 'summary' : 'candidate'
+    const row = this.db.prepare(`SELECT substr(json_extract(${column}, '${source.path}'), ?, ?) AS fragment,
+      length(json_extract(${column}, '${source.path}')) AS total
+      FROM ${source.table} WHERE project = ? AND id = ? ${source.revision === undefined ? '' : 'AND revision = ?'}`)
+      .get(cursor.offset + 1, count, project, source.id, ...source.revision === undefined ? [] : [source.revision])
+    if (row?.fragment === null || row === undefined) return { found: true, text: '', nextCursor: null }
+    if (cursor.chunk !== 0 || cursor.offset > integer(row.total)) throw new MemoryError('config', 'Trace cursor is outside a Unicode boundary')
+    if (typeof row.fragment !== 'string') throw new MemoryError('output', 'L1 expected trace JSON text')
+    const offset = cursor.offset + Array.from(row.fragment).length
+    return { found: true, text: row.fragment, nextCursor: offset === row.total ? null : { chunk: 0, offset } }
+  }
+}
+
+/** Backfill compact legacy metadata and byte-bounded trace rows without rewriting stored originals.
+ * @param db - owning SQLite connection inside its schema migration transaction.
+ * @param maxTraceBytes - configured immutable chunk byte limit.
+ * @returns completion after all existing L1 records have compatibility projections.
+ */
+export function backfillL1Projections(db: DatabaseSync, maxTraceBytes: number): void {
+  L1Store.backfillProjections(db, maxTraceBytes)
 }

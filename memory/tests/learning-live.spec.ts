@@ -6,6 +6,7 @@ import { resolveConfig } from '../src/config.ts'
 import { SqliteMemory } from '../src/sqlite.ts'
 import { TextMemoryRetriever, resolveTextSearchConfig } from '../src/text-retrieval.ts'
 import { json, object } from '../src/l1-validation.ts'
+import type { TraceCursor } from '../src/l1-types.ts'
 
 it.runIf(process.env.DSH_MEMORY_VERIFY_LEARNING === '1')('reopens the live run and verifies content, ancestry and exact request/result logs', async () => {
   const id = process.env.DSH_MEMORY_VERIFY_LEARNING_SOURCE
@@ -20,7 +21,7 @@ it.runIf(process.env.DSH_MEMORY_VERIFY_LEARNING === '1')('reopens the live run a
     const tasks = []
     let after = ''
     for (;;) {
-      const page = memory.l1.listTasks(project, after, spec.pageSize)
+      const page = await memory.l1.listTasks(project, after, spec.pageSize)
       l1Tasks.push(...page.filter(task => task.sessionId === SessionId(id)))
       if (page.length < spec.pageSize) break
       after = page.at(-1)!.operationId
@@ -29,16 +30,26 @@ it.runIf(process.env.DSH_MEMORY_VERIFY_LEARNING === '1')('reopens the live run a
     const l1Task = l1Tasks[0]!
     expect(l1Task.status).toBe('done')
     expect(l1Task.config.promptVersion).toBe('l1-v3')
-    const l1 = memory.l1.byOperation(project, l1Task.operationId)!
+    const l1 = (await memory.l1.byOperation(project, l1Task.operationId))!
     expect(l1.summary.description?.trim()).toBeTruthy()
     expect(['unknown', 'incomplete']).toContain(l1.summary.outcome)
     expect(l1.summary.solution).toBeNull()
     expect(l1.summary.sources).toEqual([{ sessionId: SessionId(id), seq: 1 }])
+    expect(l1.summary.trace).toBeUndefined()
+    let traceCursor: TraceCursor | undefined
+    let traceText = ''
+    do {
+      const page = await memory.l1.readTrace(project, l1, traceCursor)
+      expect(page.found).toBe(true)
+      traceText += page.text
+      traceCursor = page.nextCursor ?? undefined
+    } while (traceCursor !== undefined)
+    expect(object(json(traceText))).toMatchObject({ commands: [], files: [], errors: [] })
     const source = await memory.readRaw({ projectId: project, sessionId: SessionId(id), from: SessionLogOffset(1), to: SessionLogOffset(2), limit: 1 })
     expect(JSON.stringify(source.events)).toContain('No implementation or test execution has occurred')
     after = ''
     for (;;) {
-      const page = memory.knowledge.listTasks(project, after, spec.pageSize)
+      const page = await memory.knowledge.listTasks(project, after, spec.pageSize)
       tasks.push(...page)
       if (page.length < spec.pageSize) break
       after = page.at(-1)!.operationId
@@ -61,7 +72,7 @@ it.runIf(process.env.DSH_MEMORY_VERIFY_LEARNING === '1')('reopens the live run a
       expect(task.config.promptVersion).toBe('knowledge-v4')
       expect(task.result?.length).toBeGreaterThan(0)
       for (const ref of task.result!) {
-        const record = memory.knowledge.getMemory(project, ref)
+        const record = await memory.knowledge.getMemory(project, ref)
         if (record === null || record.level === 'L1' || 'shared' in record) throw new Error('expected owned knowledge')
         expect(record.knowledge.description?.trim()).toBeTruthy()
         expect(record.knowledge.examinedEvents).toEqual(l1.summary.sources)
@@ -72,7 +83,7 @@ it.runIf(process.env.DSH_MEMORY_VERIFY_LEARNING === '1')('reopens the live run a
       }
     }
     for (const levelTasks of [l2Tasks, l3Tasks]) {
-      const content = levelTasks.flatMap(task => task.result ?? []).map(ref => memory.knowledge.getMemory(project, ref))
+      const content = (await Promise.all(levelTasks.flatMap(task => task.result ?? []).map(ref => memory.knowledge.getMemory(project, ref))))
         .map(record => record !== null && record.level !== 'L1' && !('shared' in record) ? record.knowledge.body : '').join('\n')
       expect(content).toMatch(/strict TypeScript/i)
       expect(content).toContain('ESM')
@@ -82,7 +93,7 @@ it.runIf(process.env.DSH_MEMORY_VERIFY_LEARNING === '1')('reopens the live run a
     const stages = new Map<string, string[]>()
     after = ''
     for (;;) {
-      const sessions = memory.listSessions(project, after, spec.pageSize)
+      const sessions = await memory.listSessions(project, after, spec.pageSize)
       for (const session of sessions) {
         const stored = await memory.readRaw({ projectId: project, sessionId: session.header.id, from: SessionLogOffset(0), to: session.committedTo, limit: spec.pageSize })
         const request = stored.events[0]

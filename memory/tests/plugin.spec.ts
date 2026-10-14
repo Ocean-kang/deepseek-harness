@@ -30,7 +30,7 @@ it('isolates fallback projects by working directory without a Workspace registry
       writers.push(await ctx.sessionPersistence.create(session.header))
       await ctx.sessions.flush(session)
     }
-    const owners = sessions.map(session => ctx.memory.projectOfSession(session.id))
+    const owners = await Promise.all(sessions.map(session => ctx.memory.projectOfSession(session.id)))
     expect(owners[0]).toMatch(/^path:/)
     expect(owners[0]).not.toBe(owners[1])
     expect(owners[0]).toBe(owners[2])

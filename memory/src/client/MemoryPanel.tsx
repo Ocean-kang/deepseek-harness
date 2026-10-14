@@ -9,6 +9,8 @@ import type { PanelResponse, PanelRow } from '../panel-protocol.ts'
 import type { PanelCall, PanelState, PanelStateRefresh, PanelStateWatch } from './state-observer.ts'
 import type {} from './locales.ts'
 import css from './MemoryPanel.module.css'
+import { MaintenancePanel } from './MaintenancePanel.tsx'
+import { TracePanel } from './TracePanel.tsx'
 
 /** Injected endpoint and the existing tab/locale seats. */
 export type MemoryPanelProps = PropsRuntime<'sidebar.right.pane.tab'> & PropsLocale<'memoryPanel'> & {
@@ -52,7 +54,7 @@ export function MemoryPanel({ sessionId, useTabInfo, t, call, watch, refresh }: 
   const [detail, setDetail] = useState<PanelRow>()
   const [history, setHistory] = useState<MemoryRef[]>([])
   const [historyNext, setHistoryNext] = useState<number | null>(null)
-  const [failure, setFailure] = useState<'failed' | 'stale' | 'budget' | 'excluded'>()
+  const [failure, setFailure] = useState<'failed' | 'stale' | 'budget' | 'excluded' | 'operationUnknown'>()
   const [busy, setBusy] = useState(false)
   const reads = useRef<AbortController | null>(null)
   const writes = useRef<AbortController | null>(null)
@@ -81,7 +83,8 @@ export function MemoryPanel({ sessionId, useTabInfo, t, call, watch, refresh }: 
 
   const failed = (error: unknown): void => {
     const code = error instanceof Error ? error.message : ''
-    setFailure(code === 'excluded' ? 'excluded' : code === 'conflict' ? 'stale' : code === 'budget' ? 'budget' : 'failed')
+    setFailure(previous => previous === 'operationUnknown' || code === 'unknown-outcome' ? 'operationUnknown'
+      : code === 'excluded' ? 'excluded' : code === 'conflict' ? 'stale' : code === 'budget' ? 'budget' : 'failed')
   }
   const lifetime = (): AbortController => {
     const controller = new AbortController()
@@ -95,7 +98,7 @@ export function MemoryPanel({ sessionId, useTabInfo, t, call, watch, refresh }: 
     const controller = lifetime()
     reads.current = controller
     setBusy(true)
-    setFailure(undefined)
+    setFailure(previous => previous === 'operationUnknown' ? previous : undefined)
     try {
       const browse = { action: 'browse' as const, sessionId, level, ...level !== 'L3' || kind === 'all' ? {} : { kind },
         ...scenario === null || level === 'L0' || level === 'L1' ? {} : { scenario }, query: search }
@@ -139,6 +142,7 @@ export function MemoryPanel({ sessionId, useTabInfo, t, call, watch, refresh }: 
       listedRevision.current = status.revision
       setPage(previous => ({ ...listed, rows: more ? [...previous.rows, ...listed.rows] : listed.rows }))
       setState(status)
+      setFailure(undefined)
       if (!more && !dirty.current) setDraft(status.refs)
     } catch (error) { if (!controller.signal.aborted) failed(error) } finally {
       if (!controller.signal.aborted) setBusy(false)
@@ -175,11 +179,11 @@ export function MemoryPanel({ sessionId, useTabInfo, t, call, watch, refresh }: 
   const save = async (
     refs: MemoryRef[], automatic: boolean, preserveDraft = false, added?: MemoryRef, preferenceOnly = false,
   ): Promise<void> => {
-    if (writes.current !== null && !writes.current.signal.aborted) return
+    if (failure === 'operationUnknown' || (writes.current !== null && !writes.current.signal.aborted)) return
     const controller = lifetime()
     writes.current = controller
     setBusy(true)
-    setFailure(undefined)
+    setFailure(previous => previous === 'operationUnknown' ? previous : undefined)
     try {
       const result = await call(preferenceOnly ? { action: 'automatic', sessionId, automatic } : { action: 'select', sessionId, refs, automatic }, controller.signal)
       if (controller.signal.aborted) return
@@ -197,7 +201,7 @@ export function MemoryPanel({ sessionId, useTabInfo, t, call, watch, refresh }: 
     const controller = lifetime()
     reads.current = controller
     setBusy(true)
-    setFailure(undefined)
+    setFailure(previous => previous === 'operationUnknown' ? previous : undefined)
     try {
       const result = row.ref === null ? null : await call({ action: 'detail', sessionId, ref: row.ref }, controller.signal)
       if (controller.signal.aborted) return
@@ -224,7 +228,7 @@ export function MemoryPanel({ sessionId, useTabInfo, t, call, watch, refresh }: 
     const controller = lifetime()
     reads.current = controller
     setBusy(true)
-    setFailure(undefined)
+    setFailure(previous => previous === 'operationUnknown' ? previous : undefined)
     try {
       const versions = await call({ action: 'history', sessionId, id: detail.ref.id, before: historyNext }, controller.signal)
       if (!controller.signal.aborted && versions.action === 'history') {
@@ -284,6 +288,14 @@ export function MemoryPanel({ sessionId, useTabInfo, t, call, watch, refresh }: 
     <div className={css.body} ref={body} aria-busy={busy}>
       {failure !== undefined && <p role="alert">{t(failure)}</p>}
       {state?.valid === false && <p role="status">{t('stale')}</p>}
+      {state?.maintenanceReady === true && <MaintenancePanel key={sessionId} sessionId={sessionId} signal={tab.signal} state={state} call={call} refresh={refresh} t={t} onUnknown={() => { setFailure('operationUnknown') }} />}
+      {state?.failedKnowledgeTasks.map(task => <div key={task.id} className={css.row}>
+        {task.level} · {t('learningFailed', { count: 1 })}
+        <Button disabled={busy || failure === 'operationUnknown'} onClick={() => {
+          const controller = lifetime()
+          void call({ action: 'retryKnowledge', sessionId, id: task.id }, controller.signal).then(() => { refresh(sessionId) }, error => { if (!controller.signal.aborted) failed(error) }).finally(() => { controller.abort() })
+        }}>{t('retryExtraction')}</Button>
+      </div>)}
       <div className={css.browser}>
       <div className={css.assetList}>
       <div className={css.listHeading}><h3>{t(level)}</h3><span>{t('loaded', { count: page.rows.length })}</span></div>
@@ -312,7 +324,7 @@ export function MemoryPanel({ sessionId, useTabInfo, t, call, watch, refresh }: 
           <div className={css.rowActions}>
             {row.selectable && selected !== null && <Button aria-label={t('applyRow', { title: row.title })}
               className={css.link} size="sm"
-              disabled={busy || state === undefined || state.refs.some(ref => same(ref, selected))}
+              disabled={busy || failure === 'operationUnknown' || state === undefined || state.refs.some(ref => same(ref, selected))}
               onClick={() => { void save([...state?.refs ?? [], selected], state?.automatic ?? false, true, selected) }}>{t('apply')}</Button>}
           </div>
         </article>
@@ -338,7 +350,7 @@ export function MemoryPanel({ sessionId, useTabInfo, t, call, watch, refresh }: 
           <dt>{t('rationale')}</dt><dd>{detail.trust.rationale}</dd>
         </dl>}
         {detail.generation !== null && <p>{t('generation')}: {detail.generation.provider} / {detail.generation.model}</p>}
-        {detail.trace !== undefined && <details><summary>{t('trace')}</summary><pre>{detail.trace}</pre></details>}
+        {detail.trace !== undefined && detail.ref !== null && <TracePanel key={`${detail.ref.id}:${detail.ref.revision}`} sessionId={sessionId} memory={detail.ref} signal={tab.signal} call={call} t={t} />}
         <details><summary>{t('source')}</summary>
         {detail.shared && <p>{t('sharedPrivacy')}</p>}
         <div>{t(detail.sourceStatus === 'needs-review' ? 'reviewHelp' : 'currentSources')}</div>
@@ -364,16 +376,16 @@ export function MemoryPanel({ sessionId, useTabInfo, t, call, watch, refresh }: 
       {state !== undefined && <div className={css.pending}>{state.pending.map(row => <article key={rowKey(row)}>
         <div>{row.title}</div><div>{row.body}</div>
         {row.sourceStatus === 'needs-review' && <div>{t('needsReview')}</div>}
-        <Button disabled={busy} onClick={() => { void save(state.refs.filter(ref => row.ref === null || !same(ref, row.ref)), state.automatic) }}>{t('remove')}</Button>
+        <Button disabled={busy || failure === 'operationUnknown'} onClick={() => { void save(state.refs.filter(ref => row.ref === null || !same(ref, row.ref)), state.automatic) }}>{t('remove')}</Button>
       </article>)}</div>}
-      <div className={css.automatic}>{t('automatic')} <Switch label={t('automatic')} checked={state?.automatic ?? false} disabled={busy || state === undefined || !state.injectionReady}
+      <div className={css.automatic}>{t('automatic')} <Switch label={t('automatic')} checked={state?.automatic ?? false} disabled={busy || failure === 'operationUnknown' || state === undefined || !state.injectionReady}
         onChange={(automatic) => { void save([], automatic, true, undefined, true) }} /></div>
       <details><summary>{t('recallHelp')}</summary><p>{t('pendingHelp')}</p><p>{t('searchHelp')}</p>
         {state !== undefined && <p>{t(state.recallMethod === 'trigram' ? 'textHelp' : state.recallMethod === 'unicode61' ? 'unicodeHelp' : state.recallMethod === 'hybrid' ? 'hybridHelp' : state.recallMethod === 'vector' ? 'vectorHelp' : 'disabledHelp')}</p>}
       </details>
       <div className={css.footerActions}>
-        <Button className={css.primary} size="sm" disabled={busy || state === undefined} onClick={() => { void save(draft, state?.automatic ?? false) }}>{t('applySelection')}</Button>
-        <Button className={css.link} size="sm" disabled={busy || state === undefined} onClick={() => { void save([], state?.automatic ?? false) }}>{t('cancel')}</Button>
+        <Button className={css.primary} size="sm" disabled={busy || failure === 'operationUnknown' || state === undefined} onClick={() => { void save(draft, state?.automatic ?? false) }}>{t('applySelection')}</Button>
+        <Button className={css.link} size="sm" disabled={busy || failure === 'operationUnknown' || state === undefined} onClick={() => { void save([], state?.automatic ?? false) }}>{t('cancel')}</Button>
       </div>
     </footer>
   </section>

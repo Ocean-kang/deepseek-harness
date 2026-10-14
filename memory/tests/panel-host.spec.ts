@@ -120,7 +120,7 @@ it('browses and selects a persisted conversation without restoring it and consum
       expect(open).not.toHaveBeenCalled()
       expect(panelResponse.parse(await call({ action: 'select', sessionId: session.id, refs: [ref], automatic: true })))
         .toMatchObject({ refs: [ref], automatic: true })
-      const selected = ctx.memory.browser.selectionFromEvents(item.project, session.id, [])!
+      const selected = (await ctx.memory.browser.selectionFromEvents(item.project, session.id, []))!
       expect(panelResponse.parse(await call({ action: 'state', sessionId: session.id })))
         .toMatchObject({ refs: [ref], automatic: true, used: [] })
       session.append('user/message', createUserMessage({ source: { kind: 'memory-recall', form: 'recall', turn: 1,
@@ -186,6 +186,13 @@ it('binds browser and selections to captured Session ownership and validates eve
       const listed = await call({ action: 'browse', sessionId: session.id, level: 'L2', query: 'ESM', after: null })
       expect(panelResponse.parse(listed)).toMatchObject({ action: 'browse', rows: [{ ref, selectable: true }] })
       expect(panelResponse.parse(await call({ action: 'detail', sessionId: session.id, ref }))).toMatchObject({ row: { sources: [{ ref: { id: item.source.id, revision: item.source.revision } }] } })
+      expect(panelResponse.parse(await call({ action: 'trace', sessionId: session.id, ref: item.source, cursor: null })))
+        .toMatchObject({ action: 'trace', found: true, nextCursor: null })
+      expect(panelResponse.parse(await call({ action: 'trace', sessionId: session.id, ref: { ...item.source, revision: 999 }, cursor: null })))
+        .toEqual({ action: 'trace', found: false, text: '', nextCursor: null })
+      await expect(call({ action: 'importPreview', sessionId: session.id, after: null })).rejects.toMatchObject({ code: 'config' })
+      expect(panelRequest.safeParse({ action: 'importStart', sessionId: session.id, sessionIds: [], projectId: 'foreign' }).success).toBe(false)
+      expect(panelRequest.safeParse({ action: 'cleanup', sessionId: session.id, maxAgeDays: 0 }).success).toBe(false)
       expect(panelResponse.parse(await call({ action: 'history', sessionId: session.id, id: ref.id, before: Number.MAX_SAFE_INTEGER }))).toMatchObject({ refs: [ref], next: ref.revision })
       expect(panelResponse.parse(await call({ action: 'history', sessionId: session.id, id: ref.id, before: ref.revision }))).toMatchObject({ refs: [original], next: original.revision })
       expect(panelResponse.parse(await call({ action: 'history', sessionId: session.id, id: ref.id, before: original.revision }))).toMatchObject({ refs: [], next: null })

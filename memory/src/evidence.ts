@@ -52,11 +52,41 @@ export function executionRefs(sessionId: EventRef['sessionId'], events: readonly
  * @returns trace retaining original invocation arguments and error/result data.
  */
 export function episodeTrace(events: readonly SessionEvent[], actions: readonly string[]): NonNullable<L1Summary['trace']> {
-  return { actions, commands: events.filter(event => event.type === 'tool/call' && /bash|pwsh|shell|terminal/u.test(event.data.name)).map(event => JSON.stringify(event)),
-    files: events.filter(event => event.type === 'tool/call' && /file|read|write|edit|patch|fs_/u.test(event.data.name)).map(event => JSON.stringify(event)),
-    errors: events.filter(event => (event.type === 'tool/result' && (event.data.message.isError === true || event.data.error !== undefined
-      || event.data.message.content.some(block => block.type === 'text' && /\[(?:exit code: [1-9]\d*|killed by signal:|timed out|aborted|stopped:)/u.test(block.text))))
-      || (event.type === 'turn/end' && event.data.reason.kind === 'error')).map(event => JSON.stringify(event)) }
+  return { actions, commands: events.filter(event => traceIncludes(event, 'commands')).map(event => JSON.stringify(event)),
+    files: events.filter(event => traceIncludes(event, 'files')).map(event => JSON.stringify(event)),
+    errors: events.filter(event => traceIncludes(event, 'errors')).map(event => JSON.stringify(event)) }
+}
+
+/** Classify one recorded trace item without retaining the source interval.
+ * @param event - one committed source event.
+ * @param category - trace section to collect.
+ * @returns whether this event belongs to the section.
+ */
+export function traceIncludes(event: SessionEvent, category: 'commands' | 'files' | 'errors'): boolean {
+  if (category === 'commands') return event.type === 'tool/call' && /bash|pwsh|shell|terminal/u.test(event.data.name)
+  if (category === 'files') return event.type === 'tool/call' && /file|read|write|edit|patch|fs_/u.test(event.data.name)
+  return (event.type === 'tool/result' && (event.data.message.isError === true || event.data.error !== undefined
+    || event.data.message.content.some(block => block.type === 'text' && /\[(?:exit code: [1-9]\d*|killed by signal:|timed out|aborted|stopped:)/u.test(block.text))))
+    || (event.type === 'turn/end' && event.data.reason.kind === 'error')
+}
+
+/** Select the largest UTF-8 bounded prefix without splitting a Unicode code point.
+ * @param text - one source value or stored chunk.
+ * @param offset - UTF-16 position on a code-point boundary.
+ * @param maxBytes - available byte capacity.
+ * @returns exclusive UTF-16 end position.
+ */
+export function utf8End(text: string, offset: number, maxBytes: number): number {
+  let end = offset
+  let bytes = 0
+  while (end < text.length) {
+    const point = text.codePointAt(end)!
+    const size = point <= 0x7f ? 1 : point <= 0x7ff ? 2 : point <= 0xffff ? 3 : 4
+    if (bytes + size > maxBytes) break
+    bytes += size
+    end += point > 0xffff ? 2 : 1
+  }
+  return end
 }
 
 /** Resolve old confidence labels and source freshness without changing historical JSON.

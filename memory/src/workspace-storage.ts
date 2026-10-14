@@ -14,10 +14,10 @@ import type { MemoryRoutes, MemoryRuntime } from './index.ts'
 import { installMemoryInjector } from './injector.ts'
 import { installPanelHost } from './panel-host.ts'
 import { LearningBudget, MemoryPipeline } from './pipeline.ts'
-import { enqueueCandidates } from './knowledge-store.ts'
 import { MemoryRetriever } from './retrieval.ts'
 import { HybridMemoryRetriever } from './hybrid-retrieval.ts'
-import { SqliteMemory } from './sqlite.ts'
+import { SqliteMemory, StorageWorker } from './sqlite.ts'
+import { HistoryImporter } from './history.ts'
 import { TextMemoryRetriever } from './text-retrieval.ts'
 import { queryExpander } from './query-expansion.ts'
 import { MemoryError } from './types.ts'
@@ -62,6 +62,12 @@ export class WorkspaceMemory implements MemoryRoutes {
   private readonly sessions = new Map<SessionId, ProjectId>()
   private readonly budget = new LearningBudget()
   private readonly listeners: Array<() => void> = []
+  private readonly paths = new Map<ProjectId, string>()
+  private readonly cleaned = new Set<SessionId>()
+  private readonly imported = new Set<SessionId>()
+  private readonly pending = new Set<Promise<void>>()
+  private readonly timers = new Set<ReturnType<typeof setTimeout>>()
+  private readonly storage: StorageWorker
   private closing = false
 
   /** @param ctx - profile services and optional Workspace registry.
@@ -69,12 +75,30 @@ export class WorkspaceMemory implements MemoryRoutes {
    * @param activatedAt - persisted activation cutoff.
    * @param report - nonthrowing body-free diagnostic observer.
    */
-  constructor(private readonly ctx: Context, private readonly spec: Spec, readonly activatedAt: number, private readonly report: (error: MemoryError) => void) {}
+  constructor(private readonly ctx: Context, private readonly spec: Spec, readonly activatedAt: number, private readonly report: (error: MemoryError) => void) { this.storage = new StorageWorker(spec) }
 
   /** @param session - candidate Session.
    * @returns whether it was created after activation.
    */
-  accepts(session: Pick<Session, 'header'>): boolean { return session.header.createdAt >= this.activatedAt }
+  accepts(session: Pick<Session, 'header'>): boolean { return !this.cleaned.has(session.header.id) && (session.header.createdAt >= this.activatedAt || this.imported.has(session.header.id)) }
+
+  /** @param project - owner. @returns whether historical operations have a registered Workspace. */
+  workspaceBound(project: ProjectId): boolean { return this.paths.has(project) }
+  /** @param project - explicit import owner. @param sessionId - admitted source. */
+  admit(project: ProjectId, sessionId: SessionId): void {
+    const owner = this.sessions.get(sessionId)
+    if (owner !== undefined && owner !== project) throw new MemoryError('conflict', 'Session is stored in more than one memory project')
+    this.imported.add(sessionId); this.cleaned.delete(sessionId); this.sessions.set(sessionId, project)
+  }
+  /** @param project - changed owner. @returns completion after persisted markers are restored. */
+  async refreshAdmissions(project: ProjectId): Promise<void> {
+    for (const item of await this.get(project).provider.maintenance.listAdmissions(project)) {
+      const owner = this.sessions.get(item.sessionId)
+      if (owner !== undefined && owner !== project) throw new MemoryError('conflict', 'Session is stored in more than one memory project')
+      if (item.status === 'admitted') this.admit(project, item.sessionId)
+      else { this.cleaned.add(item.sessionId); this.imported.delete(item.sessionId); this.sessions.set(item.sessionId, project) }
+    }
+  }
 
   /** @param sessionId - canonical identity.
    * @returns resolved project, or undefined before successful route initialization.
@@ -123,6 +147,7 @@ export class WorkspaceMemory implements MemoryRoutes {
   }
 
   private ensure(project: ProjectId, workspacePath?: string): Promise<MemoryRuntime> {
+    if (workspacePath !== undefined) this.paths.set(project, workspacePath)
     if (this.closing) return Promise.reject(new MemoryError('closed', 'Workspace memory is closing'))
     const runtime = this.runtimes.get(project)
     if (runtime !== undefined) return Promise.resolve(runtime)
@@ -142,11 +167,11 @@ export class WorkspaceMemory implements MemoryRoutes {
       ? await memoryPath('workspace-memory.sqlite', this.spec.dataRoot)
       : await memoryPath(join(`memory_${project}`, 'memory.sqlite'), workspacePath)
     const dataRoot = workspacePath ?? this.spec.dataRoot
-    const provider = await SqliteMemory.open({ ...this.spec, projectId: project, dataRoot, databasePath })
+    const provider = await SqliteMemory.open({ ...this.spec, projectId: project, dataRoot, databasePath }, this.storage)
     let retriever: MemoryRuntime['retriever']
     let pipeline: MemoryRuntime['pipeline']
     try {
-      if (provider.listProjects().some(owner => owner !== project)) throw new MemoryError('conflict', 'Workspace database contains another project')
+      if ((await provider.listProjects()).some(owner => owner !== project)) throw new MemoryError('conflict', 'Workspace database contains another project')
       const embedder = this.spec.embedding === undefined ? undefined : new HttpEmbedder(this.spec.embedding, process.env[this.spec.embedding.apiKeyEnv] ?? '')
       const llm = this.ctx.get('llm')
       const textRetriever = this.spec.textSearch !== undefined ? new TextMemoryRetriever(provider, this.spec.textSearch,
@@ -156,11 +181,16 @@ export class WorkspaceMemory implements MemoryRoutes {
       retriever = textRetriever !== undefined && vectorRetriever !== undefined
         ? new HybridMemoryRetriever(textRetriever, vectorRetriever, this.spec.hybrid!) : textRetriever ?? vectorRetriever
       pipeline = this.spec.autoLearning && llm !== undefined ? new MemoryPipeline(provider, this.spec, llm, this.report, retriever, this.budget) : undefined
-      const runtime: MemoryRuntime = { provider, ...(retriever === undefined ? {} : { retriever }), ...(pipeline === undefined ? {} : { pipeline }) }
+      const history = workspacePath === undefined ? undefined : new HistoryImporter(this.ctx.sessionPersistence, provider,
+        async header => {
+          const workspace = header.cwd === undefined ? undefined : await this.ctx.get('workspaceRegistry')?.resolveByPath(header.cwd)
+          return workspace === undefined ? undefined : String(workspace.id) as ProjectId
+        }, owner => this.scan(owner), this.spec.pageSize, this.spec.pageMaxBytes, this.spec.autoLearning, this.report)
+      const runtime: MemoryRuntime = { provider, ...(history === undefined ? {} : { history }), ...(retriever === undefined ? {} : { retriever }), ...(pipeline === undefined ? {} : { pipeline }) }
       const recoveredSessions: SessionId[] = []
       let after = ''
       for (;;) {
-        const sessions = provider.listSessions(project, after, this.spec.pageSize)
+        const sessions = await provider.listSessions(project, after, this.spec.pageSize)
         for (const source of sessions) {
           const owner = this.sessions.get(source.header.id)
           if (owner !== undefined && owner !== project) throw new MemoryError('conflict', 'Session is stored in more than one memory project')
@@ -171,10 +201,13 @@ export class WorkspaceMemory implements MemoryRoutes {
       }
       for (const sessionId of recoveredSessions) this.sessions.set(sessionId, project)
       this.runtimes.set(project, runtime)
+      await this.refreshAdmissions(project)
+      await history?.resume(project)
       this.listeners.push(provider.onMemoryChange(() => this.enqueue(project, runtime)))
       this.enqueue(project, runtime)
       this.scan(project)
       retriever?.schedule()
+      this.armRetention(project, runtime)
       return runtime
     } catch (error) {
       this.runtimes.delete(project)
@@ -186,21 +219,43 @@ export class WorkspaceMemory implements MemoryRoutes {
 
   private enqueue(project: ProjectId, runtime: MemoryRuntime): void {
     if (this.closing || this.spec.knowledge === undefined) return
-    try {
-      for (const level of ['L2', 'L3'] as const) enqueueCandidates(runtime.provider.knowledge, project, level, this.spec.knowledge, this.spec.pageSize)
-    } catch (error) { this.report(new MemoryError('storage', 'Knowledge enqueue failed; sources remain available for retry', error)) }
+    const config = this.spec.knowledge
+    this.track((async () => {
+      for (const level of ['L2', 'L3'] as const) await runtime.provider.knowledge.enqueueCandidates(project, level, config, this.spec.pageSize)
+    })(), 'Knowledge enqueue failed; sources remain available for retry')
   }
 
   /** Scan committed source turns and wake this project's learner.
    * @param project - initialized project.
+   * @returns completion after scanning the committed prefix.
    */
-  scan(project: ProjectId): void {
-    if (this.closing || this.spec.l1 === undefined) return
-    try {
+  scan(project: ProjectId): Promise<void> {
+    if (this.closing || this.spec.l1 === undefined) return Promise.resolve()
+    const config = this.spec.l1
+    return this.track((async () => {
       const runtime = this.get(project)
-      runtime.provider.scanTurns(project, this.spec.l1, this.spec.pageSize)
-      runtime.pipeline?.wake(project)
-    } catch (error) { this.report(new MemoryError('source', 'L1 scan failed; its committed checkpoint is retained', error)) }
+      await runtime.provider.scanTurns(project, config, this.spec.pageSize)
+      if (!this.closing) runtime.pipeline?.wake(project)
+    })(), 'L1 scan failed; its committed checkpoint is retained')
+  }
+
+  private track(work: Promise<void>, message: string): Promise<void> {
+    const settled = work.catch(error => this.report(error instanceof MemoryError ? error : new MemoryError('storage', message, error)))
+    this.pending.add(settled)
+    void settled.then(() => this.pending.delete(settled))
+    return settled
+  }
+  private armRetention(project: ProjectId, runtime: MemoryRuntime): void {
+    if (this.closing || this.spec.retention.maxAgeDays === undefined) return
+    const timer = setTimeout(() => {
+      this.timers.delete(timer)
+      if (this.closing) return
+      this.track((async () => {
+        await runtime.provider.maintenance.cleanup(project, { maxAgeDays: this.spec.retention.maxAgeDays!, activeSessionIds: this.ctx.sessions.list().map(session => session.id) })
+        await this.refreshAdmissions(project)
+      })().finally(() => this.armRetention(project, runtime)), 'Automatic memory cleanup failed; retained source data remains available')
+    }, this.spec.retention.intervalMs)
+    timer.unref(); this.timers.add(timer)
   }
 
   /** Stop notifications and settle all work before releasing databases.
@@ -210,17 +265,21 @@ export class WorkspaceMemory implements MemoryRoutes {
     // Capture is drained by the caller before this owner starts closing.
     await Promise.allSettled([...this.opening.values()])
     this.closing = true
+    for (const timer of this.timers) clearTimeout(timer)
+    this.timers.clear()
     for (const dispose of this.listeners) dispose()
     const runtimes = [...this.runtimes.values()]
     const results = await Promise.allSettled(runtimes.map(async runtime => {
       try {
+        await runtime.history?.close()
         const settled = await Promise.allSettled([runtime.pipeline?.close(), runtime.retriever?.close()])
         const failures = settled.filter(result => result.status === 'rejected')
         if (failures.length) throw new AggregateError(failures.map(result => result.reason), 'Workspace workers failed to close')
-      } finally { await runtime.provider.close() }
+      } finally { await Promise.allSettled([...this.pending]); await runtime.provider.close() }
     }))
     this.runtimes.clear()
     this.sessions.clear()
+    await this.storage.close()
     const failures = results.filter(result => result.status === 'rejected')
     if (failures.length) throw new AggregateError(failures.map(result => result.reason), 'Workspace databases failed to close')
   }
@@ -252,12 +311,25 @@ export async function installWorkspaceMemory(ctx: Context, spec: Spec): Promise<
       appendRaw: request => routes.get(request.projectId).provider.appendRaw(request),
     }, ctx.sessionPersistence, spec, report, project => routes.scan(project), session => routes.resolveSession(session))
     const capture = collector
-    listeners.push(ctx.on('session/created', session => { if (routes.accepts(session)) capture.adopt(session) }))
+    listeners.push(ctx.on('session/created', async session => {
+      if (!routes.accepts(session)) return
+      const project = await routes.resolveSession(session)
+      await routes.get(project).provider.maintenance.setActive(project, session.id, true)
+      capture.adopt(session)
+    }))
     listeners.push(ctx.on('session/event', (session, event) => { if (routes.accepts(session)) capture.capture(session, event) }))
     listeners.push(ctx.on('session/flush', session => routes.accepts(session) ? capture.flush(session) : Promise.resolve()))
-    listeners.push(ctx.on('session/disposed', session => capture.retire(session)))
+    listeners.push(ctx.on('session/disposed', async session => {
+      await capture.retire(session)
+      const project = routes.projectOfSession(session.id)
+      if (project !== undefined) await routes.get(project).provider.maintenance.setActive(project, session.id, false)
+    }))
     const existing = ctx.sessions.list().filter(session => routes.accepts(session))
-    for (const session of existing) capture.adopt(session)
+    for (const session of existing) {
+      const project = await routes.resolveSession(session)
+      await routes.get(project).provider.maintenance.setActive(project, session.id, true)
+      capture.adopt(session)
+    }
     await Promise.all(existing.map(session => capture.flush(session)))
     const global = routes.get(spec.projectId)
     const service = new MemoryService(ctx, global.provider, spec.l1, project => routes.scan(project), spec.browser, global.retriever, global.pipeline, routes)
@@ -281,7 +353,6 @@ export async function installWorkspaceMemory(ctx: Context, spec: Spec): Promise<
         handler: () => ({ kind: 'error', text: 'Cross-project sharing is disabled in workspace storage mode.' }) })
     })
     ctx.effect(() => dispose, 'memory.workspace-databases')
-    // oxlint-disable-next-line typescript/no-misused-promises -- Cordis awaits injected plugin setup and disposal.
     ctx.inject(['workspaceRegistry'], async () => { await routes.recover() })
   } catch (error) {
     try { await dispose() } catch (cleanupError) { throw new AggregateError([error, cleanupError], 'Workspace memory startup and cleanup failed') }

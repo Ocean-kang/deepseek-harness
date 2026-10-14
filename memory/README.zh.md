@@ -9,7 +9,7 @@ kind: "package-bundle"
 
 ## 摘要
 
-将完整的已记录 Session 事件保存在项目所属的 SQLite 中，浏览 L0–L3 并选择 L2/L3 用于下一轮。后台学习复用 DSH 模型和凭据，BM25 检索无需 embedding 密钥。独立 bundle 通过公开扩展点开启带日志的注入。参见[安装说明](distribution/README.zh.md)和[验证范围](evaluation/web-startup-0.1.12-2026-10-12.md)。
+将完整的已记录 Session 事件保存在项目所属的 SQLite 中，浏览 L0–L3 并选择 L2/L3 用于下一轮。后台学习复用 DSH 模型和凭据，BM25 检索无需 embedding 密钥。独立 bundle 通过公开扩展点开启带日志的注入。参见[安装说明](distribution/README.zh.md)和[验证范围](evaluation/storage-0.1.13-2026-10-13.md)。
 
 ## 目录
 
@@ -28,7 +28,7 @@ kind: "package-bundle"
 pnpm dsh web --patch ./memory/cordis.patch.yml --patch ./memory/profiles/chat-view.patch.yml
 ```
 
-[源码 patch](profiles/headless.patch.yml) 在受支持的 headless profile 中加载插件，并使 runner 依赖已就绪的 `memory` 服务。[构建产物 patch](profiles/headless-built.patch.yml) 选择本地构建结果。这些 patch 不安装依赖。必须使用版本匹配、已经准备好的 DSH 检出；本目录的写入限制不允许执行根目录安装或构建。在 `memory/` 内运行 `node scripts/link-profile.mjs`，将插件目录注册给 profile 解析器。链接及其目标均位于 `memory/` 内，不会替换已有的其他条目。
+[源码 patch](profiles/headless.patch.yml) 在受支持的 headless profile 中加载插件，并使 runner 依赖已就绪的 `memory` 服务。[构建产物 patch](profiles/headless-built.patch.yml) 选择本地构建结果。这些 patch 不安装依赖。必须使用版本匹配、已经准备好的 DSH 检出；本目录的写入限制不允许执行根目录安装或构建。设置环境后，加载本地构建 overlay 前先在 `memory/` 内运行 `node --import tsx/esm scripts/link-development-deps.mjs --runtime`：普通 Node 存储 worker 需要通过 memory 内的只读链接读取已有的 DSH peer 构建产物；缺少 peer 会导致插件无法激活。此脚本不安装依赖、不通过链接写入，并保留已有测试库。在 `memory/` 内运行 `node scripts/link-profile.mjs`，将插件目录注册给 profile 解析器；这项独立链接及其目标均位于 `memory/` 内。
 
 使用明确、稳定的项目标识点入 [PowerShell 环境配置](scripts/environment.ps1)。它检查输出目录是否为链接，将 Harness home、缓存、临时路径和工作目录设在 `memory/` 内，并禁用遥测。它不启动应用；环境修改保留在当前 PowerShell 会话中。
 
@@ -42,7 +42,7 @@ pnpm dsh web --patch ./memory/cordis.patch.yml --patch ./memory/profiles/chat-vi
 node --import tsx/esm ../apps/cli/src/bin.ts --profile headless --patch ./profiles/headless.patch.yml 'Reply with OK without using tools.'
 ```
 
-独立 bundle 和完整 Web overlay 默认使用工作区存储：`<工作区>/memory_<工作区UUID>/memory.sqlite` 包含项目的 L0–L3 数据。只有创建时间不早于持久化启用时间的对话参与；旧对话和旧集中数据库不导入。无项目对话使用新的全局数据库。路径、备份及显式集中模式设置见[数据与配置](distribution/README.zh.md#data-and-configuration)。配置校验及已有链接检查在数据库写入前完成。
+独立 bundle 和完整 Web overlay 默认使用工作区存储：`<工作区>/memory_<工作区UUID>/memory.sqlite` 包含项目的 L0–L3 数据。自动采集接纳创建时间不早于持久化启用时间的对话。面板可显式导入当前已绑定工作区中的旧对话；旧集中数据库不导入。无项目对话使用全局数据库。路径及备份见[数据与配置](distribution/README.zh.md#data-and-configuration)，已有安装升级前请阅读[存储升级说明](distribution/storage-upgrade.zh.md)。
 
 | 字段 | 默认值 | 含义 |
 |---|---|---|
@@ -53,6 +53,11 @@ node --import tsx/esm ../apps/cli/src/bin.ts --profile headless --patch ./profil
 | `projectId` | 必填 | 备用项目标识；patch 读取 `DSH_MEMORY_PROJECT`。 |
 | `databasePath` | 必填 | `memory/` 内的 SQLite 文件；示例使用 `data/l0.sqlite`。 |
 | `queueCapacity` | 1024 | 全部 Session 实时事件缓冲数量上限。 |
+| `queueMaxBytes` | 8388608 | 实时采集保留的已分离事件字节上限。 |
+| `pageMaxBytes` | 262144 | 来源恢复或提炼分页的事件字节上限，允许单条超大事件。 |
+| `tracePageMaxBytes` | 65536 | trace 分页及存储分块的 UTF-8 字节上限。 |
+| `storageQueueCapacity` / `storageQueueMaxBytes` | 128 / 8388608 | 等待存储 worker 的已接纳请求数量及序列化字节上限。 |
+| `retention.maxAgeDays` / `retention.intervalMs` | 未设置 / 86400000 | 未设置期限时关闭自动清理；配置期限后按此间隔执行。 |
 | `batchSize` | 128 | 每次采集事务的事件数量上限。 |
 | `pageSize` | 128 | 每次来源恢复读取的事件数量上限，同时受批次大小限制。 |
 | `learningConcurrency` | 2 | 独立流水线同时执行的项目处理数量上限。 |
@@ -125,6 +130,12 @@ Web 和面板开发 patch 选择 `ui-chat.transcriptView: detailed`。[Chat 展�
 
 L0 卡片展示对话和执行。L1 展示任务经历，详情中的 trace 和证据默认折叠。L2 展示以结论为主的场景知识卡，点击场景可限定浏览范围。L3 的知识和偏好筛选在分页前执行。详情保留原因、适用条件、限制、证据来源、来源有效性、不可变历史及折叠 JSON。新摘要在提炼调用中生成；旧版本回退到已有可读字段。搜索高亮字面匹配；侧栏和输入框共用 Session 状态轮询，保留已提交查询、详情和滚动位置。`browser.refreshIntervalMs` 控制轮询间隔。
 
+在已绑定工作区打开“导入与存储维护”，按需设置对话创建日期，预览并选择要导入的来源。预览说明自动提炼是否会调用配置的模型；关闭时仅导入 L0。已保存进度在重启后恢复。停止导入保留已提交分页和已排队提炼；格式和来源失败仍可查看。显式导入旧 Session 不改变全局启用时间。
+
+输入保留天数，预览后执行清理。预览统计可清理和受保护的对话及其事件字节量。清理重新核对当前记忆来源链、待用选择、未完成任务、活动 Session 和有效共享授权，再按完整来源 Session 删除过期且无引用的数据及派生记录。已清理来源不会自动重新采集，显式导入可恢复。“压缩数据库文件”为独立维护操作。被引用的证据可能长期保留，因此期限不承诺固定磁盘容量。
+
+执行详情仅在展开后加载。“加载更多”替换当前 trace 页，“加载执行详情”返回第一页。可信适配器使用 `await ctx.memory.readTrace(project, ref, cursor?)`，依次拼接返回的 `text` 可还原完整 JSON trace。L1 浏览和知识提炼不包含完整 trace，精确 L0 引用仍用于证据检查。失败的知识任务提供显式重试入口；升级不重跑已完成任务。
+
 L2/L3 待选项保留到一次参考正文被接受，服务端检查版本、共享、数量及完整正文预算。取消仅清除待选引用。开启 `injection` 后，插件合并手选和可选 BM25 结果，经 `user/message` 记录完整正文与引用，并在提交后消费选择。独立 bundle 与面板 patch 开启注入；[web.patch.yml](profiles/web.patch.yml) 仍仅采集。
 
 勾选每条可用 L2/L3 卡片行首的选择框，然后点击“将所选加入下一轮”；也可直接加入单条卡片。L0/L1 保持只读。待用区及输入框展示已保存正文、数量和渲染字节预算，侧栏关闭时仍可见。手选记忆在接纳后消费一次；自动召回持续生效直到关闭。开关保留待用引用及原消费收据，即使版本已经失效。新选择仍需通过有效性及预算校验。发送后，输入框和面板展示准确的已提交上下文及引用；接纳不保证回答引用每条记忆。
@@ -194,7 +205,7 @@ try {
 <details>
 <summary>存储、恢复与生命周期</summary>
 
-[SQLite Provider](src/sqlite.ts) 使用独立数据库标识和 schema 版本 5，通过事务升级 schema 1、2、3 或 4，不重写 L0 事件和 L1 版本。事件主键为 `(session_id, seq)`。Session 元数据和下一个未提交位置与事件行在同一事务中更新。未知较新版本及其他数据库标识被拒绝。
+[SQLite Provider](src/sqlite.ts) 由插件拥有的 worker 执行连接、事务、扫描及临时 FTS。schema 版本 6 通过事务升级版本 1–5，保留已记录事件和旧记忆版本。新增 trace 分块、导入进度及准入/清理标记属于此数据库。事件行与已提交前缀同步推进。未知较新版本及其他数据库标识被拒绝。存储、浏览及检索接口返回 Promise，调用方等待持久化写入和结果。worker 失败报告结果未知，不自动重复可能已经提交的操作。
 
 [L1 存储](src/l1-store.ts) 扫描已提交的 L0 分页，将任务创建与扫描游标、未闭合 turn 状态一起提交。启动时扫描所有已存储项目，包括未载入的 Session；采集和直接追加成功后扫描实际写入的项目。它跳过完全继承的 turn，保留在 fork 继承前缀之后结束的 turn。任务键包含项目、Session 区间、层级及已保存的提炼设置。配置变化影响新发现的 turn；显式重新提炼为已有逻辑记忆创建新操作。候选检查点先于记忆版本与任务完成状态的原子提交。操作查询用于处理提交结果不确定的情况，预期版本检查拒绝并发覆盖。历史版本仍可读取，并标记为已替代。
 
@@ -217,7 +228,7 @@ node scripts/link-profile.mjs
 node ../apps/cli/lib/bin.js --profile headless --patch ./profiles/headless-built.patch.yml 'Reply with OK without using tools.'
 ```
 
-运行 `node --import tsx/esm scripts/check-docs.mjs` 检查目录内链接、双语结构和配对记录。审阅两种语言后，在同一命令后添加 `--write-pairing`，更新四组本地一致性记录。
+运行 `node --import tsx/esm scripts/check-docs.mjs` 检查目录内链接、双语结构和配对记录。审阅两种语言后，在同一命令后添加 `--write-pairing`，更新五组本地一致性记录。
 
 设置 `DSH_MEMORY_VERIFY_COPY=1` 可启用可选的 `profile-copy` 测试，通过真实 JSONL 解码器比较 SQLite 和原日志。`DSH_MEMORY_VERIFY_DB` 指定 memory 相对路径的数据库，默认为 `data/l0.sqlite`。应紧接相应 profile 运行后执行比较；之后若活动被采集到其他数据库，原日志可能继续增长。
 
@@ -248,12 +259,12 @@ node ../apps/cli/lib/bin.js --profile headless --patch ./profiles/headless-built
 
 ## Known Limitations and Deferred Work
 
-- 仅接管插件启用期间载入的 Session，不扫描全部磁盘历史。
+- 自动采集接管已载入的 Session；显式历史导入通过 Session 持久化服务发现当前已绑定工作区的来源。
 - 原日志丢失时无法恢复尚未复制的事件；已经复制的事件仍可读取。
-- 队列容量按事件数计算，不按字节计算。单个大事件和恢复分页仍可能占用较多内存；必要时减小批次和分页大小。
+- 采集队列和数据页同时受数量及字节限制。单条超大事件可超过分页预算；上游 JSONL 后端冷读仍可能加载完整 Session。
 - 来源服务级刷新可能报告其他 Session writer 的失败；恢复将该检查点失败视为错误。
-- SQLite 调用是同步的，可能阻塞至配置的锁超时；更大的工作负载可能需要独立设计的 Worker Provider。
-- 数据库持续增长；没有保留期限或附件备份。提炼器先将完整 turn 载入内存再划分请求；字节预算约束请求，不约束进程内存峰值。
+- SQLite 锁等待及原生语句占用专用存储 worker，依赖的记忆操作仍需等待；单条原生语句无法中断。
+- 保留期限按需启用并保护被引用证据。清理后的数据库页可复用，压缩为独立操作。不提供附件备份或固定数据库容量保证。
 - L0 副本保留已记录的事件数据和文件引用，不复制附件及 spill 文件；引用文件丢失后无法从副本重建。
 - 直接挂载默认关闭 `autoLearning` 和 `injection`，独立 bundle 开启两者。每个对话默认关闭自动注入。真实模型使用 DSH 已配置的凭据。
 - 无密钥夹具和单条真实模型学习样例不证明一般记忆质量。固定手工质量实验尚未执行；向量阈值需要按所选 embedding 模型校准。
