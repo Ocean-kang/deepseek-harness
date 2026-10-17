@@ -4,7 +4,7 @@ import { Context } from '@deepseek-ai/cordis'
 import { DatabaseSync } from 'node:sqlite'
 import { isDeepStrictEqual } from 'node:util'
 import { SessionId } from '@deepseek-ai/dsh-session'
-import JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
+import * as JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
 import { memoryPath } from '../src/config.ts'
 
 it.runIf(process.env.DSH_MEMORY_VERIFY_COPY === '1')('matches every copied event with the real profile log', async () => {

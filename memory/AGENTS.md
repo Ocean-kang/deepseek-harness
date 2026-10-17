@@ -23,7 +23,7 @@
 
 ## Harness 开发要求
 
-开发前阅读 [架构规范](../docs/architecture.md)；涉及生命周期、并发、子进程或清理时阅读 [防御模式](../docs/defensive-patterns.md)。根目录规则规定的架构和质量要求优先于 Ponytail 对抽象、依赖和检查数量的精简偏好。
+开发前阅读 [架构规范](../docs/architecture.md)；涉及生命周期、并发、子进程或清理时阅读 [防御模式](../docs/defensive-patterns/README.md)。根目录规则规定的架构和质量要求优先于 Ponytail 对抽象、依赖和检查数量的精简偏好。
 
 - 通过已记录的插件扩展点实现能力，不修改 Agent 循环。遵循 Service Definition、Service Provider 和 Consumer 职责；仅在职责独立演进时拆分。注册与监听通过 `ctx.effect()` 或 `ctx.on()` 管理，并正确清理。
 - 遵守严格 TypeScript、ESM、跨包导入和品牌 ID 规则，不新增 `as unknown` 断言。部署相关选项使用经过校验的配置；配置错误在最早可确定的位置明确失败。

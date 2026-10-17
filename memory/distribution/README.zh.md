@@ -20,16 +20,16 @@ kind: "package-bundle"
 <a id="install-and-use"></a>
 ## 安装与使用
 
-Memory 0.1.14 面向 DSH 0.2.1-alpha.2 的 Web profile，DSH peer 声明会拒绝其他运行版本。下载构建包并通过 DSH 安装，无需编译源码或修改 DSH 代码。
+Memory 0.1.15 面向 DSH 0.2.1-rc.2 的 Web profile，DSH peer 声明会拒绝其他运行版本。下载构建包并通过 DSH 安装，无需编译源码或修改 DSH 代码。
 
 ```sh
-dsh plugin --profile web add ./deepseek-ai-dsh-memory-l0-0.1.14.tgz
+dsh plugin --profile web add ./deepseek-ai-dsh-memory-l0-0.1.15.tgz
 dsh --profile web
 ```
 
-升级时停止 DSH，备份[记忆目录](#data-and-configuration)，包括 SQLite sidecar 文件。在相同 DSH home 中安装 0.1.14 并重启。数据库迁移到 schema 7；回滚需要备份。自定义调用方必须等待异步记忆操作并使用 trace 分页，遵循[可靠性升级指南](reliability-upgrade.md)。使用 DSH 0.2.1-alpha.1 的安装需先将 DSH 更新到 0.2.1-alpha.2，无需 `allow-version` 豁免。源码 overlay 重新构建 `memory/lib`，以原有 patch 参数重启。从 memory 0.1.8 升级还需遵循[分层记忆指南](layered-upgrade.md)。
+升级时停止 DSH，备份[记忆目录](#data-and-configuration)，包括 SQLite sidecar 文件。在相同 DSH home 中安装 0.1.15 并重启。数据库迁移到 schema 7；回滚需要备份。自定义调用方必须等待异步记忆操作并使用 trace 分页，遵循[可靠性升级指南](reliability-upgrade.md)。使用旧版 DSH（包括 0.2.1-alpha.2）的安装需先将 DSH 更新到 0.2.1-rc.2，无需 `allow-version` 豁免。源码 overlay 重新构建 `memory/lib`，以原有 patch 参数重启。从 memory 0.1.8 升级还需遵循[分层记忆指南](layered-upgrade.md)。
 
-面板使用官方 Web `connection` 依赖和 `POST /api/memory/panel`。安装 0.1.14 后刷新已打开的浏览器标签页，使 Client 与 Host 使用相同 API。删除本地包含 `webRuntime` 的 `connection` 覆盖；它是插件 ID，不是服务。确认记忆标签页可以加载，且下一轮选择在刷新后保留。调用旧 `/memory/panel` 路由的自定义 Client 使用共享 API，RPC method 为 `memory/panel`。
+面板使用官方 Web `connection` 依赖和 `POST /api/memory/panel`。安装 0.1.15 后刷新已打开的浏览器标签页，使 Client 与 Host 使用相同 API。删除本地包含 `webRuntime` 的 `connection` 覆盖；它是插件 ID，不是服务。确认记忆标签页可以加载，且下一轮选择在刷新后保留。调用旧 `/memory/panel` 路由的自定义 Client 使用共享 API，RPC method 为 `memory/panel`。
 
 在对话侧栏打开记忆。L1 展示任务目标、问题、结果和解决方案，trace 与来源默认折叠；L2 按场景组织可读知识卡；L3 区分工程知识和交互偏好。摘要随提炼生成。选择有效 L2/L3 供一轮使用；待用区和输入框展示正文及预算。新对话默认自动召回 L1–L3，已有显式开关保持原值。模型可通过只读 `memory_search` 补查。学习和召回保持独立。来源被替代或失效时暂停派生召回，精确历史仍可读。参见[分层记忆升级](layered-upgrade.md)。
 

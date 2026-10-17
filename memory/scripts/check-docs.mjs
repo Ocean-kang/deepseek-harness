@@ -2,7 +2,7 @@
 import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs'
 import { basename, dirname, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { anchorCache, findViolations } from '../../scripts/verify-md-links.ts'
+import { markdownLinkCache, findViolations } from '../../scripts/verify-md-links.ts'
 import {
   isTranslationScopeFile, parseTranslationMarkdown, parseTranslationPairingManifest, translationPairSourcePredicate,
   translationStructureDiff, translationStructureSignature,
@@ -36,7 +36,7 @@ const context = { repoRoot: root, isTranslationPairSource: path => pairSources.i
 const recordContext = { repoRoot: root, isTranslationPairSource: translationPairSourcePredicate(
   parseTranslationPairingManifest(readFileSync(resolve(root, 'scripts/translation-pairing.manifest.json'), 'utf8')),
 ) }
-const anchors = anchorCache()
+const anchors = markdownLinkCache()
 const errors = []
 function signature(sourcePath, counterpart, markdown) {
   return translationStructureSignature(parseTranslationMarkdown(markdown), counterpart, {

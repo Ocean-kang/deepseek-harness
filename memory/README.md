@@ -9,7 +9,7 @@ English | [中文](README.zh.md)
 
 ## Summary
 
-Keep complete recorded Session events in project-owned SQLite, browse L0–L3 and select L2/L3 for the next turn. Background learning reuses DSH models and credentials; BM25 retrieval needs no embedding key. The portable bundle enables logged recall through public extension points. See [installation](distribution/README.md) and [verification scope](evaluation/reliability-0.1.14-2026-10-16.md).
+Keep complete recorded Session events in project-owned SQLite, browse L0–L3 and select L2/L3 for the next turn. Background learning reuses DSH models and credentials; BM25 retrieval needs no embedding key. The portable bundle enables logged recall through public extension points. See [installation](distribution/README.md) and [verification scope](evaluation/compatibility-0.2.1-rc.2-2026-10-17.md).
 
 ## Table of Contents
 
@@ -22,7 +22,7 @@ Keep complete recorded Session events in project-owned SQLite, browse L0–L3 an
 <a id="use-this-plugin"></a>
 ## Use this plugin
 
-This checkout targets DSH 0.2.1-alpha.2. After building `memory/lib`, run the following from the repository root to enable capture, L1–L3 learning, recall and the right-sidebar Memory tab. The bundle uses the active DSH home and its configured model credentials; `profiles/web.patch.yml` enables L0 capture only. If the bundle is already installed in the Web profile, omit `--patch ./memory/cordis.patch.yml` to avoid mounting it twice. For archive installation and upgrading from earlier memory versions, see the [portable instructions](distribution/README.md).
+This checkout targets DSH 0.2.1-rc.2. After building `memory/lib`, run the following from the repository root to enable capture, L1–L3 learning, recall and the right-sidebar Memory tab. The bundle uses the active DSH home and its configured model credentials; `profiles/web.patch.yml` enables L0 capture only. If the bundle is already installed in the Web profile, omit `--patch ./memory/cordis.patch.yml` to avoid mounting it twice. For archive installation and upgrading from earlier memory versions, see the [portable instructions](distribution/README.md).
 
 ```powershell
 pnpm dsh web --patch ./memory/cordis.patch.yml --patch ./memory/profiles/chat-view.patch.yml

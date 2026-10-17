@@ -30,7 +30,8 @@ for (const patch of ['cordis.patch.yml', 'profiles/panel.patch.yml']) {
       const deadline = AbortSignal.timeout(startupTimeoutMs)
       child = spawn(process.execPath, ['--import', 'tsx/esm', join(repo, 'apps/cli/src/bin.ts'), 'web',
         '--patch', join(repo, 'apps/web/tests/pin-browse-picker.overlay.yml'),
-        '--patch', join(memory, patch), '--patch', join(memory, 'tests/fixtures/compatibility.patch.yml'),
+        '--patch', join(memory, patch), '--patch', join(memory, 'profiles/chat-view.patch.yml'),
+        '--patch', join(memory, 'tests/fixtures/compatibility.patch.yml'),
         '--patch', output, '--patch', join(memory, 'tests/fixtures/profile-startup.patch.yml'), '--no-open', '--port', '0'], {
         cwd: item.root, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], signal: deadline,
         env: { ...process.env, DSH_HOME: join(item.root, 'home'), DSH_MEMORY_PROJECT: 'startup-test',
@@ -54,6 +55,7 @@ for (const patch of ['cordis.patch.yml', 'profiles/panel.patch.yml']) {
       expect(code, log.replace(/\?token=[^\s]+/gu, '')).toBe(0)
       expect(log).toContain('MEMORY_PROFILE_STARTUP_PASSED')
       expect(log).not.toContain('did not activate')
+      expect(log).not.toContain('disabling profile plugin row "memory-l0"')
     } finally {
       if (child?.exitCode === null && child.signalCode === null) child.kill()
       if (exited !== undefined) {
