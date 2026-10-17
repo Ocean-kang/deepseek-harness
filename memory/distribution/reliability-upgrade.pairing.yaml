@@ -1,0 +1,16 @@
+# Bilingual-pair consistency record for reliability-upgrade.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
+#   node --import tsx/esm scripts/check-docs.mjs --write-pairing
+/:
+  en: ba2b74a0930d60c0
+  zh: f54717db03634b7e
+/memory-reliability-upgrade:
+  en: 08d41894085abe15
+  zh: d9504265f21ec0aa
+/memory-reliability-upgrade/change:
+  en: 9c153f348e0a6687
+  zh: 6b6649efdc653d5b
+/memory-reliability-upgrade/migration:
+  en: 80c6e1de491ccad7
+  zh: 2249c0fa03979b69

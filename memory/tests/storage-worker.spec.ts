@@ -5,13 +5,14 @@ import { Worker } from 'node:worker_threads'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { SessionSeq, SessionLogOffset } from '@deepseek-ai/dsh-session'
 import type { SessionEvent, SessionId } from '@deepseek-ai/dsh-session'
-import { SqliteMemory, StorageWorker, SCHEMA_VERSION } from '../src/sqlite.ts'
+import { SqliteMemory, StorageWorker, StoragePool, SCHEMA_VERSION } from '../src/sqlite.ts'
 import { SqliteMemory as Backend } from '../src/sqlite-backend.ts'
 import { batch, fixture, header } from './helpers.ts'
 import { turnEvents } from './l1-fixtures.ts'
 import { candidate } from './l1-fixtures.ts'
 import { resolveL1Config } from '../src/l1-config.ts'
 import type { TraceCursor } from '../src/l1-types.ts'
+import { retainSchema } from './schema-fixtures.ts'
 
 const resources: Array<() => Promise<void>> = []
 afterEach(async () => { for (const close of resources.splice(0).reverse()) await close() })
@@ -35,7 +36,7 @@ it('boots the real source worker, upgrades schema 5 and restores the same raw ev
   await backend.close()
   const legacy = new DatabaseSync(item.spec.databasePath)
   try {
-    legacy.exec('DROP TABLE l1_trace_chunks; DROP TABLE l1_summary_projections; DROP TABLE l1_candidate_projections; DROP TABLE memory_imports; DROP TABLE memory_admissions; DROP TABLE memory_cleanup_runs; PRAGMA user_version = 5')
+    retainSchema(legacy, 5)
   } finally { legacy.close() }
   const memory = await asynchronous(item)
   expect(await memory.listProjects()).toEqual([item.spec.projectId])
@@ -47,6 +48,29 @@ it('boots the real source worker, upgrades schema 5 and restores the same raw ev
   const reopened = await asynchronous(item)
   expect(await reopened.getSessionProject(header().id)).toBe(item.spec.projectId)
   expect((await reopened.appendRaw(batch(item.spec, events))).duplicates).toBe(events.length)
+})
+
+it('serves another workspace while the first workspace waits for its SQLite writer', async () => {
+  const first = await setup()
+  const second = await setup()
+  const pool = new StoragePool({ ...first.spec, storageWorkers: 2 })
+  resources.push(() => pool.close())
+  const a = await SqliteMemory.open(first.spec, pool)
+  const b = await SqliteMemory.open(second.spec, pool)
+  resources.push(() => a.close(), () => b.close())
+  const lock = new DatabaseSync(first.spec.databasePath)
+  let writing: Promise<unknown> | undefined
+  try {
+    lock.exec('BEGIN IMMEDIATE')
+    let settled = false
+    writing = a.appendRaw(batch(first.spec, turnEvents()))
+    void writing.then(() => { settled = true }, () => { settled = true })
+    expect(await b.listProjects()).toEqual([])
+    expect(settled).toBe(false)
+  } finally {
+    lock.exec('ROLLBACK'); lock.close()
+    await writing
+  }
 })
 
 it('returns byte-bounded raw pages while allowing one oversized original event without truncation', async () => {
@@ -103,7 +127,7 @@ it('backfills a schema 5 large inline trace once without rewriting its immutable
   try {
     legacy.prepare('UPDATE l1_memories SET summary = ? WHERE id = ? AND revision = ?').run(legacySummary, ref.id, ref.revision)
     legacy.prepare('UPDATE l1_tasks SET candidate = ? WHERE id = ?').run(legacyCandidate, task.operationId)
-    legacy.exec('DROP TABLE l1_trace_chunks; DROP TABLE l1_summary_projections; DROP TABLE l1_candidate_projections; DROP TABLE memory_imports; DROP TABLE memory_admissions; DROP TABLE memory_cleanup_runs; PRAGMA user_version = 5')
+    retainSchema(legacy, 5)
   } finally { legacy.close() }
   const memory = await asynchronous(item)
   const migrated = new DatabaseSync(item.spec.databasePath)
@@ -223,6 +247,31 @@ it('reports an unconfirmed write after a malformed worker response and inspects 
     from: SessionLogOffset(0), to: SessionLogOffset(3), limit: 3 })
   expect([0, 3]).toContain(observed.committedTo)
   expect(observed.events).toEqual(events.slice(0, observed.committedTo))
+})
+
+it('replaces a failed pool worker before opening another database while preserving the old unknown outcome', async () => {
+  const first = await setup()
+  const second = await setup()
+  const pool = new StoragePool({ ...first.spec, storageWorkers: 1 })
+  resources.push(() => pool.close())
+  const memory = await SqliteMemory.open(first.spec, pool)
+  const slots = Object.getOwnPropertyDescriptor(pool, 'slots')?.value as readonly { worker: StorageWorker }[] | undefined
+  const owner = slots?.[0]?.worker
+  if (owner === undefined) throw new Error('Expected an allocated pool worker')
+  const thread: unknown = Object.getOwnPropertyDescriptor(owner, 'worker')?.value
+  if (!(thread instanceof Worker)) throw new Error('Owned storage thread is unavailable')
+  const pending = memory.appendRaw(batch(first.spec, turnEvents()))
+  const failure = expect(pending).rejects.toMatchObject({ code: 'unknown-outcome' })
+  await Promise.resolve()
+  thread.emit('message', { kind: 'malformed' })
+  await failure
+  const replacement = await SqliteMemory.open(second.spec, pool)
+  try {
+    expect((await replacement.appendRaw(batch(second.spec, turnEvents()))).inserted).toBe(3)
+    expect(slots).toHaveLength(1)
+    expect(slots?.[0]?.worker).not.toBe(owner)
+    await expect(memory.close()).rejects.toMatchObject({ code: 'closed' })
+  } finally { await replacement.close() }
 })
 
 it('drains a saturated worker queue before closing its database', async () => {

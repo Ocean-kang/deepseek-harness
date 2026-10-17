@@ -4,6 +4,8 @@ import { randomUUID } from 'node:crypto'
 import { Context, Service } from '@deepseek-ai/cordis'
 import LlmRuntime from '@deepseek-ai/dsh-llm'
 import DefaultModel from '@deepseek-ai/dsh-agent-default-model'
+import ToolRuntime from '@deepseek-ai/dsh-tools'
+import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import SessionStore from '@deepseek-ai/dsh-session'
 import JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
 import type { ConnectionFetchRoute } from '@deepseek-ai/dsh-client-connection'
@@ -30,6 +32,8 @@ async function setup() {
     await ctx.plugin(JsonlSessionPersistence, { root: `${item.root}/sessions`, compression: 'none' })
     await ctx.plugin(LlmRuntime)
     await ctx.plugin(DefaultModel, { provider: 'test', model: 'test' })
+    await ctx.plugin(SystemPrompt)
+    await ctx.plugin(ToolRuntime)
     await ctx.plugin(PanelTransport)
     await ctx.plugin(WebSeat)
     const transport = ctx.get('connection')
@@ -47,6 +51,9 @@ it.each([undefined, true, false])('honors panel=%s while defaulting to trigram B
     expect(item.ctx.memory.recallMethod(item.spec.projectId)).toBe('trigram')
     expect(item.ctx.memory.browser.spec.refreshIntervalMs).toBe(3000)
     expect(item.ctx.memory.browser.injectionReady).toBe(true)
+    expect(item.ctx.memory.browser.automatic(null)).toBe(true)
+    expect(item.ctx.memory.browser.recall.levels).toEqual(['L1', 'L2', 'L3'])
+    expect(item.ctx.tools.get('memory_search')).toBeDefined()
     if (panel === false) expect(item.transport.channels.has('/api/memory/panel')).toBe(false)
     else await vi.waitFor(() => expect(item.transport.channels.has('/api/memory/panel')).toBe(true))
     await plugin.dispose()

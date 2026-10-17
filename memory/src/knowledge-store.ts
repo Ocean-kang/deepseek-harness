@@ -28,6 +28,96 @@ CREATE TABLE knowledge_grants (id TEXT NOT NULL, revision INTEGER NOT NULL, acti
  PRIMARY KEY(id,revision), FOREIGN KEY(id,revision) REFERENCES knowledge_versions(id,revision)) STRICT;
 `
 
+/** Version-7 selection indexes; historical rows are populated in resumable pages after migration. */
+export const CONSOLIDATION_SCHEMA = `
+CREATE TABLE knowledge_level_generations (project TEXT NOT NULL, level TEXT NOT NULL, generation INTEGER NOT NULL, PRIMARY KEY(project,level)) STRICT;
+CREATE TABLE knowledge_selection_sources (project TEXT NOT NULL, level TEXT NOT NULL, id TEXT NOT NULL, revision INTEGER NOT NULL,
+ source_id TEXT NOT NULL, source_revision INTEGER NOT NULL, PRIMARY KEY(id,revision,source_id,source_revision)) STRICT;
+CREATE INDEX knowledge_selection_source ON knowledge_selection_sources(project,level,source_id);
+CREATE INDEX knowledge_selection_source_identity ON knowledge_selection_sources(source_id,source_revision);
+CREATE TABLE knowledge_recheck_pending (project TEXT NOT NULL,level TEXT NOT NULL,id TEXT NOT NULL,revision INTEGER NOT NULL,PRIMARY KEY(project,level,id,revision)) STRICT;
+CREATE VIRTUAL TABLE knowledge_selection_fts USING fts5(id UNINDEXED, revision UNINDEXED, project UNINDEXED, level UNINDEXED, text, tokenize='unicode61');
+CREATE TABLE knowledge_selection_backfill (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), after_id TEXT NOT NULL, after_revision INTEGER NOT NULL, ready INTEGER NOT NULL) STRICT;
+INSERT INTO knowledge_selection_backfill VALUES (1,'',0,0);
+CREATE TRIGGER knowledge_generation_insert AFTER INSERT ON knowledge_versions BEGIN
+ INSERT INTO knowledge_level_generations VALUES(new.project,new.level,1) ON CONFLICT(project,level) DO UPDATE SET generation = generation + 1;
+ INSERT INTO knowledge_selection_fts(rowid,id,revision,project,level,text)
+ SELECT new.rowid,new.id,new.revision,new.project,new.level,json_extract(new.knowledge,'$.title') || ' ' || json_extract(new.knowledge,'$.body') WHERE new.state = 'active';
+ INSERT OR IGNORE INTO knowledge_selection_sources SELECT new.project,new.level,new.id,new.revision,
+ json_extract(source.value,'$.ref.id'),json_extract(source.value,'$.ref.revision') FROM json_each(new.knowledge,'$.sources') source WHERE new.state = 'active';
+END;
+CREATE TRIGGER knowledge_generation_update AFTER UPDATE ON knowledge_versions BEGIN
+ INSERT OR IGNORE INTO knowledge_recheck_pending SELECT project,level,id,revision FROM knowledge_selection_sources WHERE source_id = old.id;
+ INSERT INTO knowledge_level_generations VALUES(new.project,new.level,1) ON CONFLICT(project,level) DO UPDATE SET generation = generation + 1;
+ DELETE FROM knowledge_selection_fts WHERE rowid = old.rowid;
+ DELETE FROM knowledge_selection_sources WHERE id = old.id AND revision = old.revision;
+END;
+CREATE TRIGGER knowledge_generation_delete AFTER DELETE ON knowledge_versions BEGIN
+ INSERT OR IGNORE INTO knowledge_recheck_pending SELECT project,level,id,revision FROM knowledge_selection_sources WHERE source_id = old.id;
+ INSERT INTO knowledge_level_generations VALUES(old.project,old.level,1) ON CONFLICT(project,level) DO UPDATE SET generation = generation + 1;
+ DELETE FROM knowledge_selection_fts WHERE rowid = old.rowid;
+ DELETE FROM knowledge_selection_sources WHERE id = old.id AND revision = old.revision;
+ DELETE FROM knowledge_recheck_pending WHERE id = old.id AND revision = old.revision;
+END;
+CREATE TRIGGER knowledge_l1_revision AFTER INSERT ON l1_memories BEGIN
+ INSERT OR IGNORE INTO knowledge_recheck_pending SELECT project,level,id,revision FROM knowledge_selection_sources WHERE source_id = new.id AND source_revision != new.revision;
+END;
+CREATE TRIGGER knowledge_l1_delete AFTER DELETE ON l1_memories BEGIN
+ INSERT OR IGNORE INTO knowledge_recheck_pending SELECT project,level,id,revision FROM knowledge_selection_sources WHERE source_id = old.id AND source_revision = old.revision;
+END;
+CREATE TRIGGER knowledge_l1_audit AFTER INSERT ON memory_execution_audits WHEN new.status != 'valid' BEGIN
+ INSERT OR IGNORE INTO knowledge_recheck_pending SELECT project,level,id,revision FROM knowledge_selection_sources WHERE source_id = new.memory_id AND source_revision = new.revision;
+END;
+`
+
+function selectionText(value: string): string {
+  // Separate Han characters so short Chinese queries use the same inverted index as Latin words.
+  return (value.normalize('NFC').toLocaleLowerCase('en-US').match(/\p{Script=Han}|[\p{L}\p{N}_]+/gu) ?? []).join(' ')
+}
+
+function indexSelection(db: DatabaseSync, row: Record<string, unknown>): void {
+  const owner = db.prepare('SELECT rowid FROM knowledge_versions WHERE id = ? AND revision = ?').get(textValue(row.id), integer(row.revision))!
+  const rowid = integer(owner.rowid)
+  db.prepare('DELETE FROM knowledge_selection_fts WHERE rowid = ?').run(rowid)
+  db.prepare('DELETE FROM knowledge_selection_sources WHERE id = ? AND revision = ?').run(textValue(row.id), integer(row.revision))
+  if (row.state !== 'active') return
+  const knowledge = object(json(row.knowledge))
+  const text = [knowledge.title, knowledge.body, knowledge.scenario].filter(value => typeof value === 'string').join(' ')
+  db.prepare('INSERT INTO knowledge_selection_fts(rowid,id,revision,project,level,text) VALUES (?,?,?,?,?,?)').run(rowid, textValue(row.id), integer(row.revision), textValue(row.project), textValue(row.level), selectionText(text))
+  for (const source of refs(Array.isArray(knowledge.sources) ? knowledge.sources.map(value => object(value).ref) : [])) {
+    db.prepare('INSERT OR IGNORE INTO knowledge_selection_sources VALUES (?,?,?,?,?,?)').run(textValue(row.project), textValue(row.level), textValue(row.id), integer(row.revision), source.id, source.revision)
+    const invalid = db.prepare(`SELECT 1 WHERE NOT EXISTS(SELECT 1 FROM l1_memories WHERE id = ? AND revision = ?
+      AND revision = (SELECT MAX(revision) FROM l1_memories WHERE id = ?))
+      AND NOT EXISTS(SELECT 1 FROM knowledge_versions WHERE id = ? AND revision = ? AND state = 'active' AND json_extract(knowledge,'$.evidence') = 'supported')`)
+      .get(source.id, source.revision, source.id, source.id, source.revision)
+    if (invalid !== undefined) db.prepare('INSERT OR IGNORE INTO knowledge_recheck_pending VALUES (?,?,?,?)').run(textValue(row.project), textValue(row.level), textValue(row.id), integer(row.revision))
+  }
+}
+
+/** Populate at most one page of historical selection documents and checkpoint atomically.
+ * @param db - open migrated connection, outside another transaction.
+ * @param limit - positive page bound.
+ * @returns whether another page remains; the caller yields between pages before exposing the store.
+ */
+export function backfillConsolidationIndex(db: DatabaseSync, limit = 128): { pending: boolean } {
+  if (!Number.isSafeInteger(limit) || limit < 1) throw new MemoryError('config', 'Selection backfill limit must be positive')
+  const cursor = db.prepare('SELECT * FROM knowledge_selection_backfill WHERE singleton = 1').get()!
+  if (cursor.ready === 1) return { pending: false }
+  if (typeof cursor.after_id !== 'string') throw new MemoryError('corrupt', 'Invalid selection index cursor')
+  const after = cursor.after_id
+  db.exec('BEGIN IMMEDIATE')
+  try {
+    const rows = db.prepare('SELECT * FROM knowledge_versions WHERE (id > ? OR (id = ? AND revision > ?)) ORDER BY id,revision LIMIT ?')
+      .all(after, after, integer(cursor.after_revision), limit)
+    for (const row of rows) indexSelection(db, row)
+    const last = rows.at(-1)
+    db.prepare('UPDATE knowledge_selection_backfill SET after_id = ?,after_revision = ?,ready = ? WHERE singleton = 1')
+      .run(last === undefined ? after : textValue(last.id), last === undefined ? integer(cursor.after_revision) : integer(last.revision), Number(rows.length < limit))
+    db.exec('COMMIT')
+    return { pending: rows.length === limit }
+  } catch (error) { db.exec('ROLLBACK'); throw error }
+}
+
 /** Remove duplicated L1 traces from legacy task snapshots, preserving exact versions and recorded requests.
  * @param db - owning connection inside the version-6 schema migration transaction.
  * @returns completion after mutable task inputs contain no duplicated L1 trace arrays.
@@ -51,11 +141,16 @@ export function compactLegacyKnowledgeTaskTraces(db: DatabaseSync): void {
 
 function storedConfig(value: unknown): KnowledgeSpec {
   const item = object(value)
-  if (!['knowledge-v1', 'knowledge-v2', 'knowledge-v3', 'knowledge-v4'].includes(textValue(item.promptVersion))) throw new MemoryError('corrupt', 'Unsupported knowledge prompt version')
-  return { ...resolveKnowledgeConfig({ provider: textValue(item.provider), model: textValue(item.model),
+  if (!['knowledge-v1', 'knowledge-v2', 'knowledge-v3', 'knowledge-v4', 'knowledge-v5', 'knowledge-v6'].includes(textValue(item.promptVersion))) throw new MemoryError('corrupt', 'Unsupported knowledge prompt version')
+  const resolved = resolveKnowledgeConfig({ provider: textValue(item.provider), model: textValue(item.model),
     maxInputBytes: integer(item.maxInputBytes), maxOutputTokens: integer(item.maxOutputTokens), timeoutMs: integer(item.timeoutMs),
     maxCalls: integer(item.maxCalls), maxAttempts: integer(item.maxAttempts), retryBaseMs: integer(item.retryBaseMs), retryMaxMs: integer(item.retryMaxMs),
-    scoreMin: integer(item.scoreMin), scoreMax: integer(item.scoreMax), l2Threshold: integer(item.l2Threshold), l3Threshold: integer(item.l3Threshold) }), promptVersion: item.promptVersion as KnowledgeSpec['promptVersion'] }
+    scoreMin: integer(item.scoreMin), scoreMax: integer(item.scoreMax), l2Threshold: integer(item.l2Threshold), l3Threshold: integer(item.l3Threshold),
+    ...item.maxExisting === undefined ? {} : { maxExisting: integer(item.maxExisting) },
+    ...item.maxSearchTerms === undefined ? {} : { maxSearchTerms: integer(item.maxSearchTerms) } })
+  const { maxExisting: _default, maxSearchTerms: _termsDefault, ...legacy } = resolved
+  return { ...legacy, ...item.maxExisting === undefined ? {} : { maxExisting: resolved.maxExisting },
+    ...item.maxSearchTerms === undefined ? {} : { maxSearchTerms: resolved.maxSearchTerms }, promptVersion: item.promptVersion as KnowledgeSpec['promptVersion'] }
 }
 
 function refs(value: unknown): MemoryRef[] {
@@ -68,31 +163,21 @@ function levelOf(value: unknown): KnowledgeLevel {
   return value
 }
 
-/** Queue all current preceding-level versions without dispatching model work.
- * @param store - open project knowledge store.
- * @param project - source owner.
- * @param level - target consolidation level.
- * @param config - resolved settings retained by each task.
- * @param pageSize - positive maximum candidates per page.
- */
-export function enqueueCandidates(store: KnowledgeStore, project: ProjectId, level: KnowledgeLevel, config: KnowledgeSpec, pageSize: number): void {
-  let after = ''
-  for (;;) {
-    const records = store.listCandidates(project, level === 'L2' ? 'L1' : 'L2', after, pageSize)
-    for (const record of records) store.enqueue(project, level, [record], config)
-    if (records.length < pageSize) break
-    after = records.at(-1)!.id
-  }
-  store.enqueueRechecks(project, level, config)
-}
-
 /** Internal store; no model tools or user approval adapter are installed by this class. */
 export class KnowledgeStore {
-  /** @param project - owner. @param level - target. @param config - frozen model settings.
-   * @param pageSize - source page bound. @returns number of newly queued operations.
+  /** Queue current preceding-level versions and source rechecks without dispatching model work.
+   * @param project - owner. @param level - target. @param config - frozen model settings.
+   * @param pageSize - source page bound.
    */
   enqueueCandidates(project: ProjectId, level: KnowledgeLevel, config: KnowledgeSpec, pageSize: number): void {
-    enqueueCandidates(this, project, level, config, pageSize)
+    let after = ''
+    for (;;) {
+      const records = this.listCandidates(project, level === 'L2' ? 'L1' : 'L2', after, pageSize)
+      for (const record of records) this.enqueue(project, level, [record], config)
+      if (records.length < pageSize) break
+      after = records.at(-1)!.id
+    }
+    this.enqueueRechecks(project, level, config)
   }
   /** @param db - parent-owned connection.
    * @param l1 - existing L1 reader.
@@ -179,7 +264,8 @@ export class KnowledgeStore {
       const record = this.getMemory(project, reference)
       if (record === null || 'shared' in record || record.state !== 'active') return false
       seen.add(key)
-      const valid = record.level === 'L1' || (record.knowledge.evidence === 'supported' && record.knowledge.sources.every(source => visit(source.ref)))
+      const valid = record.level === 'L1' ? this.l1.evidenceUsable(project, reference)
+        : record.knowledge.evidence === 'supported' && record.knowledge.sources.every(source => visit(source.ref))
       seen.delete(key)
       if (valid) checked.add(key)
       return valid
@@ -244,11 +330,6 @@ export class KnowledgeStore {
     return record
   }
 
-  private current(project: ProjectId, level: KnowledgeLevel): KnowledgeMemory[] {
-    this.assertOpen()
-    return this.db.prepare("SELECT * FROM knowledge_versions WHERE project = ? AND level = ? AND state = 'active' ORDER BY id").all(project, level).map(row => this.decode(row))
-  }
-
   /** Page usable knowledge; unresolved evidence stays accessible only through owned history.
    * @param project - requesting project.
    * @param level - requested knowledge level.
@@ -260,8 +341,18 @@ export class KnowledgeStore {
     this.assertOpen()
     if (!Number.isSafeInteger(limit) || limit < 1) throw new MemoryError('config', 'Candidate limit must be positive')
     if (level === 'L1') {
-      return this.db.prepare('SELECT id, MAX(revision) AS revision FROM l1_memories WHERE project = ? AND id > ? GROUP BY id ORDER BY id LIMIT ?').all(project, after, limit)
-        .map(row => this.owned(project, knowledgeRef(row)))
+      const result: OwnedMemory[] = []
+      let cursor = after
+      for (;;) {
+        const rows = this.db.prepare('SELECT id, MAX(revision) AS revision FROM l1_memories WHERE project = ? AND id > ? GROUP BY id ORDER BY id LIMIT ?').all(project, cursor, limit)
+        for (const row of rows) {
+          const ref = knowledgeRef(row)
+          if (this.l1.evidenceUsable(project, ref)) result.push(this.owned(project, ref))
+          if (result.length === limit) return result
+        }
+        if (rows.length < limit) return result
+        cursor = textValue(rows.at(-1)!.id)
+      }
     }
     const result: Array<OwnedMemory | SharedMemory> = []
     let cursor = after
@@ -281,13 +372,50 @@ export class KnowledgeStore {
     }
   }
 
-  private input(project: ProjectId, level: KnowledgeLevel, sources: readonly MemoryRef[]): KnowledgeInput {
+  private generation(project: ProjectId, level: KnowledgeLevel): number {
+    const row = this.db.prepare('SELECT generation FROM knowledge_level_generations WHERE project = ? AND level = ?').get(project, level)
+    return row === undefined ? 0 : integer(row.generation)
+  }
+
+  private input(project: ProjectId, level: KnowledgeLevel, sources: readonly MemoryRef[], config: KnowledgeSpec, recheck?: MemoryRef): KnowledgeInput {
     const unique = [...new Map(sources.map(ref => [JSON.stringify(ref), ref])).values()]
     if (unique.length === 0) throw new MemoryError('source', 'Consolidation requires source versions')
     const records = unique.map(ref => this.owned(project, ref))
     if (records.some(record => !this.sourcesCurrent(project, record) || record.level !== (level === 'L2' ? 'L1' : 'L2'))) throw new MemoryError('source', 'Invalid consolidation source level or state')
-    const existing = this.current(project, level)
-    return { projectId: project, level, sources: records.sort((a, b) => a.id.localeCompare(b.id)), existing, lineage: this.lineage(project, [...records, ...existing]) }
+    if (this.db.prepare('SELECT ready FROM knowledge_selection_backfill WHERE singleton = 1').get()?.ready !== 1) throw new MemoryError('storage', 'Knowledge selection index is not ready; retry after initialization')
+    const maxExisting = config.maxExisting ?? 64
+    const selected = new Map<string, MemoryRef>()
+    if (recheck !== undefined) {
+      const row = this.db.prepare("SELECT id,revision FROM knowledge_versions WHERE project = ? AND level = ? AND id = ? AND revision = ? AND state = 'active'")
+        .get(project, level, recheck.id, recheck.revision)
+      if (row !== undefined) selected.set(recheck.id, knowledgeRef(row))
+    }
+    for (const source of records) {
+      const linked = this.db.prepare(`SELECT s.id,s.revision FROM knowledge_selection_sources s JOIN knowledge_versions v ON v.id = s.id AND v.revision = s.revision
+        WHERE s.project = ? AND s.level = ? AND s.source_id = ? AND v.state = 'active' ORDER BY s.id LIMIT ?`).all(project, level, source.id, maxExisting + 1)
+      for (const row of linked) selected.set(textValue(row.id), knowledgeRef(row))
+      if (selected.size > maxExisting) throw new MemoryError('budget', 'Required related knowledge exceeds maxExisting; increase the comparison budget')
+    }
+    const requiredExisting = [...selected.values()]
+    const text = records.map(record => record.level === 'L1' ? `${record.summary.goal} ${record.summary.actions.join(' ')} ${record.summary.result}`
+      : `${record.knowledge.title} ${record.knowledge.body} ${record.knowledge.scenario ?? ''}`).join(' ')
+    const terms = [...new Set(selectionText(text).split(' ').filter(Boolean))].slice(0, config.maxSearchTerms ?? 64)
+    if (terms.length > 0 && selected.size < maxExisting) {
+      const query = terms.map(term => `"${term.replaceAll('"', '""')}"`).join(' OR ')
+      const rows = this.db.prepare(`SELECT id,revision FROM knowledge_selection_fts WHERE knowledge_selection_fts MATCH ? AND project = ? AND level = ? ORDER BY id LIMIT ?`)
+        .all(query, project, level, maxExisting)
+      for (const row of rows) {
+        if (selected.size === maxExisting) break
+        selected.set(textValue(row.id), knowledgeRef(row))
+      }
+    }
+    const existing = [...selected.values()].map(ref => {
+      const record = this.owned(project, ref)
+      if (record.level === 'L1') throw new MemoryError('corrupt', 'Selection index contains an L1 record')
+      return record
+    }).sort((a, b) => a.id.localeCompare(b.id))
+    return { projectId: project, level, sources: records.sort((a, b) => a.id.localeCompare(b.id)), existing,
+      generation: this.generation(project, level), requiredExisting, lineage: this.lineage(project, [...records, ...existing]) }
   }
 
   private lineage(project: ProjectId, records: readonly OwnedMemory[]): OwnedMemory[] {
@@ -318,7 +446,7 @@ export class KnowledgeStore {
   enqueue(project: ProjectId, level: KnowledgeLevel, sources: readonly MemoryRef[], config: KnowledgeSpec,
     recheck?: MemoryRef): OperationId {
     return this.transaction(() => {
-      const input = this.input(project, level, sources)
+      const input = this.input(project, level, sources, config, recheck)
       const operationId = l1Key(recheck === undefined ? 'knowledge' : 'knowledge-recheck', project, level,
         input.sources.map(({ id, revision }) => ({ id, revision })), config, ...recheck === undefined ? [] : [recheck]) as OperationId
       if (this.getTask(project, operationId) !== null) return operationId
@@ -334,8 +462,11 @@ export class KnowledgeStore {
    * @param config - resolved model settings.
    */
   enqueueRechecks(project: ProjectId, level: KnowledgeLevel, config: KnowledgeSpec): void {
-    for (const record of this.current(project, level)) {
-      if (record.knowledge.sources.every(source => this.sourcesCurrent(project, source.ref))) continue
+    for (const row of this.db.prepare('SELECT id,revision FROM knowledge_recheck_pending WHERE project = ? AND level = ? ORDER BY id').iterate(project, level)) {
+      const ref = knowledgeRef(row)
+      const record = this.owned(project, ref)
+      const remove = () => this.db.prepare('DELETE FROM knowledge_recheck_pending WHERE project = ? AND level = ? AND id = ? AND revision = ?').run(project, level, ref.id, ref.revision)
+      if (record.level === 'L1' || record.state !== 'active' || record.knowledge.sources.every(source => this.sourcesCurrent(project, source.ref))) { remove(); continue }
       const sources = record.knowledge.sources.flatMap((source) => {
         const rows = this.db.prepare(`SELECT id,revision FROM l1_memories WHERE project = ? AND id = ?
           UNION ALL SELECT id,revision FROM knowledge_versions WHERE project = ? AND id = ? AND state = 'active'
@@ -344,7 +475,7 @@ export class KnowledgeStore {
         const current = this.owned(project, knowledgeRef(rows[0]))
         return current.level === (level === 'L2' ? 'L1' : 'L2') && this.sourcesCurrent(project, current) ? [current] : []
       })
-      if (sources.length > 0) this.enqueue(project, level, sources, config, { id: record.id, revision: record.revision })
+      if (sources.length > 0) { this.enqueue(project, level, sources, config, { id: record.id, revision: record.revision }); remove() }
     }
   }
 
@@ -368,6 +499,8 @@ export class KnowledgeStore {
     const sourceRecords = refs(rawInput.sources).map(snapshot)
     const existingRecords = refs(rawInput.existing).map(snapshot)
     const input: KnowledgeInput = { lineage: this.lineage(project, [...sourceRecords, ...existingRecords]), projectId: project, level: levelOf(rawInput.level), sources: sourceRecords,
+      ...rawInput.generation === undefined ? {} : { generation: integer(rawInput.generation) },
+      ...rawInput.requiredExisting === undefined ? {} : { requiredExisting: refs(rawInput.requiredExisting) },
       existing: existingRecords.map(memory => {
         if (memory.level === 'L1') throw new MemoryError('corrupt', 'Invalid existing knowledge')
         return memory
@@ -442,7 +575,15 @@ export class KnowledgeStore {
         return null
       }
       if (task.attempts >= task.config.maxAttempts) { this.save({ ...task, status: 'failed', failure: 'ATTEMPTS_EXHAUSTED', owner: null, leaseUntil: 0 }); return null }
-      const input = task.candidates === null ? this.input(project, task.input.level, task.input.sources) : task.input
+      let input = task.input
+      if (task.candidates === null) {
+        try { input = this.input(project, task.input.level, task.input.sources, task.config, task.recheck) }
+        catch (error) {
+          if (!(error instanceof MemoryError) || error.code !== 'budget') throw error
+          this.save({ ...task, status: 'failed', failure: 'budget', candidates: null, owner: null, leaseUntil: 0 })
+          return null
+        }
+      }
       const recheck = task.recheck
       if (recheck !== undefined && !input.existing.some(record => record.id === recheck.id && record.revision === recheck.revision)) {
         this.save({ ...task, status: 'failed', failure: 'TARGET_CHANGED', candidates: null, owner: null, leaseUntil: 0 })
@@ -502,15 +643,20 @@ export class KnowledgeStore {
       if (old?.status === 'done') return old.result!
       const task = this.held(old, owner)
       if (task.candidates === null) throw new MemoryError('conflict', 'Knowledge task is not prepared')
-      const fresh = this.input(project, task.input.level, task.input.sources)
-      if (!isDeepStrictEqual(fresh.existing.map(({ id, revision }) => ({ id, revision })), task.input.existing.map(({ id, revision }) => ({ id, revision })))) throw new MemoryError('conflict', 'Knowledge revisions changed')
+      if (task.input.sources.some(source => !this.sourcesCurrent(project, source))) throw new MemoryError('source', 'Knowledge source revisions changed')
+      if (task.input.generation !== undefined && this.generation(project, task.input.level) !== task.input.generation) throw new MemoryError('conflict', 'Knowledge revisions changed')
+      for (const record of task.input.existing) {
+        const current = this.owned(project, record)
+        if (current.state !== 'active') throw new MemoryError('conflict', 'Knowledge revisions changed')
+      }
       const result: MemoryRef[] = []
       for (const candidate of task.candidates) {
         if (candidate.action === 'skip') continue
         const threshold = task.input.level === 'L2' ? task.config.l2Threshold : task.config.l3Threshold
         if (candidate.knowledge.evidence !== 'conflict' && (candidate.knowledge.score < threshold || candidate.knowledge.category === 'temporary')) continue
         const key = knowledgeKey(candidate.knowledge)
-        const duplicate = this.current(project, task.input.level).find(record => knowledgeKey(record.knowledge) === key)
+        const duplicateRow = this.db.prepare("SELECT * FROM knowledge_versions WHERE project = ? AND level = ? AND content_key = ? AND state = 'active'").get(project, task.input.level, key)
+        const duplicate = duplicateRow === undefined ? undefined : this.decode(duplicateRow)
         if (candidate.target !== null && duplicate !== undefined && duplicate.id !== candidate.target.id) throw new MemoryError('output', 'Merge target collides with another knowledge identity')
         const target = candidate.target === null ? duplicate : this.owned(project, candidate.target)
         if (target?.level === 'L1') throw new MemoryError('source', 'Cannot replace L1 with knowledge')
@@ -529,6 +675,7 @@ export class KnowledgeStore {
         const ref = { id: target?.id ?? randomUUID() as MemoryId, revision: (target?.revision ?? 0) + 1 }
         if (target !== undefined) this.retire(target, 'superseded')
         this.db.prepare('INSERT INTO knowledge_versions VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(ref.id, ref.revision, project, task.input.level, operation, key, JSON.stringify(knowledge), JSON.stringify(task.config), now, 'active')
+        indexSelection(this.db, this.db.prepare('SELECT * FROM knowledge_versions WHERE id = ? AND revision = ?').get(ref.id, ref.revision)!)
         result.push(ref)
       }
       this.save({ ...task, status: 'done', result, owner: null, leaseUntil: 0, failure: null })
@@ -558,6 +705,7 @@ export class KnowledgeStore {
       this.retire(target, 'superseded')
       this.db.prepare('INSERT INTO knowledge_versions VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(next.id, next.revision, project, target.level,
         operation, knowledgeKey(knowledge), JSON.stringify(knowledge), JSON.stringify(target.config), receipt.occurredAt, 'active')
+      indexSelection(this.db, this.db.prepare('SELECT * FROM knowledge_versions WHERE id = ? AND revision = ?').get(next.id, next.revision)!)
       this.db.prepare('INSERT INTO knowledge_operations VALUES (?, ?, ?)').run(operation, JSON.stringify(request), JSON.stringify(next))
       return next
     })
@@ -581,7 +729,7 @@ export class KnowledgeStore {
       const task = this.held(this.getTask(project, operation), owner)
       let input = task.input
       let candidates = task.candidates
-      if (failure === 'conflict') { input = this.input(project, task.input.level, task.input.sources); candidates = null }
+      if (failure === 'conflict') { input = this.input(project, task.input.level, task.input.sources, task.config, task.recheck); candidates = null }
       const attempts = failure === null ? Math.max(0, task.attempts - 1) : task.attempts
       this.save({ ...task, input, candidates, attempts,
         status: (failure === null || retryable) && attempts < task.config.maxAttempts ? 'retry' : 'failed',

@@ -8,6 +8,7 @@ import { SqliteMemory } from '../src/sqlite.ts'
 import { knowledgeFixture, knowledgeCandidate } from './knowledge-fixtures.ts'
 import { header } from './helpers.ts'
 import type { KnowledgeTask } from '../src/knowledge-types.ts'
+import { retainSchema } from './schema-fixtures.ts'
 
 const resources: Array<() => Promise<void>> = []
 afterEach(async () => { for (const close of resources.splice(0).reverse()) await close() })
@@ -45,7 +46,7 @@ it('migrates large legacy task input traces before get, failed-list, claim and p
     legacy.prepare('UPDATE l1_memories SET summary = ? WHERE id = ? AND revision = ?').run(originalSummary, source.id, source.revision)
     for (const [id, task] of originals) legacy.prepare('UPDATE knowledge_tasks SET body = ? WHERE id = ?').run(JSON.stringify(task), id)
     journalBody = legacy.prepare('SELECT body FROM events WHERE session_id = ? AND seq = 0').get(journalHeader.id)?.body
-    legacy.exec('DROP TABLE l1_trace_chunks; DROP TABLE l1_summary_projections; DROP TABLE l1_candidate_projections; DROP TABLE memory_imports; DROP TABLE memory_admissions; DROP TABLE memory_cleanup_runs; PRAGMA user_version = 5')
+    retainSchema(legacy, 5)
   } finally { legacy.close() }
   const memory = await SqliteMemory.open(item.spec)
   resources.push(() => memory.close())

@@ -6,6 +6,7 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { MemoryRef, OperationId } from './l1-types.ts'
 import type { MemorySearch, RetrievalHit, RetrievalResult } from './retrieval.ts'
 import { renderRecall } from './retrieval.ts'
+import { resolveRecallConfig } from './browser.ts'
 import type { MemoryBrowser } from './browser.ts'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import type { ProjectId } from './types.ts'
@@ -25,7 +26,7 @@ declare module '@deepseek-ai/dsh-llm' {
  * @param retriever - owned retriever, closed separately after this listener drains.
  * @param projectOf - authoritative Session project resolver.
  * @param report - nonthrowing diagnostic sink.
- * @param browser - optional durable manual selection and combined admission policy; automatic recall defaults off in this mode.
+ * @param browser - optional durable manual selection and combined admission policy.
  * @param accepts - Session admission policy, evaluated before capture or retrieval.
  * @returns asynchronous disposer which waits for in-flight listeners.
  */
@@ -79,9 +80,9 @@ export function installMemoryInjector(ctx: Context, retriever: Pick<MemorySearch
           }
         }
         let result: RetrievalResult | undefined
-        if (text && (browser === undefined || selection?.automatic === true)) {
+        if (text && (browser?.automatic(selection) ?? true)) {
           try {
-            result = await retriever.retrieve({ projectId: project, text, signal, levels: ['L3'],
+            result = await retriever.retrieve({ projectId: project, text, signal, levels: browser?.recall.levels ?? resolveRecallConfig().levels,
               ...(browser === undefined ? {} : { limit: browser.spec.limit, maxBytes: browser.spec.maxBytes }) })
           } catch (error) {
             signal.throwIfAborted()

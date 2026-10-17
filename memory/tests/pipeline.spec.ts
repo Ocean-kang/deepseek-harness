@@ -97,7 +97,7 @@ it('persists one model step per layer and supplies original L0 evidence to L2 an
   } finally { await pipeline?.close(); await ctx.fiber.dispose(); await item.close() }
 })
 
-it('records fresh existing knowledge for every task of a four-conversation learning batch', async () => {
+it('records fresh relevant existing knowledge for every task of a four-conversation learning batch', async () => {
   const item = await fixture()
   const provider = await item.open()
   const ctx = new Context()
@@ -118,7 +118,7 @@ it('records fresh existing knowledge for every task of a four-conversation learn
       } else {
         const input = knowledgeInput.parse(JSON.parse(block.text))
         requests.push({ level: input.input.level, existing: input.input.existing.length, sources: input.input.sources.length })
-        yield* response(JSON.stringify([knowledgeCandidate(input.input.sources[0]!, `${input.input.level} constraint ${requests.length}`)]))
+        yield* response(JSON.stringify([knowledgeCandidate(input.input.sources[0]!, `Parser ${input.input.level} constraint ${requests.length}`)]))
       }
     }))
     for (let index = 0; index < 4; index++) await provider.appendRaw({ projectId: item.spec.projectId, header: header(`batch-session-${index}`),

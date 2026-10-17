@@ -137,7 +137,7 @@ export function parseKnowledgeCandidates(value: unknown, input: KnowledgeInput, 
     }
     const successful = [...roots.values()].filter(record => record.summary.outcome === 'success')
     const method = knowledge.evidence === 'supported' && knowledge.category === 'method'
-    if (config.promptVersion === 'knowledge-v4' && (method || knowledge.evidenceStatus === 'execution_verified')
+    if (['knowledge-v4', 'knowledge-v5', 'knowledge-v6'].includes(config.promptVersion) && (method || knowledge.evidenceStatus === 'execution_verified')
       && !successful.some(record => record.summary.executionEvidence?.length)) {
       throw new MemoryError('output', knowledge.evidenceStatus === 'execution_verified'
         ? 'Execution verification requires checked successful ancestry' : 'A method requires program-verified successful execution')

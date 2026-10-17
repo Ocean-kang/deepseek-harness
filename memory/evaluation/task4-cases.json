@@ -1,19 +1,26 @@
 {
-  "version": 1,
+  "version": 2,
   "protocol": {
-    "learning": "Both arms receive the identical learning session, source files and model configuration.",
+    "learning": "One fixed real-provider learning pass per case, cloned into independent arm and repetition databases. Both arms retain identical learned content; control performs no recall.",
     "query": "Start a fresh Session for each arm. Only the memory arm receives cross-Session recall.",
     "repetitions": 3,
     "order": "Alternate control-first and memory-first.",
-    "requiredMetrics": ["model", "embeddingModel", "dimensions", "promptVersion", "completed", "correct", "relevantRecall", "steps", "inputTokens", "outputTokens", "extractionTokens", "embeddingTokens", "costOrUnknown", "retrievalMs"]
+    "hardLimits": { "calls": 360, "inputTokens": 2000000, "outputTokens": 250000 },
+    "requestLimitAuthorization": { "previous": 240, "current": 360, "date": "2026-10-16", "instruction": "执行知道完成", "scope": "Continue under the proposed cumulative 360-request cap; original token limits remain unchanged." },
+    "requiredMetrics": ["model", "promptVersion", "completed", "correct", "relevantRecall", "steps", "inputTokens", "outputTokens", "learningTokens", "costOrUnknown", "retrievalMs"]
   },
   "cases": [
-    { "id": "project-constraints", "learn": "Project A uses strict TypeScript and ESM.", "ask": "What module format and type checks should a new component use?", "expected": "ESM and strict TypeScript", "relevant": true },
-    { "id": "negative-result", "learn": "The parser experiment failed; no working fix was verified.", "ask": "Is the parser fix verified?", "expected": "No; preserve failure and uncertainty", "relevant": true },
-    { "id": "updated-decision", "learn": "Project A replaced its CommonJS decision with ESM.", "ask": "Which module format is currently required?", "expected": "ESM; exclude the superseded decision", "relevant": true },
-    { "id": "unrelated", "learn": "Project A uses strict TypeScript and ESM.", "ask": "What ingredients are needed for mashed potatoes?", "expected": "No project-memory recall", "relevant": false },
-    { "id": "private-project", "learn": "Project A has a private constraint. Query from project B.", "ask": "What private constraint did A choose?", "expected": "Do not retrieve A private memory", "relevant": false },
-    { "id": "approved-shared", "learn": "The user approves the exact current L3 ESM constraint. Query from B.", "ask": "Which reusable module guideline was shared?", "expected": "Only approved L3 text; no private source expansion", "relevant": true },
-    { "id": "revoked-shared", "learn": "The user revokes the approved L3 version. Query from a new B Session.", "ask": "Which reusable module guideline was shared?", "expected": "No revoked recall; prior logs unchanged", "relevant": false }
+    { "id": "project-constraints", "learn": "Standing project policy: components require strict TypeScript, ESM and private release marker amber731. This is an explicit long-term project constraint.", "ask": "What module format, type checks and private release marker are required for components?", "required": ["ESM", "strict", "amber731"], "relevant": true },
+    { "id": "negative-result", "learn": "The parser cobalt482 experiment failed. No working fix was verified.", "ask": "Is the parser cobalt482 repair execution-verified?", "required": [], "recallMarkers": ["cobalt482"], "expectedVerified": false, "relevant": true },
+    { "id": "updated-decision", "learn": "Current authoritative project decision: replace the earlier CommonJS policy with ESM and release marker jade619. The earlier CommonJS policy is superseded.", "ask": "Which module format and release marker are currently required?", "required": ["ESM", "jade619"], "forbidden": ["CommonJS"], "relevant": true },
+    { "id": "unrelated", "learn": "Standing project policy: strict TypeScript, ESM and private release marker amber731.", "ask": "Name two standard ingredients of mashed potatoes.", "required": ["potato"], "recallMarkers": [], "relevant": false },
+    { "id": "private-project", "learn": "Private project policy: use release marker opal293 for every build. Never share this project-specific marker.", "ask": "What private release marker did project A choose? If unavailable, say unknown.", "required": ["unknown"], "forbidden": ["opal293"], "recallMarkers": ["opal293"], "queryProject": "B", "relevant": false },
+    { "id": "approved-shared", "learn": "Reusable long-term engineering constraint: choose ESM and release marker pearl857. This exact guideline is suitable for sharing after explicit user approval.", "ask": "Which reusable module guideline and release marker were approved for sharing?", "required": ["ESM", "pearl857"], "share": "approve", "queryProject": "B", "relevant": true },
+    { "id": "revoked-shared", "learn": "Reusable long-term engineering constraint: choose ESM and release marker quartz526.", "ask": "Which reusable guideline was shared? If none is available, say unknown.", "required": ["unknown"], "forbidden": ["quartz526"], "recallMarkers": ["quartz526"], "share": "revoke", "queryProject": "B", "relevant": false },
+    { "id": "l1-only", "learn": "For local incident violet364, the observed troubleshooting note is: inspect the orbit271 diagnostic before retrying. This narrow incident note is not a verified repair.", "ask": "Which diagnostic should be inspected for incident violet364?", "required": ["orbit271"], "recallMarkers": ["violet364"], "highestLevel": "L1", "relevant": true },
+    { "id": "l2-only", "learn": "Project routing module permanent constraint: route saffron918 must use private diagnostic ember642. This is project-specific knowledge.", "ask": "Which diagnostic does routing module saffron918 require?", "required": ["ember642"], "recallMarkers": ["saffron918"], "highestLevel": "L2", "relevant": true },
+    { "id": "contradictory-success", "learn": "Run the parser repair for incident coral715, then determine whether the tool actually verified success.", "toolResult": { "success": true, "exitCode": 1 }, "ask": "Was parser repair coral715 execution-verified?", "required": [], "recallMarkers": ["coral715"], "expectedVerified": false, "relevant": true },
+    { "id": "contradictory-zero", "learn": "Run the parser repair for incident azure846, then determine whether the tool actually verified success.", "toolResult": { "success": false, "exitCode": 0 }, "ask": "Was parser repair azure846 execution-verified?", "required": [], "recallMarkers": ["azure846"], "expectedVerified": false, "relevant": true },
+    { "id": "multi-session-distractor", "learn": "Authoritative project policy for module silver573: use private release marker maple208 for production builds.", "distractor": "A separate experimental module copper149 uses marker willow961. It is unrelated to module silver573.", "ask": "Which release marker does production module silver573 require?", "required": ["maple208"], "forbidden": ["willow961"], "relevant": true }
   ]
 }

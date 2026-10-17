@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { executionSucceeded, traceIncludes, utf8End } from './evidence.ts'
 import type { DatabaseSync } from 'node:sqlite'
 import { isDeepStrictEqual } from 'node:util'
-import { SessionId, SessionLogOffset } from '@deepseek-ai/dsh-session'
+import { adoptSessionEvent, SessionId, SessionLogOffset } from '@deepseek-ai/dsh-session'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import type { ProjectId } from './types.ts'
 import { MemoryError } from './types.ts'
@@ -61,6 +61,29 @@ CREATE TABLE l1_candidate_projections (
   operation_id TEXT PRIMARY KEY REFERENCES l1_tasks(id) ON DELETE CASCADE, candidate TEXT NOT NULL
 ) STRICT;`
 
+/** Version-7 audit records preserve historical summaries and the exact rule used to check them. */
+export const EVIDENCE_SCHEMA = `
+CREATE TABLE memory_execution_audits (
+ memory_id TEXT NOT NULL, revision INTEGER NOT NULL, policy INTEGER NOT NULL CHECK(policy>0),
+ status TEXT NOT NULL CHECK(status IN ('valid','invalid','unavailable')), reason TEXT,
+ PRIMARY KEY(memory_id,revision,policy),
+ FOREIGN KEY(memory_id,revision) REFERENCES l1_memories(id,revision) ON DELETE CASCADE
+) STRICT;`
+
+/** Current execution-evidence interpretation; older audits cannot authorize this policy. */
+export const EXECUTION_POLICY = 2
+
+function executionEvent(value: unknown, seq: number): SessionEvent {
+  const event = object(json(value))
+  if (event.seq !== seq || typeof event.type !== 'string' || !Number.isSafeInteger(event.time)) throw new MemoryError('corrupt', 'Invalid recorded execution event envelope')
+  if (event.type === 'tool/call') {
+    const data = object(event.data)
+    for (const field of ['callId', 'name', 'arguments']) textValue(data[field])
+  }
+  try { return adoptSessionEvent(event as SessionEvent) }
+  catch (error) { throw new MemoryError('corrupt', 'Invalid recorded execution event data') }
+}
+
 function taskRefs(task: Pick<L1Task, 'sessionId' | 'from' | 'to'>): (ref: EventRef) => boolean {
   return ref => ref.sessionId === task.sessionId && ref.seq >= task.from && ref.seq < task.to
 }
@@ -98,6 +121,65 @@ export class L1Store {
    */
   constructor(private readonly db: DatabaseSync, private readonly assertOpen: () => void, private readonly changed: () => void = () => {},
     private readonly traceChunkBytes = 65536) {}
+
+  /** Read the execution audit without changing immutable source content.
+   * @param project - owning project. @param ref - exact L1 version.
+   * @returns audit status, or pending when a historical success has not been checked.
+   */
+  executionAudit(project: ProjectId, ref: MemoryRef): { status: 'valid' | 'invalid' | 'unavailable' | 'pending'; reason: string | null } {
+    this.assertOpen()
+    const memory = this.getMemory(project, ref)
+    if (memory === null) return { status: 'unavailable', reason: 'Source memory is unavailable' }
+    if (memory.summary.outcome !== 'success') return { status: 'valid', reason: null }
+    const row = this.db.prepare('SELECT status,reason FROM memory_execution_audits WHERE memory_id=? AND revision=? AND policy=?').get(ref.id, ref.revision, EXECUTION_POLICY)
+    if (row === undefined) return { status: 'pending', reason: 'Execution evidence has not been rechecked' }
+    return { status: textValue(row.status) as 'valid' | 'invalid' | 'unavailable', reason: row.reason === null ? null : textValue(row.reason) }
+  }
+
+  /** @param project - owner. @param ref - exact version. @returns whether it may support recall or derived knowledge. */
+  evidenceUsable(project: ProjectId, ref: MemoryRef): boolean { return this.executionAudit(project, ref).status === 'valid' }
+
+  private auditMemory(project: ProjectId, ref: MemoryRef): void {
+    const memory = this.getMemory(project, ref)
+    if (memory === null || memory.summary.outcome !== 'success') return
+    let status: 'valid' | 'invalid' | 'unavailable' = 'invalid'
+    let reason: string | null = 'No consistent successful execution was cited'
+    try {
+      const refs = memory.summary.executionEvidence ?? memory.summary.sources
+      const verified = this.successfulRefs(project, memory.operationId, refs)
+      if (verified.length > 0 && (memory.summary.executionEvidence === undefined || verified.length === refs.length)) { status = 'valid'; reason = null }
+    } catch (error) {
+      if (!(error instanceof MemoryError) || !['gap', 'source', 'corrupt', 'output'].includes(error.code)) throw error
+      status = 'unavailable'; reason = 'Recorded execution evidence is unavailable or invalid'
+    }
+    this.db.prepare('INSERT OR REPLACE INTO memory_execution_audits VALUES (?,?,?,?,?)').run(ref.id, ref.revision, EXECUTION_POLICY, status, reason)
+  }
+
+  private checkExecution(task: L1Task, summary: L1Memory['summary']): void {
+    if (summary.outcome !== 'success' && summary.executionEvidence === undefined) return
+    const refs = summary.executionEvidence ?? summary.sources
+    const verified = this.successfulRefs(task.projectId, task.operationId, refs)
+    if (summary.outcome !== 'success' || verified.length === 0
+      || (summary.executionEvidence !== undefined && verified.length !== refs.length)) {
+      throw new MemoryError('output', 'Invalid program-owned execution evidence')
+    }
+  }
+
+  /** Recheck one bounded page; committed rows also serve as the restart checkpoint.
+   * @param limit - maximum historical success versions per transaction.
+   * @returns checked count and whether another page remains.
+   */
+  auditEvidencePage(limit: number): { checked: number; pending: boolean } {
+    if (!Number.isSafeInteger(limit) || limit < 1) throw new MemoryError('config', 'Evidence audit page size must be positive')
+    return this.transaction(() => {
+      const rows = this.db.prepare(`SELECT m.id,m.revision,m.project FROM l1_memories m
+        WHERE json_extract(m.summary,'$.outcome')='success' AND NOT EXISTS
+          (SELECT 1 FROM memory_execution_audits a WHERE a.memory_id=m.id AND a.revision=m.revision AND a.policy=?)
+        ORDER BY m.id,m.revision LIMIT ?`).all(EXECUTION_POLICY, limit)
+      for (const row of rows) this.auditMemory(textValue(row.project) as ProjectId, { id: textValue(row.id) as MemoryId, revision: integer(row.revision) })
+      return { checked: rows.length, pending: rows.length === limit }
+    })
+  }
 
   private transaction<T>(run: () => T): T {
     this.assertOpen()
@@ -266,11 +348,7 @@ export class L1Store {
     this.transaction(() => {
       const task = this.owned(project, operation, owner)
       const valid = parseCandidate(candidate, taskRefs(task), task.reason)
-      if (valid.kind === 'memory' && valid.summary.executionEvidence !== undefined) {
-        const verified = this.successfulRefs(project, operation, valid.summary.executionEvidence)
-        if (valid.summary.executionEvidence.some(ref => !verified.some(source => source.sessionId === ref.sessionId && source.seq === ref.seq))
-          || valid.summary.outcome !== 'success') throw new MemoryError('output', 'Invalid program-owned execution evidence')
-      }
+      if (valid.kind === 'memory') this.checkExecution(task, valid.summary)
       const compact = valid.kind === 'empty' ? valid : { kind: 'memory', summary: this.compactSummary(valid.summary) }
       if (task.candidate !== null) {
         if (!isDeepStrictEqual(task.candidate, compact)) throw new MemoryError('conflict', 'L1 operation already has another candidate')
@@ -306,6 +384,7 @@ export class L1Store {
       const task = this.owned(project, operation, owner)
       if (task.candidate === null) throw new MemoryError('conflict', 'L1 task has no prepared candidate')
       if (task.candidate.kind === 'memory') {
+        this.checkExecution(task, task.candidate.summary)
         const current = this.currentRevision(project, task.memoryId)
         if (current !== task.expectedRevision) throw new MemoryError('conflict', 'L1 memory revision changed')
         const revision = (current ?? 0) + 1
@@ -320,6 +399,7 @@ export class L1Store {
         this.db.prepare('INSERT INTO l1_summary_projections VALUES (?, ?, ?)').run(task.memoryId, revision, JSON.stringify(summary))
       }
       this.db.prepare('UPDATE l1_tasks SET status = ?, owner = NULL, lease_until = 0, failure = NULL WHERE id = ?').run(task.candidate.kind === 'empty' ? 'empty' : 'done', operation)
+      if (task.candidate.kind === 'memory') this.auditMemory(project, { id: task.memoryId, revision: this.currentRevision(project, task.memoryId)! })
       return this.byOperation(project, operation)
     })
   }
@@ -471,13 +551,14 @@ export class L1Store {
       if (!taskRefs(task)(ref)) throw new MemoryError('source', 'Execution citation is outside the source turn')
       const row = this.db.prepare('SELECT body FROM events WHERE session_id = ? AND seq = ?').get(task.sessionId, ref.seq)
       if (row === undefined) throw new MemoryError('gap', 'Execution citation is unavailable')
-      const result = object(json(row.body)) as SessionEvent
+      const result = executionEvent(row.body, ref.seq)
       if (result.type !== 'tool/result') continue
-      const callRow = this.db.prepare(`SELECT body FROM events WHERE session_id = ? AND seq >= ? AND seq < ?
-        AND json_extract(body, '$.type') = 'tool/call' AND json_extract(body, '$.data.callId') = ? ORDER BY seq DESC LIMIT 1`)
+      const callRow = this.db.prepare(`SELECT seq,body FROM events WHERE session_id = ? AND seq >= ? AND seq < ?
+        AND CASE WHEN json_valid(body) THEN json_extract(body, '$.type') = 'tool/call'
+          AND json_extract(body, '$.data.callId') = ? ELSE 0 END ORDER BY seq DESC LIMIT 1`)
         .get(task.sessionId, task.from, ref.seq, result.data.message.toolCallId)
-      if (callRow === undefined) continue
-      const call = object(json(callRow.body)) as SessionEvent
+      if (callRow === undefined) throw new MemoryError('gap', 'Execution invocation is unavailable')
+      const call = executionEvent(callRow.body, integer(callRow.seq))
       if (call.type === 'tool/call' && executionSucceeded(call, result)) verified.push(ref)
     }
     return verified

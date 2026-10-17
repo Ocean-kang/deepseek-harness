@@ -22,12 +22,20 @@ export class TextMemoryRetriever {
     if (spec.expandQuery && expand === undefined) throw new MemoryError('config', 'text query expansion requires a configured model adapter')
   }
   private assertOpen(): void { if (this.closed) throw new MemoryError('closed', 'text memory retriever is closed') }
-  /** Queries use transient worker-owned corpora. */
+  /** Persistent index changes are applied before the next read. */
   schedule(): void { this.assertOpen() }
-  /** @returns settlement; there is no background index. */
-  async flush(): Promise<void> { this.assertOpen() }
-  /** There is no durable text index to rebuild. */
-  async rebuildIndex(): Promise<void> { this.assertOpen() }
+  /** @returns settlement after stored projects' default corpora have caught up. */
+  async flush(): Promise<void> {
+    this.assertOpen()
+    for (const projectId of await this.provider.vectors.projects()) await this.provider.textSnapshot(this.spec, { projectId, text: '' })
+  }
+  /** @returns completion after draining queries and rebuilding derived text corpora. */
+  async rebuildIndex(): Promise<void> {
+    this.assertOpen()
+    await Promise.allSettled([...this.queries])
+    await this.provider.rebuildTextIndex()
+    await this.flush()
+  }
   /** @param project - requester. @returns current candidate completeness. */
   async getIndexStatus(project: ProjectId) { this.assertOpen(); return this.provider.textStatus(this.spec, project) }
   /** @param request - authorized query. @returns budgeted version-bound references. */
@@ -46,7 +54,7 @@ export class TextMemoryRetriever {
     const response = await this.queryCorpus(request, signal)
     let result = response.result
     signal.throwIfAborted()
-    if (!response.matched && result.scanned !== 0 && this.spec.expandQuery && this.expand !== undefined) {
+    if (!response.matched && response.candidates !== 0 && this.spec.expandQuery && this.expand !== undefined) {
       const text = await this.expand(request, signal)
       textTerms({ ...request, text }, this.spec)
       result = (await this.queryCorpus({ ...request, text }, signal)).result

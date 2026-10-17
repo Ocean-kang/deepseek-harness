@@ -295,7 +295,7 @@ it('recovers project learning when the Workspace registry becomes ready after me
 
 it('does not extract a partially inherited turn in workspace mode', async () => {
   const item = await fixture()
-  const spec = await resolveConfig({ ...item.spec, storageMode: 'workspace', l1: { provider: 'test', model: 'test' } })
+  const spec = await resolveConfig({ ...item.spec, recall: { ...item.spec.recall, levels: [...item.spec.recall.levels] }, storageMode: 'workspace', l1: { provider: 'test', model: 'test' } })
   const provider = await SqliteMemory.open(spec)
   try {
     await provider.appendRaw({ projectId: spec.projectId, header: { ...header('fork'), isSeeded: true }, inheritedEventCount: SessionLogOffset(2), events: turnEvents() })

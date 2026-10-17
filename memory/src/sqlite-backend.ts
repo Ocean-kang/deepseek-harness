@@ -3,7 +3,7 @@ import { mkdir, open } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { isDeepStrictEqual } from 'node:util'
-import { createHash } from 'node:crypto'
+import { setImmediate as yieldHost } from 'node:timers/promises'
 import { SessionLogOffset, SESSION_FORMAT_VERSION } from '@deepseek-ai/dsh-session'
 import type { SessionEvent, SessionHeader, SessionId } from '@deepseek-ai/dsh-session'
 import { assertContiguous, materializeAppendBatch, materializeCreateHeader, validateStoredEvents } from '@deepseek-ai/dsh-session-persistence'
@@ -13,17 +13,18 @@ import { MemoryError } from './types.ts'
 import type { AppendRawRequest, AppendRawResult, RawMemory, ReadRawRequest, ReadRawResult } from './types.ts'
 import type { ProjectId } from './types.ts'
 import type { L1Spec } from './l1-types.ts'
-import { backfillL1Projections, L1_SCHEMA, L1Store, TRACE_SCHEMA } from './l1-store.ts'
-import { compactLegacyKnowledgeTaskTraces, KNOWLEDGE_SCHEMA, KnowledgeStore } from './knowledge-store.ts'
+import { backfillL1Projections, L1_SCHEMA, L1Store, TRACE_SCHEMA, EVIDENCE_SCHEMA } from './l1-store.ts'
+import { compactLegacyKnowledgeTaskTraces, KNOWLEDGE_SCHEMA, KnowledgeStore, CONSOLIDATION_SCHEMA, backfillConsolidationIndex } from './knowledge-store.ts'
 import { VECTOR_SCHEMA, VectorStore } from './vector-store.ts'
 import { SELECTION_SCHEMA, SelectionStore } from './selection-store.ts'
 import { MAINTENANCE_SCHEMA, MaintenanceStore } from './maintenance-store.ts'
 import type { TextSearchSpec } from './text-retrieval.ts'
-import { matchesRetrieval } from './retrieval.ts'
+import { TextIndex, TEXT_SCHEMA } from './text-index.ts'
+import { textTerms } from './text-retrieval-backend.ts'
 import type { RetrievalRequest } from './retrieval.ts'
 
 /** Physical L0 schema version; future migrations must increase it. */
-export const SCHEMA_VERSION = 6
+export const SCHEMA_VERSION = 7
 const APPLICATION_ID = 0x4453484d
 
 function parseJson(value: string): unknown {
@@ -86,7 +87,7 @@ export class SqliteMemory implements RawMemory {
   readonly maintenance: MaintenanceStore
   private readonly changes = new Set<() => void>()
   private generation = 0
-  private readonly textSnapshots = new Map<string, { generation: number; fingerprint: string }>()
+  private readonly textIndex: TextIndex
 
   /** Subscribe to committed memory changes; callbacks must not throw.
    * @param listener - nonthrowing scheduling notification.
@@ -105,6 +106,7 @@ export class SqliteMemory implements RawMemory {
     this.l1 = new L1Store(db, () => this.assertOpen(), this.notify, spec.tracePageMaxBytes)
     this.knowledge = new KnowledgeStore(db, this.l1, () => this.assertOpen(), this.notify)
     this.vectors = new VectorStore(db, this.knowledge, () => this.assertOpen())
+    this.textIndex = new TextIndex(db, this.knowledge, spec.browser.stateCacheSessions)
     this.selections = new SelectionStore(db, () => this.assertOpen())
     this.maintenance = new MaintenanceStore(db, () => this.assertOpen(), this.notify)
     this.generation = this.vectors.generation()
@@ -233,7 +235,7 @@ export class SqliteMemory implements RawMemory {
           ) STRICT;
           CREATE INDEX sessions_project ON sessions(project, id);
           PRAGMA application_id = ${APPLICATION_ID}; PRAGMA user_version = 1`)
-        } else if ((version !== 1 && version !== 2 && version !== 3 && version !== 4 && version !== 5 && version !== SCHEMA_VERSION) || identity !== APPLICATION_ID) {
+        } else if ((version !== 1 && version !== 2 && version !== 3 && version !== 4 && version !== 5 && version !== 6 && version !== SCHEMA_VERSION) || identity !== APPLICATION_ID) {
           throw new MemoryError('schema', 'unrecognized memory database identity or schema version')
         }
         // Prepare exact columns before accepting a stamped but malformed database.
@@ -254,6 +256,10 @@ export class SqliteMemory implements RawMemory {
           compactLegacyKnowledgeTaskTraces(db)
           db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`)
         }
+        if (Number(version) < 7) {
+          db.exec(EVIDENCE_SCHEMA); db.exec(TEXT_SCHEMA); db.exec(CONSOLIDATION_SCHEMA)
+          db.exec('CREATE INDEX memory_text_source_lookup ON knowledge_selection_sources(source_id,id); PRAGMA user_version = 7')
+        }
         db.prepare('SELECT session_id,project,token,refs,automatic FROM memory_selections LIMIT 0').all()
         db.prepare('SELECT space,id,revision,digest,vector FROM memory_vectors LIMIT 0').all()
         db.prepare('SELECT space,status,failure FROM memory_index_state LIMIT 0').all()
@@ -272,7 +278,10 @@ export class SqliteMemory implements RawMemory {
         throw error
       }
       db.exec(`PRAGMA journal_mode = ${spec.journalMode}; PRAGMA synchronous = FULL`)
-      return new SqliteMemory(db, spec)
+      const provider = new SqliteMemory(db, spec)
+      while (backfillConsolidationIndex(db, spec.pageSize).pending) await yieldHost()
+      while (provider.l1.auditEvidencePage(spec.pageSize).pending) await yieldHost()
+      return provider
     } catch (error) {
       db.close()
       throw error
@@ -431,43 +440,28 @@ export class SqliteMemory implements RawMemory {
     return { created, pending: true }
   }
 
-  /** @param spec - search limits. @param request - owner and query. @returns transient full-text result. */
+  /** @param spec - search budgets. @param request - requester and filters. @returns ranked persistent-index results. */
   async textQuery(spec: TextSearchSpec, request: RetrievalRequest) {
-    const { TextMemoryRetriever } = await import('./text-retrieval-backend.ts')
-    const retriever = new TextMemoryRetriever(this, { ...spec, expandQuery: false })
-    try { const result = await retriever.retrieve(request); return { result, matched: retriever.matched, fingerprint: retriever.fingerprint } } finally { await retriever.close() }
-  }
-  /** @param spec - bounded corpus scan. @param request - authorization and filters.
-   * @returns digest of exact eligible versions; other projects' private changes do not alter it.
-   */
-  textSnapshot(spec: TextSearchSpec, request: RetrievalRequest): string {
     this.assertOpen()
-    const generation = this.vectors.generation()
-    const key = JSON.stringify([request.projectId, request.levels, request.kinds, request.scenario, spec.maxCandidates, spec.pageSize])
-    const cached = this.textSnapshots.get(key)
-    if (cached?.generation === generation) {
-      this.textSnapshots.delete(key); this.textSnapshots.set(key, cached)
-      return cached.fingerprint
-    }
-    const digest = createHash('sha256')
-    let count = 0
-    for (const document of this.vectors.documents(request.projectId, spec.pageSize)) {
-      request.signal?.throwIfAborted()
-      if (!matchesRetrieval(document, request)) continue
-      if (++count > spec.maxCandidates) throw new MemoryError('budget', 'memory candidate scan exceeds configured limit')
-      digest.update(JSON.stringify([document.memory.id, document.memory.revision, document.digest, 'shared' in document.memory]))
-    }
-    const fingerprint = digest.digest('hex')
-    this.textSnapshots.set(key, { generation, fingerprint })
-    while (this.textSnapshots.size > this.spec.browser.stateCacheSessions) this.textSnapshots.delete(this.textSnapshots.keys().next().value!)
-    return fingerprint
+    const terms = textTerms(request, spec)
+    return this.textIndex.query(spec, request, terms)
   }
-  /** @param spec - search limits. @param project - owner. @returns candidate completeness. */
-  async textStatus(spec: TextSearchSpec, project: ProjectId) {
-    const { TextMemoryRetriever } = await import('./text-retrieval-backend.ts')
-    const retriever = new TextMemoryRetriever(this, { ...spec, expandQuery: false })
-    try { return retriever.getIndexStatus(project) } finally { await retriever.close() }
+  /** @param spec - tokenizer and indexing page bounds. @param request - requester and filters.
+   * @returns synchronized requester-corpus version; foreign private changes do not alter it.
+   */
+  async textSnapshot(spec: TextSearchSpec, request: RetrievalRequest): Promise<string> {
+    this.assertOpen()
+    return this.textIndex.snapshot(spec, request)
   }
+  /** @param spec - text settings. @param request - requester. @returns indexed corpus readiness and count. */
+  async textStatus(spec: TextSearchSpec, projectId: ProjectId) {
+    this.assertOpen()
+    await this.textIndex.snapshot(spec, { projectId, text: '' })
+    return this.textIndex.status(spec, { projectId, text: '' })
+  }
+
+  /** Rebuild affects derived text data only; callers drain dependent queries first. */
+  rebuildTextIndex(): void { this.assertOpen(); this.textIndex.reset() }
 
   private assertOpen(): void {
     if (this.closed) throw new MemoryError('closed', 'memory database is closed')

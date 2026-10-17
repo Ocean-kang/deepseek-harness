@@ -3,6 +3,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-slots'
 
 /** Chinese dictionary owns the key set. */
 export const zh = {
+  memorySearchRunning: '正在搜索记忆', memorySearchFailed: '记忆搜索失败，请检查详情后重试', memorySearchUnreadable: '无法读取已记录的记忆搜索结果', memorySearchResults: '记忆搜索 · {count} 条结果', memorySearchShared: '已获批准的共享记忆',
   importPreviewCounts: '当前已加载预览：可导入 {available} 个 · 已导入 {imported} 个 · 无法处理 {unsupported} 个',
   importSourceFailure: '无法读取原对话，请检查来源是否仍存在', importSchemaFailure: '对话格式尚不支持，请先完成支持的格式迁移', importConflictFailure: '来源内容或工作区归属发生冲突，请检查原对话', importGapFailure: '来源记录不完整，请检查原对话的已保存内容', importCorruptFailure: '来源数据无法解析，请检查原对话文件',
   operationUnknown: '存储操作结果未知，已暂停新的写入。请重启应用并检查已保存的任务进度，再决定是否继续', refreshStatus: '刷新任务状态',
@@ -11,7 +12,7 @@ export const zh = {
   scenario: '场景', allScenarios: '全部场景', stableKind: '稳定记忆类型', all: '全部', knowledge: '工程知识', profile: '交互偏好', trace: '执行详情',
   problem: '问题', summary: '总结', conclusion: '结论', reason: '原因', whenToUse: '适用条件', recommendedAction: '推荐做法', limitations: '限制',
   claimed: '尚待核实', model_supported: '模型判断有来源支持', user_confirmed: '用户已确认', execution_verified: '程序已验证执行成功', externally_verified: '外部已验证', conflicted: '存在未解决冲突', evidenceStale: '证据来源已失效',
-  hybridHelp: '自动召回仅检索 L3，以 BM25 和向量排名融合排序；L2 按场景查阅，L1/L0 用于历史和证据追溯',
+  hybridHelp: '自动召回默认检索 L1–L3，以 BM25 和向量排名融合排序；模型也可主动搜索记忆',
   assets: '记忆资产' , assetsHelp: '从原始记录到长期知识', loaded: '已加载 {count} 条',
   browseHelp: '选择一条记忆，查看正文与来源', content: '记忆正文',
   L0Help: '完整对话与工具记录', L1Help: '任务目标、问题和解决方案', L2Help: '按场景组织的知识卡', L3Help: '稳定知识与交互偏好',
@@ -37,7 +38,7 @@ export const zh = {
   extractionRequest: '记忆提炼请求', returned: '模型已返回（是否生成以提炼状态为准）', cancelled: '提炼调用已取消', threw: '提炼调用失败', recalled: '已送入模型的记忆正文',
   success: '成功', failure: '失败', incomplete: '未完成', unknown: '结果未知', noActions: '未记录动作',
   searchScope: '搜索查看：当前项目的 {level}（含获批共享记忆），按字面子串匹配',
-  searchHelp: '搜索查看不会启用模型自动召回；自动召回按对话设置持续生效',
+  searchHelp: '新对话默认自动召回 L1–L3；此开关按对话保存，浏览搜索结果不会更改开关',
   searchMatches: '当前页 {count} 条 · 匹配“{query}”', rawMatch: '匹配原始记录中的文字',
   textHelp: '自动召回使用字面子串检索，支持短词；未命中时可由模型扩展查询，不等同于向量语义检索',
   pendingTitle: '下一轮待用', pendingHelp: '发送前请检查此区域。手选记忆送入模型上下文后只使用一次',
@@ -59,6 +60,7 @@ export const zh = {
 export type MemoryPanelKey = keyof typeof zh
 /** English dictionary has exactly the same keys. */
 export const en: Record<MemoryPanelKey, string> = {
+  memorySearchRunning: 'Searching memory', memorySearchFailed: 'Memory search failed. Check details before retrying.', memorySearchUnreadable: 'Recorded memory search results could not be read.', memorySearchResults: 'Memory search · {count} results', memorySearchShared: 'Approved shared memory',
   importPreviewCounts: 'Loaded preview: {available} available · {imported} imported · {unsupported} unavailable',
   importSourceFailure: 'The original conversation could not be read. Check that its source still exists.', importSchemaFailure: 'This conversation format is unsupported. Complete a supported format migration first.', importConflictFailure: 'Source content or workspace ownership conflicts. Inspect the original conversation.', importGapFailure: 'Source records are incomplete. Inspect the saved conversation.', importCorruptFailure: 'Source data could not be decoded. Inspect the original conversation file.',
   operationUnknown: 'The storage outcome is unknown. New writes are paused. Restart the app and inspect saved task progress before deciding whether to continue.', refreshStatus: 'Refresh task status',
@@ -67,7 +69,7 @@ export const en: Record<MemoryPanelKey, string> = {
   scenario: 'Scenario', allScenarios: 'All scenarios', stableKind: 'Stable memory kind', all: 'All', knowledge: 'Engineering knowledge', profile: 'Interaction preferences', trace: 'Execution details',
   problem: 'Problem', summary: 'Summary', conclusion: 'Conclusion', reason: 'Reason', whenToUse: 'When to use', recommendedAction: 'Recommended action', limitations: 'Limitations',
   claimed: 'Awaiting verification', model_supported: 'Model-supported', user_confirmed: 'User-confirmed', execution_verified: 'Execution verified by program', externally_verified: 'Externally verified', conflicted: 'Unresolved conflict', evidenceStale: 'Evidence sources are stale',
-  hybridHelp: 'Automatic recall searches L3 using fused BM25 and vector ranks. Browse L2 by scenario and L1/L0 for history and original evidence.',
+  hybridHelp: 'Automatic recall defaults to L1–L3 using fused BM25 and vector ranks. The model can also search memory explicitly.',
   assets: 'Memory assets' , assetsHelp: 'From raw records to lasting knowledge', loaded: '{count} loaded',
   browseHelp: 'Select a memory to read its text and sources', content: 'Memory content',
   L0Help: 'Full conversations and tool records', L1Help: 'Task goals, problems and solutions', L2Help: 'Scenario knowledge cards', L3Help: 'Stable knowledge and preferences',
@@ -93,7 +95,7 @@ export const en: Record<MemoryPanelKey, string> = {
   extractionRequest: 'Memory extraction request', returned: 'Model returned (generation is tracked separately)', cancelled: 'Extraction call cancelled', threw: 'Extraction call failed', recalled: 'Memory text sent to the model',
   success: 'Succeeded', failure: 'Failed', incomplete: 'Incomplete', unknown: 'Unknown outcome', noActions: 'No actions recorded',
   searchScope: 'Search to view: {level} in this project (including approved shared memory), using literal substrings',
-  searchHelp: 'Viewing search results does not enable model recall. Automatic recall persists per conversation.',
+  searchHelp: 'New conversations recall L1–L3 automatically. This switch is saved per conversation; browsing results does not change it.',
   searchMatches: '{count} on this page · matches “{query}”', rawMatch: 'Matches text in the raw record',
   textHelp: 'Automatic recall matches literal substrings, including short terms. A model may expand queries with no matches; this is not vector semantic search.',
   pendingTitle: 'Ready for the next turn', pendingHelp: 'Review this area before sending. Manual memory is used once after entering model context.',

@@ -1,5 +1,6 @@
 /** Memory tab in DSH's existing right sidebar, over its existing authenticated connection. */
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
+import type {} from '@deepseek-ai/dsh-client-ui-tool/client'
 import type {} from '@deepseek-ai/dsh-client-ui-session/client'
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar-right/client'
 import type { Context as ClientContext } from '@deepseek-ai/cordis'
@@ -8,6 +9,7 @@ import type { ConnectionHandle } from '@deepseek-ai/dsh-client-connection/client
 import { FileTypeIcon, GuideArtworkFiles } from '@deepseek-ai/dsh-client-ui-primitives'
 import { panelResponse } from '../panel-protocol.ts'
 import { MemoryPanel } from './MemoryPanel.tsx'
+import { MemorySearchRow } from './MemorySearchRow.tsx'
 import { PendingMemory } from './PendingMemory.tsx'
 import { createPanelStateObserver } from './state-observer.ts'
 import type { PanelCall } from './state-observer.ts'
@@ -41,6 +43,9 @@ export function apply(ctx: ClientContext): void {
     (error) => { ctx.logger.error('Memory state subscriber failed', error) })
   ctx.effect(() => dispose, 'memory.panel.state')
   ctx.effect(() => ctx.locale.register('memoryPanel', { zh, en }), 'memory.panel.locale')
+  ctx.effect(() => ctx.slots.inject('tool.call.toolview', () => ctx.slots.register(
+    { name: 'tool.call.toolview', key: 'memory_search', locale: 'memoryPanel' }, MemorySearchRow,
+  )), 'memory.search.presentation')
   ctx.effect(() => ctx.sidebarRightTabs.register({ id: ID, kind: 'memory', priority: 'extension',
     title: () => t('title'), guide: [{ id: 'memory', order: 15, title: () => t('title'), description: () => t('description'), icon: GuideArtworkFiles }],
   }), 'memory.panel.tab')

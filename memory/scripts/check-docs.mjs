@@ -13,8 +13,11 @@ import {
 } from '../../scripts/translation-pairing-record.ts'
 
 const root = fileURLToPath(new URL('../../', import.meta.url))
-const pairSources = ['memory/README.md', 'memory/distribution/README.md', 'memory/distribution/trigram-upgrade.md', 'memory/distribution/layered-upgrade.md', 'memory/distribution/storage-upgrade.md']
-const pairs = pairSources.map(translationPairPaths)
+const pairSources = ['memory/README.md', 'memory/distribution/README.md', 'memory/distribution/trigram-upgrade.md', 'memory/distribution/layered-upgrade.md', 'memory/distribution/storage-upgrade.md', 'memory/distribution/reliability-upgrade.md']
+const pairs = pairSources.map(source => ({
+  ...translationPairPaths(source),
+  meta: source.replace(/\.md$/, isTranslationScopeFile(source) ? '.i18n.yaml' : '.pairing.yaml'),
+}))
 const args = process.argv.slice(2)
 let evaluation
 for (let index = 0; index < args.length; index++) {
@@ -37,7 +40,7 @@ const anchors = anchorCache()
 const errors = []
 function signature(sourcePath, counterpart, markdown) {
   return translationStructureSignature(parseTranslationMarkdown(markdown), counterpart, {
-    ...context, sourcePath, markdown,
+    ...(isTranslationScopeFile(sourcePath) ? recordContext : context), sourcePath, markdown,
   })
 }
 for (const paths of pairs) {

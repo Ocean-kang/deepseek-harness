@@ -1,3 +1,4 @@
+import { retainSchema } from './schema-fixtures.ts'
 /** Real SQLite browsing, receipt durability and private-source isolation. */
 import { afterEach, expect, it, vi } from 'vitest'
 import { DatabaseSync } from 'node:sqlite'
@@ -128,7 +129,7 @@ it('upgrades a version-four database without rewriting existing memory rows', as
   const before = await item.browser.detail(item.project, ref)
   await item.provider.close()
   const db = new DatabaseSync(item.spec.databasePath)
-  try { db.exec('DROP TABLE memory_selections; DROP TABLE memory_imports; DROP TABLE memory_admissions; DROP TABLE memory_cleanup_runs; DROP TABLE l1_trace_chunks; DROP TABLE l1_summary_projections; DROP TABLE l1_candidate_projections; PRAGMA user_version = 4') } finally { db.close() }
+  try { retainSchema(db, 4) } finally { db.close() }
   const reopened = await item.open()
   expect(reopened.knowledge.getMemory(item.project, ref)).toEqual(before)
   expect(reopened.selections.get(item.project, header().id)).toBeNull()

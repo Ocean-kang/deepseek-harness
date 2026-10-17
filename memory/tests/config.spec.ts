@@ -37,6 +37,18 @@ it('selects central storage for direct mounts and accepts the explicit workspace
   expect((await resolveConfig({ projectId: 'stable', databasePath: 'data/test.sqlite', storageMode: 'workspace' })).storageMode).toBe('workspace')
 })
 
+it('validates recall defaults and the optional searchable model tool', async () => {
+  const base = { projectId: 'stable', databasePath: 'data/test.sqlite' }
+  expect(await resolveConfig(base)).toMatchObject({ recall: { automatic: true, levels: ['L1', 'L2', 'L3'] }, searchTool: false, storageWorkers: 4 })
+  const parsed = Config({ ...base, recall: { automatic: false, levels: ['L1', 'L2'] }, searchTool: true, textSearch: {}, storageWorkers: 2 })
+  expect(await resolveConfig(parsed)).toMatchObject({ recall: { automatic: false, levels: ['L1', 'L2'] }, searchTool: true, storageWorkers: 2 })
+  for (const levels of [[], ['L1', 'L1'] as const, ['L0'] as const]) {
+    await expect(resolveConfig({ ...base, recall: { levels: [...levels] as ('L1' | 'L2' | 'L3')[] } })).rejects.toMatchObject({ code: 'config' })
+  }
+  await expect(resolveConfig({ ...base, searchTool: true })).rejects.toMatchObject({ code: 'config' })
+  await expect(resolveConfig({ ...base, storageWorkers: 0 })).rejects.toMatchObject({ code: 'config' })
+})
+
 it('resolves byte budgets and opt-in retention through the Loader and rejects unusable limits', async () => {
   const base = { projectId: 'stable', databasePath: 'data/test.sqlite' }
   expect(await resolveConfig(base)).toMatchObject({ queueMaxBytes: 8388608, pageMaxBytes: 262144,
@@ -96,7 +108,7 @@ it('refuses a directory junction before creating a database', async () => {
 it('requires explicit L1 routes and resolves every extraction limit before execution', async () => {
   const spec = await resolveConfig({ projectId: 'stable', databasePath: 'data/test.sqlite' })
   expect(spec.l1).toBeUndefined()
-  expect(resolveL1Config({ provider: 'test', model: 'test' })).toEqual({ provider: 'test', model: 'test', promptVersion: 'l1-v3', maxInputBytes: 65536,
+  expect(resolveL1Config({ provider: 'test', model: 'test' })).toEqual({ provider: 'test', model: 'test', promptVersion: 'l1-v4', maxInputBytes: 65536,
     maxOutputTokens: 2048, timeoutMs: 60000, maxCalls: 32, maxAttempts: 3, retryBaseMs: 1000, retryMaxMs: 30000 })
   for (const value of ['', '  ', ' trailing ']) expect(() => resolveL1Config({ provider: value, model: 'test' })).toThrow()
   for (const value of [0, -1, 1.5, Infinity]) expect(() => resolveL1Config({ provider: 'test', model: 'test', timeoutMs: value })).toThrow()
@@ -107,7 +119,7 @@ it('resolves knowledge settings at load and rejects invalid scoring', async () =
   const config = { provider: 'test', model: 'test', scoreMin: 1, scoreMax: 5, l2Threshold: 3, l3Threshold: 4 }
   const spec = await resolveConfig({ projectId: 'stable', databasePath: 'data/test.sqlite', knowledge: config })
   expect(spec.knowledge).toEqual(resolveKnowledgeConfig(config))
-  expect(spec.knowledge?.promptVersion).toBe('knowledge-v4')
+  expect(spec.knowledge?.promptVersion).toBe('knowledge-v6')
   await expect(resolveConfig({ projectId: 'stable', databasePath: 'data/test.sqlite', knowledge: { ...config, l3Threshold: 2 } })).rejects.toMatchObject({ code: 'config' })
   await expect(resolveConfig({ projectId: 'stable', databasePath: 'data/test.sqlite', knowledge: { ...config, provider: '' } })).rejects.toMatchObject({ code: 'config' })
 })

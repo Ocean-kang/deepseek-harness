@@ -27,6 +27,7 @@ import { MemoryError } from './types.ts'
 import { MemoryBrowser } from './browser.ts'
 import { installPanelHost } from './panel-host.ts'
 import { installMemoryInjector } from './injector.ts'
+import { installMemorySearchTool } from './search-tool.ts'
 import type { AppendRawRequest, AppendRawResult, RawMemory, ReadRawRequest, ReadRawResult } from './types.ts'
 import type { ProjectId } from './types.ts'
 import type { L1Spec, L1Task, MemoryRef, OperationId } from './l1-types.ts'
@@ -67,6 +68,8 @@ export type Config = ConfigInput
 export const Config: z<Config> = z.object({
   dataRoot: z.string(), projectByPath: z.boolean(), storageMode: z.union(['central', 'workspace'] as const),
   injection: z.boolean(),
+  searchTool: z.boolean(),
+  recall: z.object({ automatic: z.boolean(), levels: z.array(z.union(['L1', 'L2', 'L3'] as const)).default(['L1', 'L2', 'L3']) }),
   panel: z.boolean(),
   browser: z.object({ pageSize: z.number(), maxQueryBytes: z.number(), limit: z.number(), maxBytes: z.number(),
     refreshIntervalMs: z.number(), stateCacheSessions: z.number() }),
@@ -74,11 +77,11 @@ export const Config: z<Config> = z.object({
   hybrid: z.union([z.object({ rrfK: z.number(), candidateLimit: z.number(), limit: z.number(), maxBytes: z.number() }), z.const(undefined)]),
   projectId: z.string().required(), databasePath: z.string().required(),
   queueCapacity: z.number(), batchSize: z.number(), pageSize: z.number(), busyTimeoutMs: z.number(),
-  queueMaxBytes: z.number(), pageMaxBytes: z.number(), tracePageMaxBytes: z.number(), storageQueueCapacity: z.number(), storageQueueMaxBytes: z.number(),
+  queueMaxBytes: z.number(), pageMaxBytes: z.number(), tracePageMaxBytes: z.number(), storageQueueCapacity: z.number(), storageQueueMaxBytes: z.number(), storageWorkers: z.number(),
   retention: z.object({ maxAgeDays: z.number(), intervalMs: z.number() }),
   learningConcurrency: z.number(), learningQueueCapacity: z.number(),
   textSearch: z.union([z.object({ tokenizer: z.union(['unicode61', 'trigram'] as const), limit: z.number(), maxBytes: z.number(),
-    maxCandidates: z.number(), pageSize: z.number(), timeoutMs: z.number(), maxQueryBytes: z.number(), maxTerms: z.number(),
+    maxCandidates: z.number(), pageSize: z.number(), timeoutMs: z.number(), indexTimeoutMs: z.number(), maxQueryBytes: z.number(), maxTerms: z.number(),
     expandQuery: z.boolean(), expansionTimeoutMs: z.number(),
   }), z.const(undefined)]),
   journalMode: z.union(['wal', 'delete', 'truncate', 'persist'] as const),
@@ -95,7 +98,7 @@ export const Config: z<Config> = z.object({
     provider: z.string().required(), model: z.string().required(),
     maxInputBytes: z.number(), maxOutputTokens: z.number(), timeoutMs: z.number(), maxCalls: z.number(),
     maxAttempts: z.number(), retryBaseMs: z.number(), retryMaxMs: z.number(),
-    scoreMin: z.number(), scoreMax: z.number(), l2Threshold: z.number(), l3Threshold: z.number(),
+    scoreMin: z.number(), scoreMax: z.number(), l2Threshold: z.number(), l3Threshold: z.number(), maxExisting: z.number(), maxSearchTerms: z.number(),
   }), z.const(undefined)]),
 })
 /** Plugin identity. */
@@ -159,11 +162,12 @@ export class MemoryService extends Service implements RawMemory {
    * @param browser - resolved browser and combined injection limits.
    * @param routes - optional initialized Workspace runtimes and activation policy.
    * @param admission - central-store source exclusion and refresh policy.
+   * @param recall - automatic recall defaults shared with the panel.
    */
-  constructor(ctx: Context, private readonly provider: MemoryDatabase, private readonly l1: L1Spec | undefined, private readonly scan: (project: ProjectId) => void | Promise<void>, browser: import('./browser.ts').BrowserSpec, private readonly retriever?: MemorySearch, private readonly pipeline?: MemoryPipeline, private readonly routes?: MemoryRoutes, private readonly admission?: Pick<MemoryRoutes, 'accepts' | 'refreshAdmissions'>) {
+  constructor(ctx: Context, private readonly provider: MemoryDatabase, private readonly l1: L1Spec | undefined, private readonly scan: (project: ProjectId) => void | Promise<void>, browser: import('./browser.ts').BrowserSpec, private readonly retriever?: MemorySearch, private readonly pipeline?: MemoryPipeline, private readonly routes?: MemoryRoutes, private readonly admission?: Pick<MemoryRoutes, 'accepts' | 'refreshAdmissions'>, recall?: import('./browser.ts').RecallSpec) {
     super(ctx, 'memory')
     this.owner = ctx
-    this.browser = new MemoryBrowser(routes === undefined ? provider : project => routes.get(project).provider, browser)
+    this.browser = new MemoryBrowser(routes === undefined ? provider : project => routes.get(project).provider, browser, recall)
   }
 
   /** Await due learning work after source capture has committed.
@@ -211,6 +215,11 @@ export class MemoryService extends Service implements RawMemory {
    * @returns budgeted references; rejects on unavailable or incomplete index.
    */
   async retrieve(request: RetrievalRequest) { return this.search(request.projectId).retrieve(request) }
+
+  /** @param project - requesting project. @param result - earlier version-bound result.
+   * @returns authorized current results immediately before model delivery.
+   */
+  async revalidate(project: ProjectId, result: import('./retrieval.ts').RetrievalResult) { return this.search(project).revalidate(project, result) }
 
   /** Inspect completeness for the requesting project.
    * @param project - requester.
@@ -414,6 +423,7 @@ export class MemoryService extends Service implements RawMemory {
  */
 export async function apply(ctx: Context, config: Config): Promise<void> {
   const spec = await resolveConfig(config)
+  if (spec.searchTool && (!Object.hasOwn(ctx.fiber.inject, 'tools') || ctx.get('tools') === undefined)) throw new MemoryError('config', 'searchTool requires tools in this plugin entry\'s inject list')
   if (spec.panel && (!Object.hasOwn(ctx.fiber.inject, 'connection') || !Object.hasOwn(ctx.fiber.inject, 'webServer') || ctx.get('connection') === undefined)) {
     throw new MemoryError('config', 'panel requires connection and webServer in this plugin entry\'s inject list')
   }
@@ -528,7 +538,8 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     await enqueueKnowledge()
     if (spec.l1 !== undefined && pipeline === undefined) report(new MemoryError('integration', 'L1 tasks are persisted; enable autoLearning with L1 and knowledge model configurations to dispatch recorded background requests'))
     const service = new MemoryService(ctx, provider, spec.l1, scan, spec.browser, retriever, pipeline, undefined,
-      { accepts: session => !excluded.has(session.header.id), refreshAdmissions: refreshExcluded })
+      { accepts: session => !excluded.has(session.header.id), refreshAdmissions: refreshExcluded }, spec.recall)
+    if (spec.searchTool) installMemorySearchTool(ctx)
     if (spec.injection && retriever !== undefined) injectorDispose = installMemoryInjector(ctx, retriever, async agent => {
       await collector.flush(agent.session)
       const project = (await provider.getSessionProject(agent.session.id))

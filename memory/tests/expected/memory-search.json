@@ -1,0 +1,14 @@
+{
+  "tool": "memory_search",
+  "rows": [
+    {
+      "level": "L2",
+      "revision": 1,
+      "evidenceStatus": "model_supported",
+      "readableSummary": true
+    }
+  ],
+  "loggedInModelRequest": true,
+  "replayed": true,
+  "automaticRecalls": 0
+}

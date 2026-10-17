@@ -161,7 +161,7 @@ export function apply(ctx, config) {
       assert.ok(typeof l1.summary.description === 'string' && l1.summary.description.trim())
       for (const record of [l2, l3]) {
         assert.ok(typeof record.knowledge.description === 'string' && record.knowledge.description.trim())
-        assert.equal(record.config.promptVersion, 'knowledge-v4')
+        assert.equal(record.config.promptVersion, 'knowledge-v6')
         assert.deepEqual(refsSorted(record.knowledge.examinedEvents), refsSorted(l1.summary.sources))
       }
       const ref = { id: l2.id, revision: l2.revision }

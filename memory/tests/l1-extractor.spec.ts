@@ -68,6 +68,20 @@ it('records the exact immutable request before service dispatch without starting
   expect(events).toHaveLength(3)
 })
 
+it.each(['l1-v3', 'l1-v4'] as const)('records %s declarations without inventing execution and preserves its frozen prompt', async promptVersion => {
+  const item = await setup({}, { kind: 'completed' }, 'Standing project rule: use ESM and marker amber731.')
+  const task = { ...item.task, config: { ...item.task.config, promptVersion } }
+  const declaration = { kind: 'memory', summary: { title: 'Project policy', goal: 'Record project policy', problem: 'None observed',
+    summary: 'The user stated the project rule.', description: 'User-stated ESM policy', actions: [], outcome: 'unknown',
+    result: 'The user requires ESM and marker amber731.', solution: null, sources: [{ sessionId: task.sessionId, seq: SessionSeq(1) }] } }
+  item.ctx.llm.registerAdapter(['test'], new Adapter(() => response(JSON.stringify(declaration))))
+  const result = await item.extractor.extractTurn(task, item.events, new AbortController().signal, () => {})
+  expect(result).toMatchObject(declaration)
+  expect(result.kind === 'memory' && result.summary.executionEvidence).toBeUndefined()
+  expect(item.records[0]?.system?.includes('Meaningful memory also includes explicit user-stated')).toBe(promptVersion === 'l1-v4')
+  expect(item.records[0]?.system).toContain('An outcome success requires a successful completed tool result')
+})
+
 it.each([
   { kind: 'completed' }, { kind: 'error', error: { code: 'TEST', message: 'failed' } },
   { kind: 'blocked' }, { kind: 'aborted', reason: { kind: 'legacy' } },

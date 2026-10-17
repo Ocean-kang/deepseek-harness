@@ -114,6 +114,20 @@ it('records the frozen exact request before calling the real LLM service and com
   expect(item.store.listCandidates(item.project, 'L2')).toHaveLength(1)
 })
 
+it.each(['knowledge-v4', 'knowledge-v5', 'knowledge-v6'] as const)('retains the %s prompt while assigning semantic support without execution verification', async promptVersion => {
+  const item = await setup({}, promptVersion)
+  const value = knowledgeCandidate(item.source)
+  const output = { ...value, action: 'store', knowledge: { ...value.knowledge, scenario: 'Project policy', kind: 'knowledge',
+    description: 'User-stated project policy', conclusion: value.knowledge.body, reason: 'Original user statement',
+    whenToUse: ['This project'], recommendedAction: value.knowledge.body, limitations: ['Implementation is not verified'] } }
+  item.ctx.llm.registerAdapter(['test'], new Adapter(() => response(JSON.stringify([output]))))
+  await item.worker.run(item.project, item.operation, new AbortController().signal)
+  expect(item.records[0]?.system?.includes('Original human user messages can directly support')).toBe(promptVersion !== 'knowledge-v4')
+  expect(item.records[0]?.system?.includes('an evidence-interpretation constraint')).toBe(promptVersion === 'knowledge-v6')
+  expect(item.store.getTask(item.project, item.operation)?.status).toBe('done')
+  expect(item.store.listCandidates(item.project, 'L2')[0]).toMatchObject({ knowledge: { evidenceStatus: 'model_supported' } })
+})
+
 it.each(['L2', 'L3'] as const)('learns four independent %s tasks in four model calls from one queued batch', async (level: 'L2' | 'L3') => {
   const item = await setup()
   const sources = [item.source]
@@ -131,7 +145,7 @@ it.each(['L2', 'L3'] as const)('learns four independent %s tasks in four model c
   let calls = 0
   item.ctx.llm.registerAdapter(['test'], new Adapter((options) => {
     const task = item.store.getTask(item.project, operations[calls]!)!
-    expect(task.input.existing).toHaveLength(calls)
+    expect(task.input.existing.length).toBeLessThanOrEqual(calls)
     expect(options.messages).toEqual(item.records[calls]!.messages)
     return response(JSON.stringify([knowledgeCandidate(parents[calls]!, `Independent constraint ${calls++}`)]))
   }))
@@ -278,32 +292,19 @@ it('rejects oversized complete input before recording or dispatch', async () => 
   expect(item.store.getTask(item.project, item.operation)).toMatchObject({ status: 'failed', calls: 0, failure: 'budget' })
 })
 
-it.each([{ level: 'L2', version: 'knowledge-v3' }, { level: 'L3', version: 'knowledge-v2' }] as const)('bounds existing context and resumes a previously budget-failed task after 80 $level versions with $version', async ({ level, version }: { level: 'L2' | 'L3'; version: 'knowledge-v2' | 'knowledge-v3' }) => {
+it.each([{ level: 'L2', version: 'knowledge-v3' }, { level: 'L3', version: 'knowledge-v2' }] as const)('pauses $level work when 80 required related versions exceed its frozen comparison budget with $version', async ({ level, version }: { level: 'L2' | 'L3'; version: 'knowledge-v2' | 'knowledge-v3' }) => {
   const item = await setup({}, version)
   const source = level === 'L2' ? item.source : commitKnowledge(item, 'L2', [item.source], [knowledgeCandidate(item.source, 'Current parent')])[0]!
   const operation = level === 'L2' ? item.operation : item.store.enqueue(item.project, level, [source], item.config)
   const candidates = Array.from({ length: 80 }, (_, index) => knowledgeCandidate(source, `Constraint ${index}: ${'stored knowledge '.repeat(90)}`))
   commitKnowledge(item, level, [source], candidates, 'seed-80')
-  const full = item.store.claim(item.project, operation, 'old-worker', 0)!
-  expect(Buffer.byteLength(JSON.stringify(full.input))).toBeGreaterThan(120 * 1024)
-  item.store.fail(item.project, operation, 'old-worker', 'budget', false, 0)
-  item.store.retry(item.project, operation)
-  const calls = vi.fn(() => response(requestInput(item.records.at(-1)!).stage === 'visualize'
-    ? JSON.stringify({ description: 'A new constraint after existing knowledge grows.' })
-    : JSON.stringify([knowledgeCandidate(source, 'A new constraint after growth')])))
+  const calls = vi.fn(() => response('[]'))
   item.ctx.llm.registerAdapter(['test'], new Adapter(calls))
   await item.worker.run(item.project, operation, new AbortController().signal)
-  const expectedCalls = version === 'knowledge-v3' ? 2 : 1
-  expect(calls).toHaveBeenCalledTimes(expectedCalls)
-  const recorded = item.records[0]!
-  const selection = object(requestInput(recorded).selection)
-  expect(selection.existingAvailable).toBe(80)
-  expect(selection.existingOmitted).toBeGreaterThan(0)
-  const text = recorded.messages[0]!.content[0]!
-  if (text.type !== 'text') throw new Error('Expected text input')
-  expect(Buffer.byteLength(recorded.system ?? '') + Buffer.byteLength(text.text)).toBeLessThanOrEqual(item.config.maxInputBytes)
-  expect(item.store.getTask(item.project, operation)).toMatchObject({ status: 'done', calls: expectedCalls })
-  expect(item.store.listCandidates(item.project, level)).toHaveLength(81)
+  expect(calls).not.toHaveBeenCalled()
+  expect(item.records).toEqual([])
+  expect(item.store.getTask(item.project, operation)).toMatchObject({ status: 'failed', calls: 0, failure: 'budget' })
+  expect(item.store.listCandidates(item.project, level)).toHaveLength(80)
 })
 
 it('verifies eleven whole original events exceeding 64 KiB through L2 and L3 before atomic merge and description', async () => {
@@ -504,7 +505,7 @@ it('groups complete preceding-level sources without publishing a partial batch',
 
 it.each(['knowledge-v2', 'knowledge-v3'] as const)('reconciles repeated merge targets across source groups before one atomic %s publication', async (version: 'knowledge-v2' | 'knowledge-v3') => {
   const item = await setup({ maxInputBytes: 10000 }, version)
-  const target = commitKnowledge(item, 'L2', [item.source], [knowledgeCandidate(item.source, 'Original constraint')])[0]!
+  const target = commitKnowledge(item, 'L2', [item.source], [knowledgeCandidate(item.source, 'Original parser constraint')])[0]!
   const sources = await largeSources(item, 240)
   const operation = item.store.enqueue(item.project, 'L2', sources, item.config)
   let calls = 0
@@ -627,7 +628,7 @@ it('publishes no source groups when a later model batch fails', async () => {
   expect(item.store.browse(item.project, 'L2', '', 10, '')).toEqual([])
 })
 
-it('rejects a merge target excluded from the bounded model input', async () => {
+it('rejects oversized required related knowledge before model dispatch', async () => {
   const item = await setup({ maxInputBytes: 6500 })
   const target = commitKnowledge(item, 'L2', [item.source], [knowledgeCandidate(item.source, 'large existing record '.repeat(1000))], 'oversized-seed')[0]!
   item.ctx.llm.registerAdapter(['test'], new Adapter(() => {
@@ -635,7 +636,7 @@ it('rejects a merge target excluded from the bounded model input', async () => {
     return response(JSON.stringify([{ ...knowledgeCandidate(item.source, 'A forged replacement of omitted context'), target }]))
   }))
   await item.worker.run(item.project, item.operation, new AbortController().signal)
-  expect(item.store.getTask(item.project, item.operation)).toMatchObject({ status: 'failed', calls: 1, failure: 'output' })
+  expect(item.store.getTask(item.project, item.operation)).toMatchObject({ status: 'failed', calls: 0, failure: 'budget' })
   expect(item.store.getMemory(item.project, target)).toMatchObject({ state: 'active', revision: 1 })
 })
 

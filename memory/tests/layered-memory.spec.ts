@@ -134,12 +134,12 @@ it('keeps unresolved alternatives, prior versions and timestamps while suspendin
   } finally { await item.close() }
 })
 
-it('requires checked execution ancestry for new methods and trusted receipts for confirmation', async () => {
+it.each(['knowledge-v4', 'knowledge-v5', 'knowledge-v6'] as const)('requires checked execution ancestry for methods and trusted confirmation with %s', async promptVersion => {
   const item = await knowledgeFixture()
   try {
     const candidate = card(item.source)
     const input: KnowledgeInput = { projectId: item.project, level: 'L2', sources: [item.source], existing: [], lineage: [] }
-    const spec = { ...item.config, promptVersion: 'knowledge-v4' as const }
+    const spec = { ...item.config, promptVersion }
     expect(() => parseKnowledgeCandidates([{ ...candidate, knowledge: { ...candidate.knowledge, category: 'method' } }], input, spec)).toThrow('program-verified')
     expect(() => parseKnowledge({ ...candidate.knowledge, evidenceStatus: 'user_confirmed' }, spec)).toThrow('receipt')
     expect(() => parseKnowledge({ ...candidate.knowledge, whenToUse: 'all' }, spec)).toThrow('text list')

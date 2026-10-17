@@ -55,7 +55,7 @@ export function json(value: unknown): unknown {
  */
 export function storedSpec(value: unknown): L1Spec {
   const row = object(value)
-  if (!['l1-v1', 'l1-v2', 'l1-v3'].includes(textValue(row.promptVersion))) throw new MemoryError('schema', 'unsupported L1 prompt version')
+  if (!['l1-v1', 'l1-v2', 'l1-v3', 'l1-v4'].includes(textValue(row.promptVersion))) throw new MemoryError('schema', 'unsupported L1 prompt version')
   return { ...resolveL1Config({
     provider: textValue(row.provider), model: textValue(row.model),
     maxInputBytes: integer(row.maxInputBytes), maxOutputTokens: integer(row.maxOutputTokens),

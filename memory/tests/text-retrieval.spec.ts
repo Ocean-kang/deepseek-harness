@@ -280,9 +280,10 @@ it('removes derived text hits when their exact source becomes obsolete', async (
 
 it('rejects invalid modes and configured budgets, cancels scans and drains on close', async () => {
   const item = await setup({ maxCandidates: 1, limit: 1, pageSize: 1, maxQueryBytes: 12, maxTerms: 2 })
-  commitKnowledge(item, 'L2', [item.source], [knowledgeCandidate(item.source, 'ESM')])
-  expect((await item.search.getIndexStatus(item.project))).toMatchObject({ ready: false, truncated: true })
-  await expect(item.search.retrieve({ projectId: item.project, text: 'ESM' })).rejects.toMatchObject({ code: 'budget' })
+  commitKnowledge(item, 'L2', [item.source], [knowledgeCandidate(item.source, 'ESM'), knowledgeCandidate(item.source, 'ESM module')])
+  expect((await item.search.getIndexStatus(item.project))).toMatchObject({ ready: true, truncated: false, candidates: 3 })
+  expect((await item.search.retrieve({ projectId: item.project, text: 'ESM' })).hits).toHaveLength(1)
+  await expect(item.search.retrieve({ projectId: item.project, text: 'ESM', maxBytes: 1 })).rejects.toMatchObject({ code: 'budget' })
   await expect(item.search.retrieve({ projectId: item.project, text: 'abcdefghijklmn' })).rejects.toMatchObject({ code: 'budget' })
   await expect(item.search.retrieve({ projectId: item.project, text: 'a b c' })).rejects.toMatchObject({ code: 'budget' })
   await expect(item.search.retrieve({ projectId: item.project, text: 'ESM', limit: 0 })).rejects.toMatchObject({ code: 'config' })

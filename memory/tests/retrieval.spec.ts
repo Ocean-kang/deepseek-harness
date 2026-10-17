@@ -1,3 +1,4 @@
+import { retainSchema } from './schema-fixtures.ts'
 /** Real SQLite authorization, indexing recovery and bounded retrieval. */
 import { afterEach, expect, it } from 'vitest'
 import { DatabaseSync } from 'node:sqlite'
@@ -130,17 +131,15 @@ it('migrates schema 3 transactionally without altering source memories', async (
   await item.provider.close()
   const db = new DatabaseSync(item.spec.databasePath)
   try {
-    db.exec(`DROP TRIGGER memory_l1_insert; DROP TRIGGER memory_knowledge_insert; DROP TRIGGER memory_knowledge_update;
-      DROP TRIGGER memory_grant_insert; DROP TRIGGER memory_grant_delete; DROP INDEX memory_knowledge_candidates;
-      DROP TABLE memory_imports; DROP TABLE memory_admissions; DROP TABLE memory_cleanup_runs; DROP TABLE l1_trace_chunks; DROP TABLE l1_summary_projections; DROP TABLE l1_candidate_projections; DROP TABLE memory_selections; DROP TABLE memory_vectors; DROP TABLE memory_index_state; DROP TABLE memory_generation; PRAGMA user_version = 3;
-      CREATE TABLE memory_index_state (wrong TEXT)`)
+    retainSchema(db, 3)
+    db.exec('CREATE TABLE memory_index_state (wrong TEXT)')
     await expect(item.open()).rejects.toThrow()
     expect(db.prepare('PRAGMA user_version').get()?.user_version).toBe(3)
     expect(db.prepare("SELECT name FROM sqlite_master WHERE name = 'memory_vectors'").get()).toBeUndefined()
     db.exec('DROP TABLE memory_index_state')
     const migrated = await item.open()
     expect(migrated.l1.getMemory(item.project, item.source)).toEqual(item.source)
-    expect(db.prepare('PRAGMA user_version').get()?.user_version).toBe(6)
+    expect(db.prepare('PRAGMA user_version').get()?.user_version).toBe(7)
   } finally { db.close() }
 })
 

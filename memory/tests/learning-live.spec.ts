@@ -29,7 +29,7 @@ it.runIf(process.env.DSH_MEMORY_VERIFY_LEARNING === '1')('reopens the live run a
     expect(l1Tasks).toHaveLength(1)
     const l1Task = l1Tasks[0]!
     expect(l1Task.status).toBe('done')
-    expect(l1Task.config.promptVersion).toBe('l1-v3')
+    expect(l1Task.config.promptVersion).toBe('l1-v4')
     const l1 = (await memory.l1.byOperation(project, l1Task.operationId))!
     expect(l1.summary.description?.trim()).toBeTruthy()
     expect(['unknown', 'incomplete']).toContain(l1.summary.outcome)
@@ -69,7 +69,7 @@ it.runIf(process.env.DSH_MEMORY_VERIFY_LEARNING === '1')('reopens the live run a
     } finally { await search.close() }
     for (const task of [...l2Tasks, ...l3Tasks]) {
       expect(task.status).toBe('done')
-      expect(task.config.promptVersion).toBe('knowledge-v4')
+      expect(task.config.promptVersion).toBe('knowledge-v6')
       expect(task.result?.length).toBeGreaterThan(0)
       for (const ref of task.result!) {
         const record = await memory.knowledge.getMemory(project, ref)

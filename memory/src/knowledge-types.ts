@@ -52,14 +52,18 @@ export interface EvidenceConfirmation {
 /** Opaque identity of a trusted confirmation receipt. */
 export type EvidenceReceiptId = Branded<'MemoryEvidenceReceiptId'>
 /** Optional consolidation deployment settings. */
-export interface KnowledgeConfig extends L1Config { scoreMin?: number; scoreMax?: number; l2Threshold?: number; l3Threshold?: number }
+export interface KnowledgeConfig extends L1Config { scoreMin?: number; scoreMax?: number; l2Threshold?: number; l3Threshold?: number; maxExisting?: number; maxSearchTerms?: number }
 /** Complete, persisted model and scoring settings. */
 export interface KnowledgeSpec extends Omit<L1Spec, 'promptVersion'> {
-  readonly promptVersion: 'knowledge-v1' | 'knowledge-v2' | 'knowledge-v3' | 'knowledge-v4'
+  readonly promptVersion: 'knowledge-v1' | 'knowledge-v2' | 'knowledge-v3' | 'knowledge-v4' | 'knowledge-v5' | 'knowledge-v6'
   readonly scoreMin: number
   readonly scoreMax: number
   readonly l2Threshold: number
   readonly l3Threshold: number
+  /** Frozen comparison bound; historical tasks may omit it. */
+  readonly maxExisting?: number
+  /** Indexed terms per selection; historical tasks may omit it. */
+  readonly maxSearchTerms?: number
 }
 /** Immutable content version; state follows subsequent replacement or invalidation. */
 export interface KnowledgeMemory extends MemoryRef {
@@ -99,6 +103,10 @@ export interface KnowledgeInput {
   readonly sources: readonly OwnedMemory[]
   readonly existing: readonly KnowledgeMemory[]
   readonly lineage: readonly OwnedMemory[]
+  /** Monotonic target-level revision counter captured with the selected versions. */
+  readonly generation?: number
+  /** Directly related versions and explicit recheck targets must enter model context. */
+  readonly requiredExisting?: readonly MemoryRef[]
 }
 /** Durable task, including prepared results and exhausted budgets. */
 export interface KnowledgeTask {

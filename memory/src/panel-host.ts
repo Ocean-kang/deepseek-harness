@@ -236,7 +236,7 @@ export async function dispatchPanel(ctx: Context, request: PanelRequest, signal:
         if (item !== null) pending.push(await rowOf(item))
       }
       const { generation, ...learning } = await browser.status(project)
-      return { action: 'state', projectId: project, refs: [...selection?.refs ?? []], automatic: selection?.automatic ?? false,
+      return { action: 'state', projectId: project, refs: [...selection?.refs ?? []], automatic: browser.automatic(selection),
         injectionReady: browser.injectionReady, maintenanceReady: ctx.memory.workspaceBound(project), failedKnowledgeTasks: (await ctx.memory.listFailedKnowledgeTasks(project, browser.spec.pageSize)).map(task => ({ id: task.operationId, level: task.input.level, failure: task.failure })), valid, bytes, limit: browser.spec.limit, maxBytes: browser.spec.maxBytes, used, pending,
         revision: `${generation}:${offset}`, refreshIntervalMs: browser.spec.refreshIntervalMs,
         recallMethod: ctx.memory.recallMethod(project),

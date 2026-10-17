@@ -26,7 +26,11 @@ export function executionSucceeded(call: SessionEvent<'tool/call'>, result: Sess
   if (value === null || typeof value !== 'object') return false
   if (('timedOut' in value && value.timedOut !== false) || ('aborted' in value && value.aborted !== false)
     || ('signal' in value && value.signal !== null) || ('kind' in value && ['background', 'promoted'].includes(String(value.kind)))) return false
-  return ('exitCode' in value && value.exitCode === 0) || ('success' in value && value.success === true)
+  const hasExit = 'exitCode' in value
+  const hasSuccess = 'success' in value
+  return (hasExit || hasSuccess)
+    && (!('exitCode' in value) || (Number.isInteger(value.exitCode) && value.exitCode === 0))
+    && (!('success' in value) || value.success === true)
 }
 
 /** Collect successful matched result references inside one recorded source interval.

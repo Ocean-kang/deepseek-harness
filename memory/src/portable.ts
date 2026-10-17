@@ -10,7 +10,7 @@ import { installPanelHost } from './panel-host.ts'
 /** Durable storage and learning overrides; omitted routes use the current DSH default at load. */
 export type Config = Partial<MemoryConfig>
 /** Required services supplied by base-backed DSH profiles. */
-export const inject = ['sessions', 'sessionPersistence', 'llm', 'agentDefaultModel']
+export const inject = ['sessions', 'sessionPersistence', 'llm', 'agentDefaultModel', 'tools']
 /** @param ctx - owning profile context.
  * @param config - optional per-device overrides.
  * @returns readiness after capture, recall and background learning initialization.
@@ -21,8 +21,8 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
     dataRoot: resolve(process.env['DSH_HOME'] ?? join(homedir(), '.dsh'), 'memory'),
     databasePath: 'memory.sqlite', projectId: 'unassigned', projectByPath: true,
     storageMode: 'workspace',
-    autoLearning: true, injection: true,
-    textSearch: { tokenizer: 'trigram' as const, expandQuery: true },
+    autoLearning: true, injection: true, searchTool: true,
+    textSearch: { tokenizer: 'trigram' as const, expandQuery: false },
     l1: { provider: route.provider, model: route.model, maxOutputTokens: 4096 },
     knowledge: { provider: route.provider, model: route.model, maxOutputTokens: 4096 },
     ...config, panel: false,

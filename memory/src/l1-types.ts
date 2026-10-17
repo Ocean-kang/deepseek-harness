@@ -34,7 +34,7 @@ export interface L1Config {
 export interface L1Spec {
   readonly provider: string
   readonly model: string
-  readonly promptVersion: 'l1-v1' | 'l1-v2' | 'l1-v3'
+  readonly promptVersion: 'l1-v1' | 'l1-v2' | 'l1-v3' | 'l1-v4'
   readonly maxInputBytes: number
   readonly maxOutputTokens: number
   readonly timeoutMs: number

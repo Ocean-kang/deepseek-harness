@@ -12,11 +12,12 @@ import { HttpEmbedder } from './embedding.ts'
 import { MemoryService } from './index.ts'
 import type { MemoryRoutes, MemoryRuntime } from './index.ts'
 import { installMemoryInjector } from './injector.ts'
+import { installMemorySearchTool } from './search-tool.ts'
 import { installPanelHost } from './panel-host.ts'
 import { LearningBudget, MemoryPipeline } from './pipeline.ts'
 import { MemoryRetriever } from './retrieval.ts'
 import { HybridMemoryRetriever } from './hybrid-retrieval.ts'
-import { SqliteMemory, StorageWorker } from './sqlite.ts'
+import { SqliteMemory, StoragePool } from './sqlite.ts'
 import { HistoryImporter } from './history.ts'
 import { TextMemoryRetriever } from './text-retrieval.ts'
 import { queryExpander } from './query-expansion.ts'
@@ -67,7 +68,7 @@ export class WorkspaceMemory implements MemoryRoutes {
   private readonly imported = new Set<SessionId>()
   private readonly pending = new Set<Promise<void>>()
   private readonly timers = new Set<ReturnType<typeof setTimeout>>()
-  private readonly storage: StorageWorker
+  private readonly storage: StoragePool
   private closing = false
 
   /** @param ctx - profile services and optional Workspace registry.
@@ -75,7 +76,7 @@ export class WorkspaceMemory implements MemoryRoutes {
    * @param activatedAt - persisted activation cutoff.
    * @param report - nonthrowing body-free diagnostic observer.
    */
-  constructor(private readonly ctx: Context, private readonly spec: Spec, readonly activatedAt: number, private readonly report: (error: MemoryError) => void) { this.storage = new StorageWorker(spec) }
+  constructor(private readonly ctx: Context, private readonly spec: Spec, readonly activatedAt: number, private readonly report: (error: MemoryError) => void) { this.storage = new StoragePool(spec) }
 
   /** @param session - candidate Session.
    * @returns whether it was created after activation.
@@ -332,7 +333,8 @@ export async function installWorkspaceMemory(ctx: Context, spec: Spec): Promise<
     }
     await Promise.all(existing.map(session => capture.flush(session)))
     const global = routes.get(spec.projectId)
-    const service = new MemoryService(ctx, global.provider, spec.l1, project => routes.scan(project), spec.browser, global.retriever, global.pipeline, routes)
+    const service = new MemoryService(ctx, global.provider, spec.l1, project => routes.scan(project), spec.browser, global.retriever, global.pipeline, routes, undefined, spec.recall)
+    if (spec.searchTool) installMemorySearchTool(ctx)
     if (spec.injection && (spec.textSearch !== undefined || spec.embedding !== undefined)) {
       const search = (project: ProjectId) => {
         const retriever = routes.get(project).retriever

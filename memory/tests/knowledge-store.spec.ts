@@ -1,9 +1,9 @@
 /** Scoring, immutable sources, transactional recovery and grant visibility against SQLite. */
 import { afterEach, expect, it } from 'vitest'
 import { DatabaseSync } from 'node:sqlite'
+import { createToolResultMessage, ToolCallId } from '@deepseek-ai/dsh-llm'
 import { SessionLogOffset, SessionSeq } from '@deepseek-ai/dsh-session'
 import { resolveKnowledgeConfig } from '../src/l1-config.ts'
-import { enqueueCandidates } from '../src/knowledge-store.ts'
 import { parseKnowledgeCandidates } from '../src/knowledge-validation.ts'
 import type { MemoryId, OperationId } from '../src/l1-types.ts'
 import type { ProjectId } from '../src/types.ts'
@@ -12,6 +12,9 @@ import { MemoryBrowser, resolveBrowserConfig } from '../src/browser.ts'
 import { vectorDocument } from '../src/vector-store.ts'
 import { knowledgeFixture, knowledgeCandidate, commitKnowledge } from './knowledge-fixtures.ts'
 import { header } from './helpers.ts'
+import { retainSchema } from './schema-fixtures.ts'
+import { turnEvents } from './l1-fixtures.ts'
+import { resolveL1Config } from '../src/l1-config.ts'
 
 const owned: Array<Awaited<ReturnType<typeof knowledgeFixture>>> = []
 afterEach(async () => { for (const item of owned.splice(0)) await item.close() })
@@ -66,7 +69,7 @@ it('pauses derived recall and sharing after source invalidation while retaining 
   expect(() => store.approveShare(action(item, l3, 'stale-derived-grant'), () => true, 12)).toThrow(/supported/)
   expect(store.claim(item.project, queued, 'worker', 20)).toBeNull()
   expect(store.getTask(item.project, queued)).toMatchObject({ status: 'failed', failure: 'SOURCE_CHANGED', calls: 0 })
-  enqueueCandidates(store, item.project, 'L3', item.config, 1)
+  store.enqueueCandidates(item.project, 'L3', item.config, 1)
   expect(store.listTasks(item.project).filter(task => task.status === 'pending')).toEqual([])
   const reopened = await item.open()
   expect(reopened.knowledge.getMemory(item.project, l3)).toMatchObject({ state: 'active', knowledge: { sources: [{ ref: l2 }] } })
@@ -81,9 +84,9 @@ it('requeues completed derived memory for rechecking and publishes a new version
   const derived = commitKnowledge(item, 'L3', [old], [knowledgeCandidate(old)])[0]!
   const current = commitKnowledge(item, 'L2', [item.source], [{ ...knowledgeCandidate(item.source, 'Updated TypeScript constraint'), target: old }], 'new-parent')[0]!
   expect(store.listCandidates(item.project, 'L3')).toEqual([])
-  enqueueCandidates(store, item.project, 'L3', item.config, 1)
+  store.enqueueCandidates(item.project, 'L3', item.config, 1)
   const tasks = store.listTasks(item.project)
-  enqueueCandidates(store, item.project, 'L3', item.config, 1)
+  store.enqueueCandidates(item.project, 'L3', item.config, 1)
   expect(store.listTasks(item.project)).toEqual(tasks)
   const recovery = tasks.find(task => task.status === 'pending' && task.input.existing.some(record => record.id === derived.id))!
   expect(recovery.input.sources).toMatchObject([current])
@@ -116,7 +119,7 @@ it('queues all candidate pages on memory changes and retains one task per source
   const item = await setup()
   const store = item.provider.knowledge
   const notify = () => {
-    for (const level of ['L2', 'L3'] as const) enqueueCandidates(store, item.project, level, item.config, 1)
+    for (const level of ['L2', 'L3'] as const) store.enqueueCandidates(item.project, level, item.config, 1)
   }
   const unsubscribe = item.provider.onMemoryChange(notify)
   try {
@@ -184,12 +187,12 @@ it('migrates populated schema 2 while retaining exact L0 and L1 records', async 
   const raw = await item.provider.readRaw({ projectId: item.project, sessionId: header().id, from: SessionLogOffset(0), to: SessionLogOffset(3), limit: 10 })
   await item.provider.close()
   const db = new DatabaseSync(item.spec.databasePath)
-  try { db.exec('DROP TRIGGER memory_l1_insert; DROP TRIGGER memory_knowledge_insert; DROP TRIGGER memory_knowledge_update; DROP TRIGGER memory_grant_insert; DROP TRIGGER memory_grant_delete; DROP INDEX memory_knowledge_candidates; DROP TABLE memory_imports; DROP TABLE memory_admissions; DROP TABLE memory_cleanup_runs; DROP TABLE l1_trace_chunks; DROP TABLE l1_summary_projections; DROP TABLE l1_candidate_projections; DROP TABLE memory_selections; DROP TABLE memory_vectors; DROP TABLE memory_index_state; DROP TABLE memory_generation; DROP TABLE knowledge_grants; DROP TABLE knowledge_share_actions; DROP TABLE knowledge_operations; DROP TABLE knowledge_tasks; DROP TABLE knowledge_versions; PRAGMA user_version = 2') } finally { db.close() }
+  try { retainSchema(db, 2) } finally { db.close() }
   const provider = await item.open()
   expect(provider.l1.getMemory(item.project, item.source)).toEqual(item.source)
   expect(await provider.readRaw({ projectId: item.project, sessionId: header().id, from: SessionLogOffset(0), to: SessionLogOffset(3), limit: 10 })).toEqual(raw)
   const check = new DatabaseSync(item.spec.databasePath)
-  try { expect(check.prepare('PRAGMA user_version').get()?.user_version).toBe(6) } finally { check.close() }
+  try { expect(check.prepare('PRAGMA user_version').get()?.user_version).toBe(7) } finally { check.close() }
 })
 
 it('rolls back schema 3 migration failures without changing schema 2 data', async () => {
@@ -384,11 +387,20 @@ it('rejects stale sources and stale workers without publishing', async () => {
 it('promotes a successful method through L2 and L3 with exact original sources', async () => {
   const item = await setup()
   const l1 = item.provider.l1
-  const operation = l1.rerun(item.project, item.source.operationId, 'reextract', item.source.config)
-  l1.claim(item.project, header().id, 'worker', 10)
-  l1.prepare(item.project, operation, 'worker', { kind: 'memory', summary: { ...item.source.summary, outcome: 'success', result: 'The parser regression test passed', solution: 'Enable strict checks' } })
-  const source = l1.commitMemory(item.project, operation, 'worker', 11)!
-  expect(() => item.provider.knowledge.enqueue(item.project, 'L2', [item.source], item.config)).toThrow(/source/)
+  const session = header('successful-execution')
+  const events = turnEvents()
+  const callId = ToolCallId('successful-method')
+  await item.provider.appendRaw({ projectId: item.project, header: session, inheritedEventCount: SessionLogOffset(0), events: [events[0]!, events[1]!,
+    { type: 'tool/call', seq: SessionSeq(2), time: 3, data: { turn: 1, step: 1, callId, name: 'test_runner', arguments: '{}' } },
+    { type: 'tool/result', seq: SessionSeq(3), time: 4, surfaceOp: 'append', data: { turn: 1, step: 1,
+      message: createToolResultMessage({ callId, isError: false, content: [{ type: 'text', text: '{"success":true,"exitCode":0}' }] }) } },
+    { ...events[2]!, seq: SessionSeq(4) }] })
+  item.provider.scanTurns(item.project, resolveL1Config({ provider: 'test', model: 'test' }), 10)
+  const task = l1.claim(item.project, session.id, 'worker', 10)!
+  const evidence = { sessionId: session.id, seq: SessionSeq(3) }
+  l1.prepare(item.project, task.operationId, 'worker', { kind: 'memory', summary: { ...item.source.summary, sources: [evidence], executionEvidence: [evidence],
+    outcome: 'success', result: 'The parser regression test passed', solution: 'Enable strict checks' } })
+  const source = l1.commitMemory(item.project, task.operationId, 'worker', 11)!
   const candidate = knowledgeCandidate(source)
   const l2 = commitKnowledge(item, 'L2', [source], [{ ...candidate, knowledge: { ...candidate.knowledge, category: 'method' } }])[0]!
   const l3Candidate = knowledgeCandidate(l2)

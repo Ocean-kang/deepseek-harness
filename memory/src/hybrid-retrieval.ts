@@ -31,12 +31,12 @@ export class HybridMemoryRetriever {
     if (spec.candidateLimit > Math.min(text.spec.maxCandidates, vector.spec.maxCandidates)) throw new MemoryError('config', 'Hybrid pool exceeds a retriever scan limit')
   }
 
-  /** Schedule the vector index; BM25 queries construct their own corpus. */
-  schedule(): void { this.vector.schedule() }
-  /** @returns settlement of queued vector indexing. */
-  async flush(): Promise<void> { await this.vector.flush() }
-  /** @returns settlement of an explicit vector rebuild. */
-  async rebuildIndex(): Promise<void> { await this.vector.rebuildIndex() }
+  /** Schedule vector work; text mutations are applied before each text read. */
+  schedule(): void { this.text.schedule(); this.vector.schedule() }
+  /** @returns settlement after both indexes have caught up. */
+  async flush(): Promise<void> { await this.vector.flush(); await this.text.flush() }
+  /** @returns settlement after rebuilding both configured indexes. */
+  async rebuildIndex(): Promise<void> { await this.vector.rebuildIndex(); await this.text.rebuildIndex() }
   /** @param project - requesting owner.
    * @returns completeness of both configured searches.
    */

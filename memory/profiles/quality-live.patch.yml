@@ -1,0 +1,26 @@
+# Fixed real-provider evaluation, using the existing configured provider and credentials.
+- id: headless-runner
+  disabled: true
+
+- id: credentials
+  config:
+    path: !!js process.env.DSH_MEMORY_EVALUATION_CREDENTIALS_PATH
+    watch: false
+
+- id: llm-deepseek
+  config:
+    thinking: disabled
+    reasoningEffort: off
+
+- id: llm-deepseek-account
+  config:
+    thinking: disabled
+    reasoningEffort: off
+
+- insert:
+    - id: memory-quality-live
+      name: ../tests/fixtures/quality-live.mjs
+      inject: [agentDefaultModel]
+      config:
+        projectId: quality-live
+        databasePath: data/quality-live.sqlite

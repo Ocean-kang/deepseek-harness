@@ -15,6 +15,21 @@ import type { MemorySelection } from './selection-store.ts'
 export interface BrowserConfig { pageSize?: number; maxQueryBytes?: number; limit?: number; maxBytes?: number; refreshIntervalMs?: number; stateCacheSessions?: number }
 /** Resolved browser settings. */
 export type BrowserSpec = Readonly<Required<BrowserConfig>>
+/** Automatic recall defaults; saved conversation preferences take precedence. */
+export interface RecallConfig { automatic?: boolean; levels?: ('L1' | 'L2' | 'L3')[] }
+/** Resolved automatic recall settings shared by the injector and panel. */
+export interface RecallSpec { readonly automatic: boolean; readonly levels: readonly ('L1' | 'L2' | 'L3')[] }
+/** @param input - automatic recall deployment choices.
+ * @returns validated immutable defaults.
+ */
+export function resolveRecallConfig(input: RecallConfig = {}): RecallSpec {
+  if (input.automatic !== undefined && typeof input.automatic !== 'boolean') throw new MemoryError('config', 'recall automatic must be boolean')
+  const levels = input.levels ?? ['L1', 'L2', 'L3']
+  if (!Array.isArray(levels) || levels.length === 0 || levels.some(level => !['L1', 'L2', 'L3'].includes(level)) || new Set(levels).size !== levels.length) {
+    throw new MemoryError('config', 'recall levels must contain distinct L1, L2 or L3 values')
+  }
+  return Object.freeze({ automatic: input.automatic ?? true, levels: Object.freeze([...levels]) })
+}
 /** @param input - deployment limits.
  * @returns complete validated settings.
  */
@@ -51,8 +66,14 @@ export class MemoryBrowser {
   }
   /** @param provider - caller-owned ready SQLite provider.
    * @param spec - resolved deployment limits.
+   * @param recall - resolved automatic defaults, overridden by saved preferences.
    */
-  constructor(private readonly provider: MemoryDatabase | ((project: ProjectId) => MemoryDatabase), readonly spec: BrowserSpec) {}
+  constructor(private readonly provider: MemoryDatabase | ((project: ProjectId) => MemoryDatabase), readonly spec: BrowserSpec, readonly recall: RecallSpec = resolveRecallConfig()) {}
+
+  /** @param selection - saved conversation preference, if present.
+   * @returns saved preference or the deployment default for a new conversation.
+   */
+  automatic(selection: Pick<MemorySelection, 'automatic'> | null | undefined): boolean { return selection?.automatic ?? this.recall.automatic }
 
   private providerFor(project: ProjectId): MemoryDatabase {
     return typeof this.provider === 'function' ? this.provider(project) : this.provider

@@ -9,7 +9,7 @@ kind: "package-bundle"
 
 ## 摘要
 
-将完整的已记录 Session 事件保存在项目所属的 SQLite 中，浏览 L0–L3 并选择 L2/L3 用于下一轮。后台学习复用 DSH 模型和凭据，BM25 检索无需 embedding 密钥。独立 bundle 通过公开扩展点开启带日志的注入。参见[安装说明](distribution/README.zh.md)和[验证范围](evaluation/storage-0.1.13-2026-10-13.md)。
+将完整的已记录 Session 事件保存在项目所属的 SQLite 中，浏览 L0–L3 并选择 L2/L3 用于下一轮。后台学习复用 DSH 模型和凭据，BM25 检索无需 embedding 密钥。独立 bundle 通过公开扩展点开启带日志的注入。参见[安装说明](distribution/README.zh.md)和[验证范围](evaluation/reliability-0.1.14-2026-10-16.md)。
 
 ## 目录
 
@@ -42,14 +42,16 @@ pnpm dsh web --patch ./memory/cordis.patch.yml --patch ./memory/profiles/chat-vi
 node --import tsx/esm ../apps/cli/src/bin.ts --profile headless --patch ./profiles/headless.patch.yml 'Reply with OK without using tools.'
 ```
 
-独立 bundle 和完整 Web overlay 默认使用工作区存储：`<工作区>/memory_<工作区UUID>/memory.sqlite` 包含项目的 L0–L3 数据。自动采集接纳创建时间不早于持久化启用时间的对话。面板可显式导入当前已绑定工作区中的旧对话；旧集中数据库不导入。无项目对话使用全局数据库。路径及备份见[数据与配置](distribution/README.zh.md#data-and-configuration)，已有安装升级前请阅读[存储升级说明](distribution/storage-upgrade.zh.md)。
+独立 bundle 和完整 Web overlay 默认使用工作区存储：`<工作区>/memory_<工作区UUID>/memory.sqlite` 包含项目的 L0–L3 数据。自动采集接纳创建时间不早于持久化启用时间的对话。面板可显式导入当前已绑定工作区中的旧对话；旧集中数据库不导入。无项目对话使用全局数据库。路径及备份见[数据与配置](distribution/README.zh.md#data-and-configuration)，已有安装升级前请阅读[存储升级说明](distribution/storage-upgrade.md)。
 
 | 字段 | 默认值 | 含义 |
 |---|---|---|
 | `storageMode` | 直挂为 `central`；独立入口为 `workspace` | 物理存储模式。 |
 | `dataRoot` | 插件目录 | 允许写入的绝对数据目录，独立入口使用 DSH 用户数据目录。 |
 | `projectByPath` | false | 仅用于集中模式：从 Session 工作目录派生后备项目归属。 |
-| `injection` | false | 安装带日志的手选和可选自动注入，要求已配置检索器。 |
+| `injection` | false | 安装带日志的手选和自动召回，要求已配置检索器。 |
+| `recall.automatic` / `recall.levels` | true / `['L1','L2','L3']` | 未保存开关的对话使用此默认值；已保存的显式值优先。 |
+| `searchTool` | 直挂为 false；独立入口为 true | 注册只读 `memory_search`，要求检索器及入口 inject 中的 `tools` 服务。 |
 | `projectId` | 必填 | 备用项目标识；patch 读取 `DSH_MEMORY_PROJECT`。 |
 | `databasePath` | 必填 | `memory/` 内的 SQLite 文件；示例使用 `data/l0.sqlite`。 |
 | `queueCapacity` | 1024 | 全部 Session 实时事件缓冲数量上限。 |
@@ -98,7 +100,7 @@ node --import tsx/esm ../apps/cli/src/bin.ts --profile headless --patch ./profil
 
 召回和共享读取检查完整的具体版本来源链。来源被替代、失效、缺少支持或丢失时，暂停派生记忆召回；面板将其标为“待重新核实”，保留 JSON 和历史。任务核对从仍可用的当前父版本排队幂等重核，即使原任务已经完成。后台学习对照这些父版本重新检查结论，发布时仅保留仍有效的来源。没有可用父版本时，召回保持暂停，直到出现新证据。重核不代表提炼成功，也不批准新版本共享。
 
-配置 `knowledge` 后，插件为每个当前 L1 版本排队一个 L2 任务，并为每个有支持证据的当前 L2 版本排队一个 L3 任务。启动时补排已有版本，本进程提交新版本后继续排队。同一任务幂等；其他进程的提交在重启后发现。开启 `autoLearning` 后，可恢复流水线在后台执行这些任务。
+配置 `knowledge` 后，插件为每个当前 L1 版本排队一个 L2 任务，并为每个有支持证据的当前 L2 版本排队一个 L3 任务。启动时补排已有版本，本进程提交新版本后继续排队。同一任务幂等；其他进程的提交在重启后发现。开启 `autoLearning` 后，可恢复流水线在后台执行这些任务。 提炼先用持久索引选择相关既有知识，再读取正文和来源链；`knowledge.maxExisting` 默认 64，`knowledge.maxSearchTerms` 默认 64。显式复核目标及直接来源关联版本必须进入比较，超过预算时明确失败。同项目、同层的版本变化使准备结果失效，提交不会覆盖较新的知识。
 
 先通过 `resolveKnowledgeConfig` 解析明确的 provider/model 设置，再调用 `ctx.memory.consolidate(project, level, sourceRefs, spec)` 持久化 L2 或 L3 任务；排队不发起模型调用。通过 `getKnowledgeTask` / `listKnowledgeTasks` 检查任务，使用 `retryKnowledgeTask` 重排失败任务。`listCandidates(project, level, after, limit)` 返回有支持证据的当前记录，`invalidateMemory(project, ref, reason, operation)` 使所属项目的当前 L2/L3 失效。精确 `getMemory` 读取保留所属项目的历史；共享结果是带 `shared: true`、标题和正文的独立投影，不包含来源或生成元数据。
 
@@ -106,13 +108,13 @@ node --import tsx/esm ../apps/cli/src/bin.ts --profile headless --patch ./profil
 |---|---|---|
 | `scoreMin` / `scoreMax` | 0 / 5 | 整数闭区间，最大值不超过 100。 |
 | `l2Threshold` / `l3Threshold` | 3 / 4 | 评分区间内按顺序排列的阈值。 |
-| `promptVersion` | `knowledge-v4` | 新任务同时生成完整知识卡和展示字段；历史 v1/v2/v3 任务保留已记录的处理方式。 |
+| `promptVersion` | `knowledge-v6` | 新任务保留显式用户声明并生成完整知识卡。历史版本保留已记录的提示词。 |
 
-L0 不调用模型，完整保留 Session 证据。新 L1 经历以标题、目标、问题、结果、解决方案和总结为可读内容；程序生成的 trace 单独保留动作、命令、文件及错误。L2 知识卡以 `scenario` 组织结论，并包含原因、适用条件、推荐做法和限制。L3 分别压缩稳定工程 `knowledge` 和交互 `profile`。默认晋升阈值为 4，要求当前来源有支持证据，排除临时、局部信息和未解决冲突；方法还必须有程序核验成功执行的 L1 祖先。新任务使用 `l1-v3` / `knowledge-v4`，在提炼响应中生成展示字段，通常每层一次调用；超大来源仍需要预算内的分组提炼、验证和合并调用。
+L0 不调用模型，完整保留 Session 证据。新 L1 经历以标题、目标、问题、结果、解决方案和总结为可读内容；程序生成的 trace 单独保留动作、命令、文件及错误。L2 知识卡以 `scenario` 组织结论，并包含原因、适用条件、推荐做法和限制。L3 分别压缩稳定工程 `knowledge` 和交互 `profile`。默认晋升阈值为 4，要求当前来源有支持证据，排除临时、局部信息和未解决冲突；方法还必须有程序核验成功执行的 L1 祖先。新任务使用 `l1-v4` / `knowledge-v6`，在提炼响应中生成展示字段，通常每层一次调用；超大来源仍需要预算内的分组提炼、验证和合并调用。
 
 [知识存储](src/knowledge-store.ts)保留精确来源、候选检查点、租约、重试及不可变版本历史。每个新候选比较相关现有知识，声明 `store`、`update`、`merge`、`skip` 或 `conflict`，全部候选原子发布。冲突版本保留旧引用、分歧原因、两种结论、来源和时间；未解决记录及其派生记忆不参与召回。现有记录按共享祖先和词项重合选入；省略的记录不能作为合并目标。当前任务检查 L0 原文并保留 `examinedEvents`；检查本身不证明事实真实性。必要原文超限和不能缩小的合并明确失败。存储重试复用候选；乐观并发冲突丢弃候选；取消保留已计费调用。旧任务和版本保持可读，不改写其存储 JSON。
 
-[知识提炼器](src/knowledge-extractor.ts)先持久化辅助 Session 请求，再通过已有 adapter 和凭据体系调用 `ctx.llm.stream()`。`evidenceStatus` 区分 `claimed`、`model_supported`、`user_confirmed`、`execution_verified`、`externally_verified`、`conflicted` 和 `stale`。历史 `supported` 仅表示 `model_supported`。模型不能赋予程序验证状态或确认回执。匹配的内置 bash/pwsh 结果使用 shell 状态格式，排除非零退出、信号、停止、超时和后台启动确认；其他工具要求明确的结构化成功字段。`KnowledgeStore.confirmEvidence` 接收可信用户或外部回执，为一个精确的当前有支持结论发布后继版本并保留历史。未安装模型确认工具或面板批准按钮；可信适配器须先取得明确确认。
+[知识提炼器](src/knowledge-extractor.ts) 在调用配置的 LLM adapter 前记录辅助 Session 请求。证据状态区分声明、模型支持、执行验证及可信确认。shell 结果使用已定义的状态格式；其他工具要求显式成功字段一致。`success` 为 false、非零或错误类型的 `exitCode`、超时、取消及后台启动均不能建立成功证据。Policy-2 审计隔离历史未核验成功及其派生知识，保留历史原文。通过 `l1.executionAudit(project, ref)` 检查状态，修复来源证据后显式重新提炼无效记录。`KnowledgeStore.confirmEvidence` 根据可信用户或外部回执发布精确版本的后继；学习任务不能创建这些回执。
 
 组合交互式命令注册表后，`/memory-share show <id>@<revision>` 展示当前有支持证据的 L3 版本、撤回限制及五分钟有效的令牌。用户须在同一 Session 执行 `/memory-share approve <token>`；`/memory-share revoke <id>@<revision>` 停止后续共享。处理器先等待 Session 持久化，再以已记录的用户命令作为一次性回执提交指定版本的批准或撤回。未组合交互命令注册表时这些命令不可用。已加载记忆服务不向模型暴露批准方法或工具。替代、失效和撤回在同一事务中删除授权；跨项目读取只暴露获批投影。撤回无法清除其他 Session 已记录的内容或此前读取产生的派生内容。
 
@@ -136,7 +138,7 @@ L0 卡片展示对话和执行。L1 展示任务经历，详情中的 trace 和�
 
 执行详情仅在展开后加载。“加载更多”替换当前 trace 页，“加载执行详情”返回第一页。可信适配器使用 `await ctx.memory.readTrace(project, ref, cursor?)`，依次拼接返回的 `text` 可还原完整 JSON trace。L1 浏览和知识提炼不包含完整 trace，精确 L0 引用仍用于证据检查。失败的知识任务提供显式重试入口；升级不重跑已完成任务。
 
-L2/L3 待选项保留到一次参考正文被接受，服务端检查版本、共享、数量及完整正文预算。取消仅清除待选引用。开启 `injection` 后，插件合并手选和可选 BM25 结果，经 `user/message` 记录完整正文与引用，并在提交后消费选择。独立 bundle 与面板 patch 开启注入；[web.patch.yml](profiles/web.patch.yml) 仍仅采集。
+L2/L3 待选项保留到一次参考正文被接受，服务端检查版本、共享、数量及完整正文预算。取消仅清除待选引用。开启 `injection` 后，插件合并手选和自动 L1–L3 结果，经 `user/message` 记录完整正文与引用，并在提交后消费选择。`recall.automatic` 与 `recall.levels` 配置新对话默认值，已有显式开关保持原值。独立 bundle 与面板 patch 开启注入；[web.patch.yml](profiles/web.patch.yml) 仍仅采集。
 
 勾选每条可用 L2/L3 卡片行首的选择框，然后点击“将所选加入下一轮”；也可直接加入单条卡片。L0/L1 保持只读。待用区及输入框展示已保存正文、数量和渲染字节预算，侧栏关闭时仍可见。手选记忆在接纳后消费一次；自动召回持续生效直到关闭。开关保留待用引用及原消费收据，即使版本已经失效。新选择仍需通过有效性及预算校验。发送后，输入框和面板展示准确的已提交上下文及引用；接纳不保证回答引用每条记忆。
 
@@ -176,9 +178,9 @@ try {
 
 ### 文本检索
 
-设置 `textSearch: {}` 即可使用 SQLite FTS5/BM25，无需 embedding 模型、密钥或网络请求。结果标明 `method: 'bm25'`；排名条目带正值 BM25 `score`，短子串命中省略该字段，`similarity` 为 null。向量结果标明 `method: 'vector'`。须明确选择一种模式；任一模式的失败不会触发另一种模式。构建评分语料前排除私有记忆，返回及接纳前复查当前版本与批准。每次查询从 SQLite 记录构建并关闭有上限的内存语料，不增加持久文本表。请求项目的语料变化要求重新查询；无关的私有提交不影响排名。
+设置 [`textSearch: {}`](src/text-retrieval-backend.ts) 即可使用 SQLite FTS5/BM25，无需 embedding 模型、密钥或网络请求。排名条目带正值 `score`；字面短词命中省略该字段，`similarity` 为 null。私有记忆不进入其他请求项目的评分语料。返回及接纳前复查当前版本、证据审计及批准。持久语料按增量维护，数量由 `browser.stateCacheSessions` 限制；淘汰的过滤语料按需重建。无关的私有提交不影响排名。
 
-直挂文本检索默认值为 `tokenizer: unicode61`、`limit: 5`、`maxBytes: 8192`、`maxCandidates: 10000`、`pageSize: 128`、`timeoutMs: 5000`、`maxQueryBytes: 8192` 和 `maxTerms: 64`。独立 bundle 与 automatic/panel overlay 选择 `trigram`。查询使用字面 OR 词项；含中文的连续串展开为连续三字词项。一字及两字词项在同一授权语料中使用字面子串匹配，这些命中没有 BM25 分数。超过预算直接拒绝，不截断。独立插件还开启 `expandQuery`：文本无命中且至少有一条可用记录时，通过配置的 L1 模型进行一次带日志的查询改写，再检索一次。直挂默认关闭，开启时要求 L1 模型及注入的 `llm` 服务。`expansionTimeoutMs` 默认 15000；每次语料扫描保留 `timeoutMs`。扩展格式错误或调用失败时明确报错。模型仅提供搜索词；返回的记忆仍是已存储、已授权的具体版本。不保证相关性或语义完整性。无法中断单条原生 SQLite 语句。`getIndexStatus` 报告候选容量；没有需重建的持久文本索引。
+直挂文本检索默认值为 `tokenizer: unicode61`、`limit: 5`、`maxBytes: 8192`、`maxCandidates: 10000`、`pageSize: 128`、`timeoutMs: 5000`、`indexTimeoutMs: 60000`、`maxQueryBytes: 8192` 和 `maxTerms: 64`。独立 bundle 与 automatic/panel overlay 选择 `trigram`。字面 OR 词项包含连续汉字三字词；一字及两字词使用授权语料子串匹配，不附带 BM25 分数。`maxCandidates` 限制处理的匹配数，不限制知识库条数；`scanned` 报告已处理匹配数。索引同步可恢复，并与在线计时分开。查询扩展默认关闭；`expandQuery: true` 在非空授权语料无命中后，允许 L1 模型记录一次改写调用。开启时要求 L1 模型及 `llm`，`expansionTimeoutMs` 默认 15000。扩展格式错误或调用失败时明确报错。原生 SQLite 语句无法中断，完成时检查取消及时间预算。不保证相关性或语义完整性。
 
 <a id="semantic-retrieval"></a>
 ### 语义检索
@@ -196,7 +198,9 @@ try {
 | `threshold` | 0.65 | 最低余弦相似度，需按模型校准。 |
 | `pageSize` / `maxCandidates` | 128 / 10000 | 候选分页大小与查询扫描上限。 |
 
-`retrieve({ projectId, text, levels?, kinds?, scenario?, limit?, maxBytes?, signal? })` 返回命中、渲染正文及扫描和耗时指标。省略层级时显式查询 L1/L2/L3；对话自动召回将查询限定为 L3。`kinds` 选择工程知识或交互偏好，`scenario` 在排名前选择精确场景。项目和来源检查先于评分。L1 检索省略 trace；L2/L3 检索使用完整知识卡字段。超过最终字节预算的整条记录被跳过；缺失向量以 `index-not-ready` 拒绝。
+`retrieve({ projectId, text, levels?, kinds?, scenario?, limit?, maxBytes?, signal? })` 返回命中、渲染正文及扫描和耗时指标。省略层级时查询 L1/L2/L3；对话自动召回使用 `recall.levels`。`kinds` 选择工程知识或交互偏好，`scenario` 在排名前选择精确场景。项目和来源检查先于评分。L1 检索省略 trace；L2/L3 检索使用完整知识卡字段。超过最终字节预算的整条记录被跳过；缺失向量以 `index-not-ready` 拒绝。
+
+独立 bundle 注册 `memory_search({ query, levels?, scenario?, limit? })`。直挂需显式设置 `searchTool: true` 并注入 `tools` 服务。项目身份来自调用 Agent，模型不能选择其他项目。结果含精确 ID 与版本、层级、共享状态、证据状态及可读摘要，受浏览器条数和字节预算限制；返回前复核撤销和替代版本，共享结果仅展示获批 L3 正文。工具结果及声明通过 DSH 常规工具日志保存；Web 行从记录展示结果，无需查询实时记忆。
 
 向量索引在加载及记忆提交后启动，启动时补齐当前缺失向量，不重复已完成批次。端点、模型、维度或文档格式变化选择独立向量空间。状态报告索引就绪和扫描限制；显式重建先等待已有索引工作。其他连接的提交通过重载或重建核对。旧向量继续保留。混合模式要求两路均成功；不会用 BM25 结果掩盖向量索引不完整。
 
@@ -205,7 +209,7 @@ try {
 <details>
 <summary>存储、恢复与生命周期</summary>
 
-[SQLite Provider](src/sqlite.ts) 由插件拥有的 worker 执行连接、事务、扫描及临时 FTS。schema 版本 6 通过事务升级版本 1–5，保留已记录事件和旧记忆版本。新增 trace 分块、导入进度及准入/清理标记属于此数据库。事件行与已提交前缀同步推进。未知较新版本及其他数据库标识被拒绝。存储、浏览及检索接口返回 Promise，调用方等待持久化写入和结果。worker 失败报告结果未知，不自动重复可能已经提交的操作。
+[SQLite Provider](src/sqlite.ts) 在自有 worker 中执行连接、事务、审计及 FTS。schema 7 在事务内升级版本 1–6，保留原始事件及记忆版本。工作区数据库使用由 `storageWorkers` 限制的 worker 池，默认 4；同库操作保持顺序及队列背压。历史成功审计及选择索引回填保留已提交分页进度。未知较新 schema 和其他数据库标识被拒绝。接口返回 Promise；worker 故障报告结果未知，不自动重复可能已提交的操作。
 
 [L1 存储](src/l1-store.ts) 扫描已提交的 L0 分页，将任务创建与扫描游标、未闭合 turn 状态一起提交。启动时扫描所有已存储项目，包括未载入的 Session；采集和直接追加成功后扫描实际写入的项目。它跳过完全继承的 turn，保留在 fork 继承前缀之后结束的 turn。任务键包含项目、Session 区间、层级及已保存的提炼设置。配置变化影响新发现的 turn；显式重新提炼为已有逻辑记忆创建新操作。候选检查点先于记忆版本与任务完成状态的原子提交。操作查询用于处理提交结果不确定的情况，预期版本检查拒绝并发覆盖。历史版本仍可读取，并标记为已替代。
 
@@ -228,7 +232,7 @@ node scripts/link-profile.mjs
 node ../apps/cli/lib/bin.js --profile headless --patch ./profiles/headless-built.patch.yml 'Reply with OK without using tools.'
 ```
 
-运行 `node --import tsx/esm scripts/check-docs.mjs` 检查目录内链接、双语结构和配对记录。审阅两种语言后，在同一命令后添加 `--write-pairing`，更新五组本地一致性记录。
+运行 `node --import tsx/esm scripts/check-docs.mjs` 检查目录内链接、双语结构和配对记录。审阅两种语言后，在同一命令后添加 `--write-pairing`，更新一致性记录。README 配对使用仓库维护的 `.i18n.yaml` 记录；插件升级说明使用由此脚本检查的本地 `.pairing.yaml` 记录。
 
 设置 `DSH_MEMORY_VERIFY_COPY=1` 可启用可选的 `profile-copy` 测试，通过真实 JSONL 解码器比较 SQLite 和原日志。`DSH_MEMORY_VERIFY_DB` 指定 memory 相对路径的数据库，默认为 `data/l0.sqlite`。应紧接相应 profile 运行后执行比较；之后若活动被采集到其他数据库，原日志可能继续增长。
 
@@ -239,6 +243,7 @@ node ../apps/cli/lib/bin.js --profile headless --patch ./profiles/headless-built
 <a id="further-exploration"></a>
 ## 进一步阅读
 
+- [可靠性、容量及质量验收](evaluation/reliability-0.1.14-2026-10-16.md)
 - [验证范围](evaluation/workspace-storage-2026-10-02.md)
 - [记忆卡片验收](evaluation/memory-cards-2026-10-03.md)
 - [批量学习与侧栏验收](evaluation/batch-sidebar-2026-10-04.md)
@@ -247,15 +252,15 @@ node ../apps/cli/lib/bin.js --profile headless --patch ./profiles/headless-built
 - [0.1.8 交付验收](evaluation/delivery-0.1.8-2026-10-04.md)
 - [浏览器交互及真实 Provider 验收](evaluation/browser-live-2026-10-04.md)
 - [独立插件 trigram 升级说明](distribution/trigram-upgrade.md)
-- [分层记忆升级说明](distribution/layered-upgrade.zh.md)、[0.1.10 验收与持久化字段](evaluation/layered-memory-2026-10-07.md)
+- [分层记忆升级说明](distribution/layered-upgrade.md)、[0.1.10 验收与持久化字段](evaluation/layered-memory-2026-10-07.md)
 - [全量 Ponytail 审计及最终包验证](evaluation/ponytail-audit-2026-10-07.md)
-- [手工质量实验输入](evaluation/task4-cases.json)，尚未执行
+- [固定质量实验输入](evaluation/task4-cases.json)；统一设置的固定样本验收通过，较早失败记录继续保留
 - [Session 持久化服务](../packages/session/session-persistence/README.zh.md)
 - [DSH profile 组合](../packages/boot/app-boot/README.zh.md)
 
 ## Model Experience
 
-插件不增加模型工具。开启 `injection` 后，已接受的记忆正文进入普通对话请求和 Session 日志；开启 `autoLearning` 后，辅助调用使用已有提供方及凭据并记录完整请求和返回流。提炼提示词将事件文本视为不可信证据并保留不确定性。L0 检查点失败可能导致调用方检查点失败；L1 扫描失败保留游标，不撤销已提交的 L0。
+独立 bundle 启用只读模型工具 `memory_search`，直挂通过 `searchTool` 显式开启。开启 `injection` 后，已接受的记忆正文进入普通对话请求和 Session 日志；开启 `autoLearning` 后，辅助调用使用已有提供方及凭据并记录完整请求和返回流。提炼提示词将事件文本视为不可信证据并保留不确定性。L0 检查点失败可能导致调用方检查点失败；L1 扫描失败保留游标，不撤销已提交的 L0。
 
 ## Known Limitations and Deferred Work
 
@@ -266,7 +271,7 @@ node ../apps/cli/lib/bin.js --profile headless --patch ./profiles/headless-built
 - SQLite 锁等待及原生语句占用专用存储 worker，依赖的记忆操作仍需等待；单条原生语句无法中断。
 - 保留期限按需启用并保护被引用证据。清理后的数据库页可复用，压缩为独立操作。不提供附件备份或固定数据库容量保证。
 - L0 副本保留已记录的事件数据和文件引用，不复制附件及 spill 文件；引用文件丢失后无法从副本重建。
-- 直接挂载默认关闭 `autoLearning` 和 `injection`，独立 bundle 开启两者。每个对话默认关闭自动注入。真实模型使用 DSH 已配置的凭据。
-- 无密钥夹具和单条真实模型学习样例不证明一般记忆质量。固定手工质量实验尚未执行；向量阈值需要按所选 embedding 模型校准。
+- 直接挂载默认关闭 `autoLearning` 和 `injection`，独立 bundle 开启两者及 `memory_search`。启用注入后，新对话默认自动召回 L1–L3，已有显式开关优先。查询扩展默认关闭。真实模型使用 DSH 已配置的凭据。
+- 提示词修复后的十二例真实 Provider 实验达到固定样本验收条件，较早失败及仍有一次回答错误均保留在[质量结果](evaluation/reliability-0.1.14-2026-10-16.md)。这不证明长期收益、一般事实错误率，也不能在价格及历史 usage 缺失时给出完整费用。向量阈值需要按所选 embedding 模型校准。
 - 来源 Provider 替换需要另行执行 profile 生命周期测试。目录内录制 Session 预期输出覆盖本插件的模型可见输出，不证明未测试的 DSH 或 SDK 版本兼容性。
 - 目录内验收不证明跨平台矩阵或仓库级 doc-sync 结果。DSH 源码集成另有登记及 CI 要求。

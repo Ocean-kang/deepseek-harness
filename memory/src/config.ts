@@ -11,10 +11,10 @@ import type { L1Config, L1Spec } from './l1-types.ts'
 import type { KnowledgeConfig, KnowledgeSpec } from './knowledge-types.ts'
 import { resolveTextSearchConfig } from './text-retrieval.ts'
 import type { TextSearchConfig, TextSearchSpec } from './text-retrieval.ts'
-import { resolveBrowserConfig } from './browser.ts'
+import { resolveBrowserConfig, resolveRecallConfig } from './browser.ts'
 import { resolveHybridConfig } from './hybrid-retrieval.ts'
 import type { HybridConfig, HybridSpec } from './hybrid-retrieval.ts'
-import type { BrowserConfig, BrowserSpec } from './browser.ts'
+import type { BrowserConfig, BrowserSpec, RecallConfig, RecallSpec } from './browser.ts'
 
 /** This plugin's permitted write root, preserved in both src/ and lib/. */
 export const MEMORY_ROOT = fileURLToPath(new URL('../', import.meta.url))
@@ -27,8 +27,11 @@ export interface Config {
   dataRoot?: string
   /** Derive fallback project identities from Session working directories. */
   projectByPath?: boolean
-  /** Install next-turn manual and opt-in automatic recall. */
+  /** Install next-turn manual and automatic recall. */
   injection?: boolean
+  recall?: RecallConfig
+  /** Expose the project-scoped read-only memory_search tool. */
+  searchTool?: boolean
   panel?: boolean
   browser?: BrowserConfig
   autoLearning?: boolean
@@ -50,6 +53,8 @@ export interface Config {
   /** Storage-worker queued data request count and bytes, including the active request; closing control messages are excluded. */
   storageQueueCapacity?: number
   storageQueueMaxBytes?: number
+  /** Maximum independent SQLite storage workers. */
+  storageWorkers?: number
   /** Unset maxAgeDays disables automatic deletion. */
   retention?: { maxAgeDays?: number; intervalMs?: number }
   learningConcurrency?: number
@@ -66,6 +71,8 @@ export interface Spec {
   readonly dataRoot: string
   readonly projectByPath: boolean
   readonly injection: boolean
+  readonly recall: RecallSpec
+  readonly searchTool: boolean
   readonly panel: boolean
   readonly browser: BrowserSpec
   readonly autoLearning: boolean
@@ -82,6 +89,7 @@ export interface Spec {
   readonly tracePageMaxBytes: number
   readonly storageQueueCapacity: number
   readonly storageQueueMaxBytes: number
+  readonly storageWorkers: number
   readonly retention: Readonly<{ maxAgeDays?: number; intervalMs: number }>
   readonly learningConcurrency: number
   readonly learningQueueCapacity: number
@@ -130,6 +138,8 @@ export async function resolveConfig(input: Config): Promise<Spec> {
   if (input.dataRoot !== undefined && (typeof input.dataRoot !== 'string' || !isAbsolute(input.dataRoot))) throw new MemoryError('config', 'dataRoot must be an absolute directory')
   if (input.projectByPath !== undefined && typeof input.projectByPath !== 'boolean') throw new MemoryError('config', 'projectByPath must be boolean')
   if (input.injection !== undefined && typeof input.injection !== 'boolean') throw new MemoryError('config', 'injection must be boolean')
+  if (input.searchTool !== undefined && typeof input.searchTool !== 'boolean') throw new MemoryError('config', 'searchTool must be boolean')
+  if (input.searchTool === true && input.textSearch === undefined && input.embedding === undefined) throw new MemoryError('config', 'searchTool requires a configured retriever')
   if (input.injection === true && input.textSearch === undefined && input.embedding === undefined) throw new MemoryError('config', 'injection requires a configured retriever')
   if (input.panel !== undefined && typeof input.panel !== 'boolean') throw new MemoryError('config', 'panel must be boolean')
   if (input.autoLearning !== undefined && typeof input.autoLearning !== 'boolean') throw new MemoryError('config', 'autoLearning must be boolean')
@@ -149,6 +159,7 @@ export async function resolveConfig(input: Config): Promise<Spec> {
     tracePageMaxBytes: input.tracePageMaxBytes ?? 64 * 1024,
     storageQueueCapacity: input.storageQueueCapacity ?? 128,
     storageQueueMaxBytes: input.storageQueueMaxBytes ?? 8 * 1024 * 1024,
+    storageWorkers: input.storageWorkers ?? 4,
     learningConcurrency: input.learningConcurrency ?? 2,
     learningQueueCapacity: input.learningQueueCapacity ?? 128,
     batchSize: input.batchSize ?? 128,
@@ -173,6 +184,8 @@ export async function resolveConfig(input: Config): Promise<Spec> {
     dataRoot: resolve(input.dataRoot ?? MEMORY_ROOT),
     projectByPath: input.projectByPath ?? false,
     injection: input.injection ?? false,
+    recall: resolveRecallConfig(input.recall),
+    searchTool: input.searchTool ?? false,
     panel: input.panel ?? false,
     browser: resolveBrowserConfig(input.browser ?? {}),
     autoLearning: input.autoLearning ?? false,

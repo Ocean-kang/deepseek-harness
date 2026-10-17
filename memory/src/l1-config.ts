@@ -23,7 +23,7 @@ export function resolveL1Config(input: L1Config): L1Spec {
   }
   if (numbers.retryBaseMs > numbers.retryMaxMs) throw new MemoryError('config', 'L1 retryBaseMs exceeds retryMaxMs')
   if (!Number.isSafeInteger(numbers.timeoutMs * numbers.maxCalls + numbers.retryMaxMs)) throw new MemoryError('config', 'L1 maximum task duration exceeds safe integer range')
-  return Object.freeze({ provider: input.provider, model: input.model, promptVersion: 'l1-v3', ...numbers })
+  return Object.freeze({ provider: input.provider, model: input.model, promptVersion: 'l1-v4', ...numbers })
 }
 
 /** Resolve knowledge scoring and model settings before creating a task.
@@ -36,12 +36,16 @@ export function resolveKnowledgeConfig(input: KnowledgeConfig): KnowledgeSpec {
   const scoreMax = input.scoreMax ?? 5
   const l2Threshold = input.l2Threshold ?? 3
   const l3Threshold = input.l3Threshold ?? 4
+  const maxExisting = input.maxExisting ?? 64
+  const maxSearchTerms = input.maxSearchTerms ?? 64
+  if (!Number.isSafeInteger(maxExisting) || maxExisting < 1 || maxExisting > 10000) throw new MemoryError('config', 'Knowledge maxExisting must be between 1 and 10000')
+  if (!Number.isSafeInteger(maxSearchTerms) || maxSearchTerms < 1 || maxSearchTerms > 10000) throw new MemoryError('config', 'Knowledge maxSearchTerms must be between 1 and 10000')
   if (![scoreMin, scoreMax, l2Threshold, l3Threshold].every(Number.isSafeInteger)
     || scoreMin < 0 || scoreMax <= scoreMin || scoreMax > 100
     || l2Threshold < scoreMin || l3Threshold < l2Threshold || l3Threshold > scoreMax) {
     throw new MemoryError('config', 'Invalid knowledge score range or thresholds')
   }
-  return Object.freeze({ ...base, promptVersion: 'knowledge-v4', scoreMin, scoreMax, l2Threshold, l3Threshold })
+  return Object.freeze({ ...base, promptVersion: 'knowledge-v6', scoreMin, scoreMax, l2Threshold, l3Threshold, maxExisting, maxSearchTerms })
 }
 
 /**

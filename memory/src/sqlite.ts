@@ -27,7 +27,7 @@ export type MemoryDatabase = Omit<AwaitableStore<Backend>, 'vectors' | 'l1' | 'k
   readonly selections: AwaitableStore<SelectionStore>; readonly maintenance: AwaitableStore<MaintenanceStore>;
   readonly vectors: Omit<AwaitableStore<VectorStore>, 'documents'> & { documents(project: ProjectId, size: number): Iterable<VectorDocument> | AsyncIterable<VectorDocument> };
 }
-interface Pending { readonly resolve: (value: unknown) => void; readonly reject: (error: Error) => void; readonly bytes: number }
+interface Pending { readonly resolve: (value: unknown) => void; readonly reject: (error: Error) => void; readonly bytes: number; readonly detach: () => void }
 
 /** Shared owner of all memory connections belonging to one plugin instance. */
 export class StorageWorker {
@@ -65,6 +65,7 @@ export class StorageWorker {
       const pending = this.pending.get(response.id)
       if (pending === undefined) return
       this.pending.delete(response.id); this.bytes -= pending.bytes
+      pending.detach()
       if (response.kind === 'result') pending.resolve(response.value)
       else {
         const error = new MemoryError(response.failure.code, response.failure.message)
@@ -83,10 +84,12 @@ export class StorageWorker {
   private fail(error: Error): void {
     this.closed = true
     this.rejectReady(error)
-    for (const item of this.pending.values()) item.reject(error)
+    for (const item of this.pending.values()) { item.detach(); item.reject(error) }
     this.pending.clear(); this.bytes = 0
     void this.worker.terminate().catch(() => undefined)
   }
+  /** @returns whether this worker can still accept new databases. */
+  isAvailable(): boolean { return !this.closed }
   /** @param spec - validated database configuration. @returns initialized worker-local identity. */
   async open(spec: Spec): Promise<number> {
     await this.ready
@@ -101,24 +104,29 @@ export class StorageWorker {
   async call<T>(database: number, scope: keyof typeof storageMethods | 'open', method: string, args: readonly unknown[]): Promise<T> {
     await this.ready
     if (this.closed) throw new MemoryError('closed', 'Storage worker is closed')
-    const copied = args.map(value => {
+    const signals: AbortSignal[] = []
+    const signalArgs: number[] = []
+    const copied = args.map((value, index) => {
       if (typeof value === 'object' && value !== null && 'signal' in value) {
         const { signal, ...rest } = value
-        if (signal instanceof AbortSignal) signal.throwIfAborted()
+        if (signal instanceof AbortSignal) { signal.throwIfAborted(); signals.push(signal); signalArgs.push(index) }
         return rest
       }
       return value
     })
-    const request = { id: ++this.serial, database, scope, method, args: copied }
+    const request = { id: ++this.serial, database, scope, method, args: copied, signalArgs }
     const bytes = serialize(request).byteLength
     // One oversized event may occupy an otherwise empty channel without truncation.
     // Closing control messages follow accepted writes even when the data queue is full.
     const closing = scope === 'database' && method === 'close'
     if (!closing && (this.pending.size >= this.spec.storageQueueCapacity || (this.pending.size > 0 && this.bytes + bytes > this.spec.storageQueueMaxBytes))) throw new MemoryError('backpressure', 'Storage queue is full; source logs remain available for retry')
     const result = new Promise<unknown>((resolve, reject) => {
-      this.pending.set(request.id, { resolve, reject, bytes }); this.bytes += bytes
+      const cancel = () => { if (!this.closed) this.worker.postMessage({ kind: 'cancel', id: request.id }) }
+      for (const signal of signals) signal.addEventListener('abort', cancel, { once: true })
+      const detach = () => { for (const signal of signals) signal.removeEventListener('abort', cancel) }
+      this.pending.set(request.id, { resolve, reject, bytes, detach }); this.bytes += bytes
       try { this.worker.postMessage(request) } catch (error) {
-        this.pending.delete(request.id); this.bytes -= bytes
+        this.pending.delete(request.id); this.bytes -= bytes; detach()
         reject(new MemoryError('integration', 'Storage request could not be sent; no operation was dispatched', error))
       }
     })
@@ -138,7 +146,62 @@ export class StorageWorker {
   }
 }
 
-/** Public async provider; all capabilities share one worker and database lifetime. */
+/** Bounded worker owner; different active databases are placed on the least loaded worker. */
+export class StoragePool {
+  private readonly slots: Array<{ worker: StorageWorker; databases: number }> = []
+  private readonly routes = new Map<number, { slot: { worker: StorageWorker; databases: number }; local: number }>()
+  private serial = 0
+  private closed = false
+  /** @param spec - plugin-wide worker count and per-worker queue bounds. */
+  constructor(private readonly spec: Pick<Spec, 'storageQueueCapacity' | 'storageQueueMaxBytes' | 'storageWorkers'>) {}
+  /** @param spec - database paths and limits. @returns pool-local database identity. */
+  async open(spec: Spec): Promise<number> {
+    if (this.closed) throw new MemoryError('closed', 'Storage pool is closed')
+    for (const failed of this.slots.filter(slot => !slot.worker.isAvailable())) {
+      await failed.worker.close()
+      const index = this.slots.indexOf(failed)
+      if (index >= 0) this.slots.splice(index, 1)
+      for (const [id, route] of this.routes) if (route.slot === failed) this.routes.delete(id)
+    }
+    if (this.closed) throw new MemoryError('closed', 'Storage pool is closed')
+    let slot = [...this.slots].sort((a, b) => a.databases - b.databases)[0]
+    if (slot === undefined || (slot.databases > 0 && this.slots.length < this.spec.storageWorkers)) {
+      slot = { worker: new StorageWorker(this.spec), databases: 0 }; this.slots.push(slot)
+    }
+    slot.databases++
+    try {
+      const local = await slot.worker.open(spec)
+      if (this.closed) throw new MemoryError('closed', 'Storage pool closed while opening the database')
+      const id = ++this.serial
+      this.routes.set(id, { slot, local })
+      return id
+    } catch (error) { slot.databases--; throw error }
+  }
+  /** @param database - pool identity. @param scope - capability. @param method - operation. @param args - validated inputs.
+   * @returns settled result; worker failures retain their unknown-outcome classification.
+   */
+  async call<T>(database: number, scope: keyof typeof storageMethods | 'open', method: string, args: readonly unknown[]): Promise<T> {
+    const route = this.routes.get(database)
+    if (route === undefined || this.closed) throw new MemoryError('closed', 'Storage database is unavailable')
+    const result = await route.slot.worker.call<T>(route.local, scope, method, args)
+    if (scope === 'database' && method === 'close') { this.routes.delete(database); route.slot.databases-- }
+    return result
+  }
+  /** @param database - pool identity. @param listener - nonthrowing observer. @returns disposer. */
+  onChange(database: number, listener: () => void): () => void {
+    const route = this.routes.get(database)
+    if (route === undefined) throw new MemoryError('closed', 'Storage database is unavailable')
+    return route.slot.worker.onChange(route.local, listener)
+  }
+  /** @returns completion after every owned worker exits. */
+  async close(): Promise<void> {
+    this.closed = true
+    await Promise.all(this.slots.map(slot => slot.worker.close()))
+    this.routes.clear()
+  }
+}
+
+/** Public async provider; capabilities share the same database lifetime and queue order. */
 export class SqliteMemory {
   readonly l1: AsyncStore<L1Store>
   readonly knowledge: AsyncStore<KnowledgeStore>
@@ -147,7 +210,7 @@ export class SqliteMemory {
   readonly maintenance: AsyncStore<MaintenanceStore>
   private closed = false
   private closing: Promise<void> | undefined
-  private constructor(private readonly worker: StorageWorker, private readonly id: number, private readonly spec: Spec, private readonly ownsWorker: boolean) {
+  private constructor(private readonly worker: StorageWorker | StoragePool, private readonly id: number, private readonly spec: Spec, private readonly ownsWorker: boolean) {
     this.l1 = this.store<L1Store>('l1'); this.knowledge = this.store<KnowledgeStore>('knowledge')
     this.selections = this.store<SelectionStore>('selections'); this.maintenance = this.store<MaintenanceStore>('maintenance')
     const vectors = this.store<Omit<VectorStore, 'documents'>>('vectors')
@@ -182,7 +245,7 @@ export class SqliteMemory {
     }
   }
   /** @param spec - resolved paths and limits. @param worker - optional shared Workspace owner. @returns ready provider. */
-  static async open(spec: Spec, worker?: StorageWorker): Promise<SqliteMemory> {
+  static async open(spec: Spec, worker?: StorageWorker | StoragePool): Promise<SqliteMemory> {
     const owner = worker ?? new StorageWorker(spec)
     try { return new SqliteMemory(owner, await owner.open(spec), spec, worker === undefined) }
     catch (error) { if (worker === undefined) await owner.close(); throw error }
@@ -215,11 +278,13 @@ export class SqliteMemory {
   /** @param args - owner, extraction settings and page bound. @returns one committed scan page. */
   scanTurnsPage(...args: Parameters<Backend['scanTurnsPage']>) { return this.call<Awaited<ReturnType<Backend['scanTurnsPage']>>>('database', 'scanTurnsPage', args) }
   /** @param spec - text limits. @param request - authorized query. @returns transient FTS result. */
-  textQuery(spec: TextSearchSpec, request: RetrievalRequest): Promise<{ result: RetrievalResult; matched: boolean; fingerprint: string }> { return this.call('database', 'textQuery', [spec, request]) }
+  textQuery(spec: TextSearchSpec, request: RetrievalRequest): Promise<{ result: RetrievalResult; matched: boolean; fingerprint: string; candidates: number }> { return this.call('database', 'textQuery', [spec, request]) }
   /** @param spec - corpus scan limits. @param request - owner and filters. @returns exact authorized-version digest. */
   textSnapshot(spec: TextSearchSpec, request: RetrievalRequest): Promise<string> { return this.call('database', 'textSnapshot', [spec, request]) }
   /** @param spec - text limits. @param project - owner. @returns candidate completeness. */
-  textStatus(spec: TextSearchSpec, project: ProjectId): Promise<{ method: 'bm25'; candidates: number; truncated: boolean; ready: boolean }> { return this.call('database', 'textStatus', [spec, { projectId: project }]) }
+  textStatus(spec: TextSearchSpec, project: ProjectId): Promise<{ method: 'bm25'; candidates: number; truncated: boolean; ready: boolean }> { return this.call('database', 'textStatus', [spec, project]) }
+  /** @returns completion after discarding derived text corpora for a subsequent rebuild. */
+  rebuildTextIndex(): Promise<void> { return this.call('database', 'rebuildTextIndex', []) }
   /** Drain dependents first; shared workers remain available to other databases. */
   async close(): Promise<void> {
     if (this.closing !== undefined) return this.closing
