@@ -63,7 +63,7 @@ export class WorkspaceMemory implements MemoryRoutes {
   private readonly sessions = new Map<SessionId, ProjectId>()
   private readonly budget = new LearningBudget()
   private readonly listeners: Array<() => void> = []
-  private readonly paths = new Map<ProjectId, string>()
+  private readonly boundProjects = new Set<ProjectId>()
   private readonly cleaned = new Set<SessionId>()
   private readonly imported = new Set<SessionId>()
   private readonly pending = new Set<Promise<void>>()
@@ -84,7 +84,7 @@ export class WorkspaceMemory implements MemoryRoutes {
   accepts(session: Pick<Session, 'header'>): boolean { return !this.cleaned.has(session.header.id) && (session.header.createdAt >= this.activatedAt || this.imported.has(session.header.id)) }
 
   /** @param project - owner. @returns whether historical operations have a registered Workspace. */
-  workspaceBound(project: ProjectId): boolean { return this.paths.has(project) }
+  workspaceBound(project: ProjectId): boolean { return this.boundProjects.has(project) }
   /** @param project - explicit import owner. @param sessionId - admitted source. */
   admit(project: ProjectId, sessionId: SessionId): void {
     const owner = this.sessions.get(sessionId)
@@ -148,7 +148,7 @@ export class WorkspaceMemory implements MemoryRoutes {
   }
 
   private ensure(project: ProjectId, workspacePath?: string): Promise<MemoryRuntime> {
-    if (workspacePath !== undefined) this.paths.set(project, workspacePath)
+    if (workspacePath !== undefined) this.boundProjects.add(project)
     if (this.closing) return Promise.reject(new MemoryError('closed', 'Workspace memory is closing'))
     const runtime = this.runtimes.get(project)
     if (runtime !== undefined) return Promise.resolve(runtime)

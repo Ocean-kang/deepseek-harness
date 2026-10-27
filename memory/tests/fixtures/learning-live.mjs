@@ -52,20 +52,20 @@ export function apply(ctx, config) {
       const knowledgeTasks = []
       let after = ''
       for (;;) {
-        const tasks = memory.l1.listTasks(spec.projectId, after, spec.pageSize)
+        const tasks = await memory.l1.listTasks(spec.projectId, after, spec.pageSize)
         l1Tasks.push(...tasks.filter(task => task.sessionId === source.id))
         if (tasks.length < spec.pageSize) break
         after = tasks.at(-1).operationId
       }
       after = ''
       for (;;) {
-        const tasks = memory.knowledge.listTasks(spec.projectId, after, spec.pageSize)
+        const tasks = await memory.knowledge.listTasks(spec.projectId, after, spec.pageSize)
         knowledgeTasks.push(...tasks)
         if (tasks.length < spec.pageSize) break
         after = tasks.at(-1).operationId
       }
       const l1 = l1Tasks[0]
-      const l1Memory = l1 === undefined ? null : memory.l1.byOperation(spec.projectId, l1.operationId)
+      const l1Memory = l1 === undefined ? null : await memory.l1.byOperation(spec.projectId, l1.operationId)
       const l2 = l1Memory === null ? [] : knowledgeTasks.filter(task => task.input.level === 'L2'
         && task.input.sources.some(record => record.id === l1Memory.id && record.revision === l1Memory.revision))
       const l2Refs = l2.flatMap(task => task.result ?? [])

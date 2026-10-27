@@ -1,5 +1,7 @@
 # 独立记忆插件卡片与召回验收
 
+本记录中的已缺失本地材料以原路径标注，仅保留历史验收描述，不作为当前可复核证据。
+
 本记录对应 2026-10-03 开始、2026-10-04 完成验收的独立 memory 0.1.6 插件开发，目标运行环境为 DSH 0.2.0-rc.2 Web profile。用户指定全部开发、测试、说明及验收产物位于 `memory/`；交付对象为可安装插件。目录内交付规则见 [AGENTS](../AGENTS.md)，当前功能见 [README](../README.zh.md)，安装及升级说明见[随包文档](../distribution/README.zh.md)。
 
 ## 目标与范围
@@ -43,14 +45,14 @@
 
 ## 安装包运行与浏览器
 
-最终交付包为 [.artifacts/packages/deepseek-ai-dsh-memory-l0-0.1.6.tgz](../.artifacts/packages/deepseek-ai-dsh-memory-l0-0.1.6.tgz)，SHA-256 为 `8459b055a90bf3db04e571f83869cd1b6b51e57147039f83cfb6e1382a313915`。
+最终交付包为 .artifacts/packages/deepseek-ai-dsh-memory-l0-0.1.6.tgz（原路径 `../.artifacts/packages/deepseek-ai-dsh-memory-l0-0.1.6.tgz`），SHA-256 为 `8459b055a90bf3db04e571f83869cd1b6b51e57147039f83cfb6e1382a313915`。
 
 [安装验收夹具](../tests/fixtures/installed-delivery.mjs)经公开 `dsh web` profile 加载已安装插件，没有加载 memory 源码入口或本地 lib。新 source Session 生成对应 L1，L2 精确引用该 L1，L3 精确引用该 L2。reader 的两轮手选验证只有第一轮接纳记忆，随后两轮自动召回均接纳；共 5 个 Agent 模型请求逐项核对记忆正文与正式持久化事件。适配器为显式标注的合成模型，不代表一般模型的提炼质量。
 
-最终包的完整运行证据及两条可解码 JSONL 路径见 [run 报告](../.artifacts/cards-portable-accepted.json)。[默认配置重启](../.artifacts/cards-portable-accepted.json.verified-trigram.json)与 [unicode61 覆盖重启](../.artifacts/cards-portable-accepted.json.verified-unicode61.json)均保留 3 个精确历史版本、完整旧日志前缀和自动召回设置，无新模型请求或召回。恢复只允许每条 Session 最多追加一条公开 `session/end-seed` 标记。后续学习合法替代 L2/L3 时，旧版本的 superseded 状态与内容均保留。
+最终包的完整运行证据及两条可解码 JSONL 路径见 run 报告（原路径 `../.artifacts/cards-portable-accepted.json`）。默认配置重启（原路径 `../.artifacts/cards-portable-accepted.json.verified-trigram.json`）与 unicode61 覆盖重启（原路径 `../.artifacts/cards-portable-accepted.json.verified-unicode61.json`）均保留 3 个精确历史版本、完整旧日志前缀和自动召回设置，无新模型请求或召回。恢复只允许每条 Session 最多追加一条公开 `session/end-seed` 标记。后续学习合法替代 L2/L3 时，旧版本的 superseded 状态与内容均保留。
 
 重现安装运行时，将 `DSH_HOME` 指向上述最终验收 home、`DSH_AGENTS_HOME` 指向本目录下隔离路径，并使用 `tests/fixtures/compatibility.patch.yml`、`tests/fixtures/installed-delivery.patch.yml` 及设置本目录 `documentsDirectory` 的 overlay；不叠加源码 `cordis.patch.yml`。设 `DSH_MEMORY_DELIVERY_EVIDENCE` 为本目录下未使用的绝对 JSON 路径；首次 `run`，随后相同路径使用 `DSH_MEMORY_DELIVERY_MODE=verify`。显式配置迁移时覆盖 memory-l0 的 `textSearch.tokenizer` 与 `browser.refreshIntervalMs`，并设置夹具对应的 `DSH_MEMORY_DELIVERY_TOKENIZER`、`DSH_MEMORY_DELIVERY_REFRESH_MS`。证据使用独占创建，不覆盖已有验收历史。
 
-真实浏览器重试成功。内置浏览器打开正式已安装包的本机 Web 服务，读取历史对话、卡片、搜索高亮及可信度详情。验收发现历史对话没有加载 Session 时面板失败，已改为按捕获的项目身份读取正式持久化日志，不启动 Agent；另修复 L0 已知召回与提炼记录露出 JSON，以及窄侧栏来源按钮溢出。最终安装包的 [L0 截图](../.artifacts/cards-browser-final-l0.jpg)确认方括号开头的正文与嵌套 L1 摘要均保留。搜索与刷新保留查询词，普通用户 JSON 不被重新解释。L1 展示主题、动作和结果；L3 当前版本展示原则、来源及生成详情，[历史 L3 截图](../.artifacts/cards-browser-final-lineage.jpg)确认旧来源版本触发待重新核实和暂停召回说明。
+真实浏览器重试成功。内置浏览器打开正式已安装包的本机 Web 服务，读取历史对话、卡片、搜索高亮及可信度详情。验收发现历史对话没有加载 Session 时面板失败，已改为按捕获的项目身份读取正式持久化日志，不启动 Agent；另修复 L0 已知召回与提炼记录露出 JSON，以及窄侧栏来源按钮溢出。最终安装包的 L0 截图（原路径 `../.artifacts/cards-browser-final-l0.jpg`）确认方括号开头的正文与嵌套 L1 摘要均保留。搜索与刷新保留查询词，普通用户 JSON 不被重新解释。L1 展示主题、动作和结果；L3 当前版本展示原则、来源及生成详情，历史 L3 截图（原路径 `../.artifacts/cards-browser-final-lineage.jpg`）确认旧来源版本触发待重新核实和暂停召回说明。
 
-真实操作将 L2 加入下一轮后，侧栏和输入框展示 1 条待用记忆、正文及 290/8192 字节预算，见[发送前截图](../.artifacts/cards-browser-pending.jpg)。关闭自动召回，使用真实键盘输入发送；第 5 轮显示实际送入模型 1 条、待用归零，见[发送后截图](../.artifacts/cards-browser-used.jpg)。随后第 6 轮没有重复接纳，正式持久化证据见[浏览器收据核对](../.artifacts/cards-browser-receipt.json)。界面中的累计生成与失败可以同时存在；合成模型没有通用提炼质量保证。没有创建源码集成 PR，因此未录制 PR 展示 GIF。
+真实操作将 L2 加入下一轮后，侧栏和输入框展示 1 条待用记忆、正文及 290/8192 字节预算，见发送前截图（原路径 `../.artifacts/cards-browser-pending.jpg`）。关闭自动召回，使用真实键盘输入发送；第 5 轮显示实际送入模型 1 条、待用归零，见发送后截图（原路径 `../.artifacts/cards-browser-used.jpg`）。随后第 6 轮没有重复接纳，正式持久化证据见浏览器收据核对（原路径 `../.artifacts/cards-browser-receipt.json`）。界面中的累计生成与失败可以同时存在；合成模型没有通用提炼质量保证。没有创建源码集成 PR，因此未录制 PR 展示 GIF。

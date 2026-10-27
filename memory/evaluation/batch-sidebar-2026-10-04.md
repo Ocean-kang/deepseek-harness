@@ -1,5 +1,7 @@
 # 批量学习与侧栏验收
 
+本记录中的已缺失本地材料以原路径标注，仅保留历史验收描述，不作为当前可复核证据。
+
 本记录对应独立 memory 0.1.7，运行环境为 DSH 0.2.0-rc.2 Web profile。源码、测试、缓存、安装 profile 和验收材料均位于 `memory/`。安装方法见[随包说明](../distribution/README.zh.md)。
 
 ## 行为与回归证据
@@ -34,6 +36,6 @@
 
 ## 包与运行材料
 
-安装包为 [memory 0.1.7](../.artifacts/packages/deepseek-ai-dsh-memory-l0-0.1.7.tgz)，SHA-256 为 `21d7ca64ba5c63a6dbccde26446ed4ddeb403b3c1a64eb7f5fd77407ae8cc098`。实际安装 profile 位于 `.artifacts/batch-installed-home/profiles/web`；[运行记录](../.artifacts/batch-installed-delivery.json)与[重启记录](../.artifacts/batch-installed-delivery.json.verified-trigram.json)保留合成模型标识和完整日志位置。
+安装包为 memory 0.1.7（原路径 `../.artifacts/packages/deepseek-ai-dsh-memory-l0-0.1.7.tgz`），SHA-256 为 `21d7ca64ba5c63a6dbccde26446ed4ddeb403b3c1a64eb7f5fd77407ae8cc098`。实际安装 profile 位于 `.artifacts/batch-installed-home/profiles/web`；运行记录（原路径 `../.artifacts/batch-installed-delivery.json`）与重启记录（原路径 `../.artifacts/batch-installed-delivery.json.verified-trigram.json`）保留合成模型标识和完整日志位置。
 
-浏览器通过支持的 Web profile、内置目录选择器 overlay 和隔离 Chrome 运行，使用当前构建；正式安装包另经上述 profile 夹具验证。截图包括[浅色列表](../.artifacts/workspace-web-brpIRZ/panel-light.png)、[正文与待用操作](../.artifacts/workspace-web-brpIRZ/panel-interaction.png)、[深色](../.artifacts/workspace-web-brpIRZ/panel-dark.png)和[窄侧栏](../.artifacts/workspace-web-brpIRZ/panel-narrow.png)。[界面检查记录](../.artifacts/workspace-web-brpIRZ/panel-acceptance.json)确认侧栏宽度和内容宽度均为 343px、自动召回关闭，深色背景使用主题色。验收服务退出后，截图、数据库和日志仍在本目录。
+浏览器通过支持的 Web profile、内置目录选择器 overlay 和隔离 Chrome 运行，使用当前构建；正式安装包另经上述 profile 夹具验证。截图包括浅色列表（原路径 `../.artifacts/workspace-web-brpIRZ/panel-light.png`）、正文与待用操作（原路径 `../.artifacts/workspace-web-brpIRZ/panel-interaction.png`）、深色（原路径 `../.artifacts/workspace-web-brpIRZ/panel-dark.png`）和窄侧栏（原路径 `../.artifacts/workspace-web-brpIRZ/panel-narrow.png`）。界面检查记录（原路径 `../.artifacts/workspace-web-brpIRZ/panel-acceptance.json`）确认侧栏宽度和内容宽度均为 343px、自动召回关闭，深色背景使用主题色。验收服务退出后，截图、数据库和日志仍在本目录。

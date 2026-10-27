@@ -613,7 +613,7 @@ export class L1Store {
     const memory = this.db.prepare('SELECT 1 FROM l1_memories WHERE project = ? AND id = ? AND revision = ?').get(project, ref.id, ref.revision)
     if (memory === undefined) return { found: false, text: '', nextCursor: null }
     const modern = this.db.prepare('SELECT 1 FROM l1_trace_chunks WHERE memory_id = ? AND revision = ? LIMIT 1').get(ref.id, ref.revision) !== undefined
-    if (!modern) return this.readLegacyTrace(project, ref, cursor, maxBytes)
+    if (!modern) return this.readStoredTrace(project, { table: 'l1_memories', path: '$.trace', id: ref.id, revision: ref.revision }, cursor, maxBytes)
     const read = (index: number): string | undefined => {
       const row = this.db.prepare('SELECT body FROM l1_trace_chunks WHERE memory_id = ? AND revision = ? AND chunk_index = ?').get(ref.id, ref.revision, index)
       return row === undefined ? undefined : textValue(row.body)
@@ -633,10 +633,6 @@ export class L1Store {
       index++; offset = 0
       if (remaining < 4) return { found: true, text, nextCursor: read(index) === undefined ? null : { chunk: index, offset: 0 } }
     }
-  }
-
-  private readLegacyTrace(project: ProjectId, ref: MemoryRef, cursor: TraceCursor, maxBytes: number): TracePage {
-    return this.readStoredTrace(project, { table: 'l1_memories', path: '$.trace', id: ref.id, revision: ref.revision }, cursor, maxBytes)
   }
 
   private copyStoredTrace(project: ProjectId, ref: MemoryRef, source: LegacyTraceSource): void {
@@ -663,13 +659,4 @@ export class L1Store {
     const offset = cursor.offset + Array.from(row.fragment).length
     return { found: true, text: row.fragment, nextCursor: offset === row.total ? null : { chunk: 0, offset } }
   }
-}
-
-/** Backfill compact legacy metadata and byte-bounded trace rows without rewriting stored originals.
- * @param db - owning SQLite connection inside its schema migration transaction.
- * @param maxTraceBytes - configured immutable chunk byte limit.
- * @returns completion after all existing L1 records have compatibility projections.
- */
-export function backfillL1Projections(db: DatabaseSync, maxTraceBytes: number): void {
-  L1Store.backfillProjections(db, maxTraceBytes)
 }

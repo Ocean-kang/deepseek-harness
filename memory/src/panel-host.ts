@@ -4,7 +4,7 @@ import { SessionLogOffset } from '@deepseek-ai/dsh-session'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import { joinAssistantStreamText } from '@deepseek-ai/dsh-llm'
 import { clientRequestSchema } from '@deepseek-ai/dsh-client-connection'
-import type { BrowserItem, MemoryBrowser } from './browser.ts'
+import type { BrowserItem } from './browser.ts'
 import { panelRequest } from './panel-protocol.ts'
 import type { PanelRequest, PanelResponse, PanelRow } from './panel-protocol.ts'
 import { MemoryError } from './types.ts'
@@ -20,14 +20,11 @@ interface StateProjection {
   used: PanelUsed
   tail: Promise<void>
 }
-const stateProjections = new WeakMap<MemoryBrowser, Map<SessionId, StateProjection>>()
 const importTaskOf = (task: ImportTask): Extract<PanelResponse, { action: 'importStart' }>['task'] => ({ ...task, items: task.items.map(item => ({ ...item })) })
 
 async function recallState(ctx: Context, project: ProjectId, sessionId: SessionId,
-  signal: AbortSignal): Promise<{ offset: number; used: PanelUsed }> {
+  signal: AbortSignal, cache: Map<SessionId, StateProjection>): Promise<{ offset: number; used: PanelUsed }> {
   const browser = ctx.memory.browser
-  let cache = stateProjections.get(browser)
-  if (cache === undefined) { cache = new Map(); stateProjections.set(browser, cache) }
   let projection = cache.get(sessionId)
   projection ??= { offset: 0, used: [], tail: Promise.resolve() }
   cache.delete(sessionId)
@@ -142,13 +139,26 @@ export function panelRowOf(item: BrowserItem): PanelRow {
     shared: false, ref, state: item.state, selectable: item.state === 'active' && item.knowledge.evidence === 'supported', sources: [...item.knowledge.sources, ...(item.knowledge.conflicts ?? []).map(conflict => ({ kind: 'memory' as const, ref: conflict.ref }))] }
 }
 
+/** Create an independently owned panel cache for captured live or persisted Sessions.
+ * @param ctx - Session and ready memory services.
+ * @returns dispatcher and cache release; the owner must settle requests before clearing.
+ */
+export function createPanelDispatcher(ctx: Context): {
+  dispatch: (request: PanelRequest, signal: AbortSignal) => Promise<PanelResponse>
+  clear: () => void
+} {
+  const cache = new Map<SessionId, StateProjection>()
+  return { dispatch: (request, signal) => dispatchPanel(ctx, request, signal, cache), clear: () => cache.clear() }
+}
+
 /** Dispatch for a captured live or persisted Session without starting an Agent.
  * @param ctx - Session and ready memory services.
  * @param request - validated wire request.
  * @param signal - transport cancellation.
+ * @param cache - the panel owner's incremental Session state.
  * @returns authorized result; project identity comes from captured Session ownership.
  */
-export async function dispatchPanel(ctx: Context, request: PanelRequest, signal: AbortSignal): Promise<PanelResponse> {
+async function dispatchPanel(ctx: Context, request: PanelRequest, signal: AbortSignal, cache: Map<SessionId, StateProjection>): Promise<PanelResponse> {
   signal.throwIfAborted()
   const session = ctx.sessions.get(request.sessionId)
   const stored = session === undefined ? await ctx.sessionPersistence.stat(request.sessionId, { signal }) : undefined
@@ -221,7 +231,7 @@ export async function dispatchPanel(ctx: Context, request: PanelRequest, signal:
       return { action: 'automatic', refs: [...saved.refs], automatic: saved.automatic }
     }
     case 'state': {
-      const { offset, used } = await recallState(ctx, project, request.sessionId, signal)
+      const { offset, used } = await recallState(ctx, project, request.sessionId, signal, cache)
       signal.throwIfAborted()
       const selection = await browser.selectionFromEvents(project, request.sessionId, [])
       let valid = true
@@ -250,7 +260,7 @@ export async function dispatchPanel(ctx: Context, request: PanelRequest, signal:
  * @returns registry disposer; pending requests stop with their transport lifetime.
  */
 export function installPanelHost(ctx: Context): () => Promise<void> {
-  const browser = ctx.memory.browser
+  const panel = createPanelDispatcher(ctx)
   const abort = new AbortController()
   const pending = new Set<Promise<unknown>>()
   const handle = async (payload: unknown, signal: AbortSignal) => {
@@ -258,7 +268,7 @@ export function installPanelHost(ctx: Context): () => Promise<void> {
     if (!parsed.success) return { ok: false, error: { code: 'INVALID_REQUEST', message: 'Invalid memory panel request', details: {} } }
     const work = (async () => {
       const lifetime = AbortSignal.any([abort.signal, signal])
-      try { return { ok: true as const, value: await dispatchPanel(ctx, parsed.data, lifetime) } } catch (error) {
+      try { return { ok: true as const, value: await panel.dispatch(parsed.data, lifetime) } } catch (error) {
         lifetime.throwIfAborted()
         return { ok: false as const, error: { code: error instanceof MemoryError ? error.code : 'storage',
           message: error instanceof MemoryError ? error.message : 'Memory panel request failed', details: {} } }
@@ -285,5 +295,5 @@ export function installPanelHost(ctx: Context): () => Promise<void> {
       return Response.json({ type: 'server-response', rpcId: envelope.data.rpcId, result })
     },
   })
-  return async () => { stop(); abort.abort(); await Promise.allSettled(pending); stateProjections.delete(browser) }
+  return async () => { stop(); abort.abort(); await Promise.allSettled(pending); panel.clear() }
 }

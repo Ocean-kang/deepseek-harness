@@ -1,5 +1,7 @@
 # Memory 全量 Ponytail 审计验收
 
+本记录中的已缺失本地材料以原路径标注，仅保留历史验收描述，不作为当前可复核证据。
+
 本记录覆盖 `memory/` 全部 41 个源码文件，以及开发脚本、profile、fixture、导出入口、编译配置与文档引用。审计沿真实注册和消费路径核实冗余，保留完整 L0–L3 功能、历史任务恢复、版本和证据链。分层功能及持久化字段见[分层验收](layered-memory-2026-10-07.md)。
 
 ## 精简结果
@@ -17,7 +19,7 @@
 
 没有发现可删除的完整功能源码文件。历史提示词和描述生成仍用于旧任务恢复；`visual-summary.ts` 同时被当前 JSON 请求与查询扩展使用。独立 worker 接口、请求日志、租约、核查事件、可信回执、冲突历史、项目共享预算、持久选择、增量状态投影及二次来源校验均有消费者。安装与源码 profile、捕获专用 scan fixture、可选 Memorix 配置和开发依赖链接脚本仍有公开或文档入口。
 
-删除 `.tmp/` 中四组已无文档或运行消费者的旧源码、构建和提交准备副本，以及本轮已完成的构建比较脚本，共 200 个临时文件、14 个目录联接入口；约 2.52 MB。[清理清单](../.artifacts/ponytail-cleanup.json)记录路径和大小。先删除联接入口，再检查普通目录树并清除副本；依赖目标、当前构建、用户数据库与安装验收材料保留。上述临时文件受 `.gitignore` 排除。
+删除 `.tmp/` 中四组已无文档或运行消费者的旧源码、构建和提交准备副本，以及本轮已完成的构建比较脚本，共 200 个临时文件、14 个目录联接入口；约 2.52 MB。清理清单（原路径 `../.artifacts/ponytail-cleanup.json`）记录路径和大小。先删除联接入口，再检查普通目录树并清除副本；依赖目标、当前构建、用户数据库与安装验收材料保留。上述临时文件受 `.gitignore` 排除。
 
 ## 已执行检查
 
@@ -35,7 +37,7 @@
 | `npm run pack:portable` 与正式 `dsh plugin --profile web add` | 全新隔离 profile 安装成功；安装脚本和自动 peer 关闭。 |
 | 正式 Web profile 的 installed-delivery `run` 与 `verify` | 完整原文分组、三层学习、手选单次消费、两轮自动召回及模型日志一致；重启版本、偏好及日志前缀保留，新增模型请求和召回均为零。 |
 
-最终包为 [deepseek-ai-dsh-memory-l0-0.1.10.tgz](../.artifacts/packages/deepseek-ai-dsh-memory-l0-0.1.10.tgz)，SHA-256 为 `68fcfc7122ef4f20e1e9429e30ec5899e4355485f0216607734b482fac344be6`。[安装文件核对](../.artifacts/dsh-021-memory-0110-audit/installed-files.json)确认 14 个文件逐字节一致；[运行](../.artifacts/dsh-021-memory-0110-audit/delivery.json)和[重启](../.artifacts/dsh-021-memory-0110-audit/delivery.json.verified-trigram.json)保留合成模型报告与 Session 日志。此前分层验收的归档包另行留存，原校验值和报告保持可核对。
+最终包为 deepseek-ai-dsh-memory-l0-0.1.10.tgz（原路径 `../.artifacts/packages/deepseek-ai-dsh-memory-l0-0.1.10.tgz`），SHA-256 为 `68fcfc7122ef4f20e1e9429e30ec5899e4355485f0216607734b482fac344be6`。安装文件核对（原路径 `../.artifacts/dsh-021-memory-0110-audit/installed-files.json`）确认 14 个文件逐字节一致；运行（原路径 `../.artifacts/dsh-021-memory-0110-audit/delivery.json`）和重启（原路径 `../.artifacts/dsh-021-memory-0110-audit/delivery.json.verified-trigram.json`）保留合成模型报告与 Session 日志。此前分层验收的归档包另行留存，原校验值和报告保持可核对。
 
 本轮未改变界面展示或用户操作，既有宽窄窗口浏览器证据见[分层验收](layered-memory-2026-10-07.md#真实模型与浏览器)。没有重新调用真实模型或 embedding Provider；真实模型质量、固定质量实验、跨平台、暗色主题视觉和仓库级 doc-sync 均未由本轮合成回归推断。
 

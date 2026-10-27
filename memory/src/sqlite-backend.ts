@@ -13,7 +13,7 @@ import { MemoryError } from './types.ts'
 import type { AppendRawRequest, AppendRawResult, RawMemory, ReadRawRequest, ReadRawResult } from './types.ts'
 import type { ProjectId } from './types.ts'
 import type { L1Spec } from './l1-types.ts'
-import { backfillL1Projections, L1_SCHEMA, L1Store, TRACE_SCHEMA, EVIDENCE_SCHEMA } from './l1-store.ts'
+import { L1_SCHEMA, L1Store, TRACE_SCHEMA, EVIDENCE_SCHEMA } from './l1-store.ts'
 import { compactLegacyKnowledgeTaskTraces, KNOWLEDGE_SCHEMA, KnowledgeStore, CONSOLIDATION_SCHEMA, backfillConsolidationIndex } from './knowledge-store.ts'
 import { VECTOR_SCHEMA, VectorStore } from './vector-store.ts'
 import { SELECTION_SCHEMA, SelectionStore } from './selection-store.ts'
@@ -252,7 +252,7 @@ export class SqliteMemory implements RawMemory {
         if (Number(version) < 6) {
           db.exec(TRACE_SCHEMA)
           db.exec(MAINTENANCE_SCHEMA)
-          backfillL1Projections(db, spec.tracePageMaxBytes)
+          L1Store.backfillProjections(db, spec.tracePageMaxBytes)
           compactLegacyKnowledgeTaskTraces(db)
           db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`)
         }

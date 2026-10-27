@@ -15,7 +15,7 @@ import { MemoryMediaPool, MemoryStorageBackend } from '../../packages/storage/st
 import * as MemoryPlugin from '../src/index.ts'
 import { workspaceActivation, WorkspaceMemory } from '../src/workspace-storage.ts'
 import { resolveConfig } from '../src/config.ts'
-import { dispatchPanel } from '../src/panel-host.ts'
+import { createPanelDispatcher } from '../src/panel-host.ts'
 import { fixture, header } from './helpers.ts'
 import { turnEvents } from './l1-fixtures.ts'
 import { SqliteMemory } from '../src/sqlite.ts'
@@ -26,6 +26,7 @@ import CommandRuntime from '@deepseek-ai/dsh-commands'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime from '@deepseek-ai/dsh-tools'
+import * as NativeToolExecutor from '@deepseek-ai/dsh-tool-executor-native'
 import { MockAdapter, textResponse } from '../../packages/core/agent-loop/tests/mock-adapter.ts'
 
 const inputL1 = z.object({ input: z.array(z.object({ sources: z.array(z.object({ sessionId: z.string(), seq: z.number() })) })) })
@@ -125,7 +126,7 @@ it('excludes old conversations on every restart and reports a dedicated panel ca
     completeTurn(old)
     await item.ctx.sessions.flush(old)
     expect(await item.ctx.memory.projectOfSession(old.id)).toBeUndefined()
-    await expect(dispatchPanel(item.ctx, { action: 'state', sessionId: old.id }, new AbortController().signal)).rejects.toMatchObject({ code: 'excluded' })
+    await expect(createPanelDispatcher(item.ctx).dispatch({ action: 'state', sessionId: old.id }, new AbortController().signal)).rejects.toMatchObject({ code: 'excluded' })
     await first.dispose()
     await item.plugin()
     expect(item.ctx.memory.acceptsSession(old)).toBe(false)
@@ -195,6 +196,7 @@ it('logs manual and automatic recall for the selected workspace and disables sha
     await item.ctx.plugin(SessionProjectionRegistry)
     await item.ctx.plugin(SystemPrompt)
     await item.ctx.plugin(ToolRuntime)
+    await item.ctx.plugin(NativeToolExecutor)
     await item.ctx.plugin(AgentRegistry)
     await item.ctx.plugin(AgentLoop, { agents: [] })
     await item.ctx.plugin(CommandRuntime)

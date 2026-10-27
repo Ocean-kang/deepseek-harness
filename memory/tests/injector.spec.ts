@@ -11,6 +11,7 @@ import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
 import * as JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime from '@deepseek-ai/dsh-tools'
+import * as NativeToolExecutor from '@deepseek-ai/dsh-tool-executor-native'
 import { MockAdapter, textResponse, toolCallResponse } from '../../packages/core/agent-loop/tests/mock-adapter.ts'
 import { resolveEmbeddingConfig } from '../src/embedding.ts'
 import type { Embedder } from '../src/embedding.ts'
@@ -48,6 +49,7 @@ async function setup(embedder?: Embedder, responses?: StreamChunk[][], useBrowse
   await ctx.plugin(SessionProjectionRegistry)
   await ctx.plugin(SystemPrompt)
   await ctx.plugin(ToolRuntime)
+  await ctx.plugin(NativeToolExecutor)
   await ctx.plugin(AgentRegistry)
   await ctx.plugin(AgentLoop, { agents: [] })
   const adapter = new MockAdapter(responses ?? [textResponse('first'), textResponse('second'), textResponse('third')])
@@ -114,8 +116,11 @@ it('records proactive memory_search output in the real model request with recall
 
 it('rejects model-supplied projects and count overruns, and requires a calling Agent', async () => {
   const item = await setup(undefined, undefined, true, true, true, true)
-  const call = (arguments_: object, agent = true) => item.ctx.tools.execute({ callId: ToolCallId('search-policy'), name: 'memory_search',
-    arguments: arguments_, signal: new AbortController().signal, ...agent ? { agent: item.agent } : {} })
+  const call = async (arguments_: object, agent = true) => {
+    const batch = await item.ctx.tools.execute({ calls: [{ type: 'tool-call', id: ToolCallId('search-policy'), name: 'memory_search', arguments: JSON.stringify(arguments_) }],
+      signal: new AbortController().signal, ...agent ? { agent: item.agent } : {} })
+    return batch.results[0]!.result
+  }
   expect((await call({ query: 'Parser', projectId: 'another-project' })).isError).toBe(true)
   expect((await call({ query: 'Parser', limit: 3 })).isError).toBe(true)
   expect((await call({ query: 'Parser' }, false)).isError).toBe(true)
@@ -130,8 +135,9 @@ it('omits a search version revoked while its readable detail is loading', async 
     return found
   })
   try {
-    const result = await item.ctx.tools.execute({ callId: ToolCallId('search-race'), name: 'memory_search', arguments: { query: 'Parser ESM', levels: ['L2'] },
+    const batch = await item.ctx.tools.execute({ calls: [{ type: 'tool-call', id: ToolCallId('search-race'), name: 'memory_search', arguments: JSON.stringify({ query: 'Parser ESM', levels: ['L2'] }) }],
       agent: item.agent, signal: new AbortController().signal })
+    const result = batch.results[0]!.result
     expect(result.isError).not.toBe(true)
     expect(result.content).toEqual([{ type: 'text', text: '[]' }])
     expect(intercepted).toHaveBeenCalled()

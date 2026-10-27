@@ -9,7 +9,7 @@ English | [中文](README.zh.md)
 
 ## Summary
 
-Keep complete recorded Session events in project-owned SQLite, browse L0–L3 and select L2/L3 for the next turn. Background learning reuses DSH models and credentials; BM25 retrieval needs no embedding key. The portable bundle enables logged recall through public extension points. See [installation](distribution/README.md) and [verification scope](evaluation/compatibility-0.2.1-rc.2-2026-10-17.md).
+Keep complete recorded Session events in project-owned SQLite, browse L0–L3 and select L2/L3 for the next turn. Background learning reuses DSH models and credentials; BM25 retrieval needs no embedding key. The portable bundle enables logged recall through public extension points. See [installation](distribution/README.md) and [verification scope](evaluation/compatibility-0.2.1-rc.3-2026-10-27.md).
 
 ## Table of Contents
 
@@ -22,13 +22,13 @@ Keep complete recorded Session events in project-owned SQLite, browse L0–L3 an
 <a id="use-this-plugin"></a>
 ## Use this plugin
 
-This checkout targets DSH 0.2.1-rc.2. After building `memory/lib`, run the following from the repository root to enable capture, L1–L3 learning, recall and the right-sidebar Memory tab. The bundle uses the active DSH home and its configured model credentials; `profiles/web.patch.yml` enables L0 capture only. If the bundle is already installed in the Web profile, omit `--patch ./memory/cordis.patch.yml` to avoid mounting it twice. For archive installation and upgrading from earlier memory versions, see the [portable instructions](distribution/README.md).
+This checkout targets DSH 0.2.1-rc.3. After building `memory/lib`, run the following from the repository root to enable capture, L1–L3 learning, recall and the right-sidebar Memory tab. The bundle uses the active DSH home and its configured model credentials; `profiles/web.patch.yml` enables L0 capture only. If the bundle is already installed in the Web profile, omit `--patch ./memory/cordis.patch.yml` to avoid mounting it twice. For archive installation and upgrading from earlier memory versions, see the [portable instructions](distribution/README.md).
 
 ```powershell
 pnpm dsh web --patch ./memory/cordis.patch.yml --patch ./memory/profiles/chat-view.patch.yml
 ```
 
-The [source patch](profiles/headless.patch.yml) mounts this plugin in the supported headless profile and makes the runner depend on the ready `memory` service. The [built patch](profiles/headless-built.patch.yml) selects the local build instead. These patches do not install dependencies. Use a matching, prepared DSH checkout; do not run a root installation or build under this directory's write restriction. After setting the environment, run `node --import tsx/esm scripts/link-development-deps.mjs --runtime` from `memory/` before loading local build overlays: the plain-Node storage worker needs existing built DSH peers through memory-local read-only links. Missing peers fail plugin activation. The helper installs nothing, never writes through its links and leaves existing test libraries untouched. Run `node scripts/link-profile.mjs` to register this package with the profile resolver; that separate link and its target both remain inside `memory/`.
+The [source patch](profiles/headless.patch.yml) mounts this plugin in the supported headless profile and makes the runner depend on the ready `memory` service. The [built patch](profiles/headless-built.patch.yml) selects the local build instead. These patches do not install dependencies. Use a matching, prepared DSH checkout; do not run a root installation or build under this directory's write restriction. After setting the environment, run `node --import tsx/esm scripts/link-development-deps.mjs --runtime` from `memory/` before loading local build overlays: the plain-Node storage worker needs existing built DSH peers through memory-local read-only links. Missing peers fail plugin activation. The helper installs nothing, never writes through its links and leaves existing test libraries untouched. Run `node --import tsx/esm scripts/link-profile.mjs` to register this package with the profile resolver; that separate link and its target both remain inside `memory/`.
 
 Dot-source the [PowerShell environment setup](scripts/environment.ps1) with an explicit stable project identifier. It checks output directories for links, sets the Harness home, caches, temporary paths and working directory beneath `memory/`, and disables telemetry. It launches no application. Its environment changes persist in that PowerShell session.
 
@@ -128,7 +128,7 @@ The [Web panel patch](profiles/panel.patch.yml) mounts the built portable entry 
 
 The sidebar organizes memory assets into L0–L3 cards with names and descriptions. The loaded count covers the selected level's loaded pages, not the project's total. At a panel width of 640 pixels or more, the list and detail appear side by side; narrower panels show open detail above the list. Opening detail focuses its heading, closing it returns focus to the initiating row when available, and background refresh preserves focus. Theme colors support light and dark appearances. Version details display the viewed revision and validity state. Load older versions when the history spans multiple pages; changing the viewed revision retains the loaded history pages. Search pagination uses the submitted query; editing the search field does not change it until submission starts a new result page. Saved selections survive a page refresh, while cancelling pending selections leaves the knowledge records available.
 
-Previously captured conversations remain browsable after restart even when their Session is not loaded. The panel incrementally reads committed SQLite L0 events to display admitted memory text and reconcile pending selections; unchanged polls read no event bodies. Canonical events appear after capture commits. Saving selections does not start an Agent or append recovery markers.
+Previously captured conversations remain browsable after restart even when their Session is not loaded. The panel incrementally reads committed SQLite L0 events to display admitted memory text and reconcile pending selections; unchanged polls read no event bodies. Canonical events appear after capture commits. Each panel registration owns its bounded Session cache; unload cancels requests, waits for settlement and clears that cache. Saving selections does not start an Agent or append recovery markers.
 
 L0 cards show conversations and execution. L1 shows the task episode, with trace and evidence collapsed in detail. L2 shows scenario cards led by conclusions; clicking a scenario scopes browsing. L3 has separate knowledge/profile filters applied before pagination. Detail retains reasons, applicability, limitations, confidence origin, source status, immutable history and folded JSON. New summaries are generated in the extraction call; old versions fall back to stored readable fields. Search highlights literal matches; the sidebar and composer share one state poll per Session and preserve the submitted query, detail and scroll. `browser.refreshIntervalMs` controls polling.
 
@@ -174,7 +174,7 @@ Project drains execute serially within each project and share the configured con
 
 For an opt-in real-provider learning smoke, build this package, link the local profile, then run `node ../apps/cli/lib/bin.js --profile headless --patch ./profiles/learning-live.patch.yml 'Validate automatic memory learning and text retrieval.'` from `memory/`. This test-only overlay replaces the headless runner with the [learning fixture](tests/fixtures/learning-live.mjs), mounts automatic learning and text search, and uses the already selected model and credentials. Its YAML explicitly bounds attempts, calls, output and timeout. Each run processes a synthetic standing constraint in a unique `data/automatic-live-<uuid>.sqlite` database, prints its database path and source Session, and requests launcher exit. It installs no production injection and performs no embedding calls. `passed: true` requires L1, L2 and L3 results for that run and a text-search hit; failed runs remain recorded and do not establish general quality or retrieval effectiveness.
 
-Set `DSH_MEMORY_VERIFY_LEARNING=1`, `DSH_MEMORY_VERIFY_LEARNING_SOURCE` to the exact `sourceSession` printed by that run, and `DSH_MEMORY_VERIFY_LEARNING_DB` to its memory-relative database path, then execute `node scripts/test.mjs learning-live`. This reopens the database without further model calls and checks conservative L1 content, the explicit constraint, exact ancestry and request/result settlements. Missing run identity or database path fails visibly.
+Set `DSH_MEMORY_VERIFY_LEARNING=1`, `DSH_MEMORY_VERIFY_LEARNING_SOURCE` to the exact `sourceSession` printed by that run, and `DSH_MEMORY_VERIFY_LEARNING_DB` to its memory-relative database path, then execute `node --import tsx/esm scripts/test.mjs learning-live`. This reopens the database without further model calls and checks conservative L1 content, the explicit constraint, exact ancestry and request/result settlements. Missing run identity or database path fails visibly.
 
 ### Text retrieval
 
@@ -221,14 +221,14 @@ The [collector](src/collector.ts) installs through the [plugin entry](src/index.
 
 The RAM queue is not durable. SQLite holds the committed position, while the canonical Session log supplies missing events after restart. `session/flush` waits for the captured target, including recovery when needed. Its handler calls the persistence service's own flush rather than recursively dispatching the Session checkpoint. Unload removes listeners, waits for accepted work, attempts final recovery and closes SQLite even when recovery fails. Diagnostics omit event bodies and report failure categories and Session identities.
 
-Separate Host and Client compiler configurations keep the plugin and tests strict while referencing the existing projects' compiler configurations and declarations. The test entry imports configuration directly and disables Vite's configuration-file loader to avoid an ancestor-directory configuration bundle. Its cache and coverage paths remain inside this directory. Use the following commands after environment setup; the build replaces `lib/` with the current `lib/index.mjs`, `lib/portable.mjs`, `lib/client.js` and their imported modules, without building peers. The [packager](scripts/pack.mjs) removes its temporary staging directory after success or failure.
+Separate Host and Client compiler configurations keep the plugin and tests strict while referencing the existing projects' compiler configurations and declarations. The test entry uses Vitest's argument parser for file filters, `-t` and snapshot updates, imports configuration directly and disables Vite's configuration-file loader to avoid an ancestor-directory configuration bundle. Its cache and coverage paths remain inside this directory. Use the following commands after environment setup; the build replaces `lib/` with the current `lib/index.mjs`, `lib/portable.mjs`, `lib/client.js` and their imported modules, without building peers. The [packager](scripts/pack.mjs) removes its temporary staging directory after success or failure.
 
 ```powershell
 node ../node_modules/typescript/bin/tsc -p tsconfig.host.json --noEmit
 node ../node_modules/typescript/bin/tsc -p tsconfig.client.json --noEmit
 node --import tsx/esm scripts/test.mjs
 node ../node_modules/tsdown/dist/run.mjs --config tsdown.config.ts --config-loader native
-node scripts/link-profile.mjs
+node --import tsx/esm scripts/link-profile.mjs
 node ../apps/cli/lib/bin.js --profile headless --patch ./profiles/headless-built.patch.yml 'Reply with OK without using tools.'
 ```
 
@@ -253,7 +253,7 @@ For an isolated profile, `DSH_MEMORY_VERIFY_SOURCE_ROOT` selects its memory-rela
 - [Browser interaction and real-provider acceptance](evaluation/browser-live-2026-10-04.md)
 - [Standalone trigram upgrade](distribution/trigram-upgrade.md)
 - [Layered memory upgrade](distribution/layered-upgrade.md), [0.1.10 acceptance and persistence fields](evaluation/layered-memory-2026-10-07.md)
-- [Complete Ponytail audit and final package verification](evaluation/ponytail-audit-2026-10-07.md)
+- [Ponytail audit and cleanup](evaluation/ponytail-audit-2026-10-27.md)
 - [Fixed quality experiment inputs](evaluation/task4-cases.json); uniform-setting fixed-sample acceptance passed, with earlier failed runs retained
 - [Session persistence service](../packages/session/session-persistence/README.md)
 - [DSH profile composition](../packages/boot/app-boot/README.md)

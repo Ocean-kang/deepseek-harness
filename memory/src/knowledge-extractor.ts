@@ -192,10 +192,6 @@ export class KnowledgeExtractor {
     const selectedGroups: PreparedInput[] = []
     for (const group of groups) {
       let selected = group
-      if (requiredRecords.length > 0 && !current) {
-        selected = await this.prepareInput(task, group.input.sources, requiredRecords, cache, signal)
-        if (!fits(selected)) throw new MemoryError('budget', 'The recheck target and its complete evidence exceed the input budget')
-      }
       // A partial group keeps its exact original-event subset; optional context is selected only for complete groups.
       if (group.evidence !== undefined && group.evidence.length < eventRefs(group.input).length) { selectedGroups.push(selected); continue }
       for (const record of rankedExisting({ ...task.input, sources: group.input.sources, lineage: group.input.lineage })) {

@@ -9,8 +9,9 @@ import type { BrowserConfig } from '../src/browser.ts'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import * as JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
 import * as MemoryPlugin from '../src/index.ts'
-import { dispatchPanel, installPanelHost, panelRowOf } from '../src/panel-host.ts'
+import { createPanelDispatcher, installPanelHost, panelRowOf } from '../src/panel-host.ts'
 import { panelRequest, panelResponse } from '../src/panel-protocol.ts'
+import type { PanelRequest } from '../src/panel-protocol.ts'
 import { MemoryError } from '../src/types.ts'
 import { commitKnowledge, knowledgeCandidate, knowledgeFixture } from './knowledge-fixtures.ts'
 import { header } from './helpers.ts'
@@ -29,7 +30,8 @@ it('saves the recall switch through the wire after a selected version is invalid
     const writer = await ctx.sessionPersistence.create(session.header)
     try {
       await ctx.plugin(MemoryPlugin, { projectId: item.project, databasePath: item.spec.databasePath })
-      const call = (request: Parameters<typeof dispatchPanel>[1]) => dispatchPanel(ctx, panelRequest.parse(request), new AbortController().signal)
+      const panel = createPanelDispatcher(ctx)
+      const call = (request: PanelRequest) => panel.dispatch(panelRequest.parse(request), new AbortController().signal)
       await call({ action: 'select', sessionId: session.id, refs: [ref], automatic: true })
       const receipt = item.provider.selections.get(item.project, session.id)!
       item.provider.knowledge.invalidateMemory(item.project, ref, 'Withdrawn', 'wire-invalidated' as OperationId)
@@ -108,7 +110,8 @@ it('browses and selects a persisted conversation without restoring it and consum
     await ctx.plugin(MemoryPlugin, { projectId: item.project, databasePath: item.spec.databasePath })
     const session = Session.create(SessionId('stored-panel-reader'))
     const writer = await ctx.sessionPersistence.create(session.header)
-    const call = (request: Parameters<typeof dispatchPanel>[1]) => dispatchPanel(ctx, request, new AbortController().signal)
+    const panel = createPanelDispatcher(ctx)
+    const call = (request: PanelRequest) => panel.dispatch(request, new AbortController().signal)
     try {
       await ctx.memory.appendRaw({ projectId: item.project, header: session.header, inheritedEventCount: SessionLogOffset(0), events: [] })
       await writer.flush()
@@ -159,11 +162,12 @@ it('rejects an uncaptured persisted conversation instead of choosing a project f
     const writer = await ctx.sessionPersistence.create(session.header)
     try {
       await writer.flush()
-      const requests: Array<Parameters<typeof dispatchPanel>[1]> = [{ action: 'state', sessionId: session.id },
+      const panel = createPanelDispatcher(ctx)
+      const requests: Array<PanelRequest> = [{ action: 'state', sessionId: session.id },
         { action: 'browse', sessionId: session.id, level: 'L2', query: '', after: null },
         { action: 'select', sessionId: session.id, refs: [], automatic: false }]
       for (const request of requests) {
-        await expect(dispatchPanel(ctx, request, new AbortController().signal)).rejects.toMatchObject({ code: 'source' })
+        await expect(panel.dispatch(request, new AbortController().signal)).rejects.toMatchObject({ code: 'source' })
       }
       expect(ctx.sessions.get(session.id)).toBeUndefined()
     } finally { await writer.close() }
@@ -182,7 +186,8 @@ it('binds browser and selections to captured Session ownership and validates eve
     const writer = await ctx.sessionPersistence.create(session.header)
     try {
       await ctx.plugin(MemoryPlugin, { projectId: item.project, databasePath: item.spec.databasePath, browser: { pageSize: 1 } })
-      const call = (request: Parameters<typeof dispatchPanel>[1]) => dispatchPanel(ctx, request, new AbortController().signal)
+      const panel = createPanelDispatcher(ctx)
+      const call = (request: PanelRequest) => panel.dispatch(request, new AbortController().signal)
       const listed = await call({ action: 'browse', sessionId: session.id, level: 'L2', query: 'ESM', after: null })
       expect(panelResponse.parse(listed)).toMatchObject({ action: 'browse', rows: [{ ref, selectable: true }] })
       expect(panelResponse.parse(await call({ action: 'detail', sessionId: session.id, ref }))).toMatchObject({ row: { sources: [{ ref: { id: item.source.id, revision: item.source.revision } }] } })
@@ -230,7 +235,8 @@ async function projectionFixture(options: BrowserConfig, beforeRead?: (signal: A
       }
       return readRaw(request)
     })
-    const call = (id = session.id, signal = new AbortController().signal) => dispatchPanel(ctx, { action: 'state', sessionId: id }, signal)
+    const panel = createPanelDispatcher(ctx)
+    const call = (id = session.id, signal = new AbortController().signal) => panel.dispatch({ action: 'state', sessionId: id }, signal)
     return { ...item, ctx, session, writer, reads, opened, call, close }
   } catch (error) { await close(); throw error }
 }
@@ -313,7 +319,28 @@ it('evicts the least recently viewed Session when the configured projection capa
   } finally { await writer.close(); await item.close() }
 })
 
-it('stops panel requests before disposing and drops the cached prefix after the pending read settles', async () => {
+it('keeps each panel dispatcher cache independent when sharing the same memory service', async () => {
+  const item = await projectionFixture({ pageSize: 2 })
+  try {
+    item.session.append('user/message', createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: 'Captured input' }] }), { surfaceOp: 'append' })
+    await item.ctx.memory.appendRaw({ projectId: item.project, header: item.session.header, inheritedEventCount: SessionLogOffset(0), events: item.session.snapshotEvents() })
+    await item.call()
+    const other = createPanelDispatcher(item.ctx)
+    const call = () => other.dispatch({ action: 'state', sessionId: item.session.id }, new AbortController().signal)
+    await call()
+    expect(item.reads.map(read => read.offset)).toEqual([0, 0])
+    await item.call()
+    await call()
+    expect(item.reads).toHaveLength(2)
+    other.clear()
+    await item.call()
+    expect(item.reads).toHaveLength(2)
+    await call()
+    expect(item.reads.map(read => read.offset)).toEqual([0, 0, 0])
+  } finally { await item.close() }
+})
+
+it('stops panel requests before disposing and rebuilds the prefix after reinstalling on the same service', async () => {
   class PanelConnection extends Service {
     handler: ConnectionFetchRoute['fetch'] | undefined
     stopped = false
@@ -327,6 +354,10 @@ it('stops panel requests before disposing and drops the cached prefix after the 
   }
   let enter!: () => void
   const entered = new Promise<void>(resolve => { enter = resolve })
+  let observeAbort!: () => void
+  let release!: () => void
+  const aborted = new Promise<void>(resolve => { observeAbort = resolve })
+  const gate = new Promise<void>(resolve => { release = resolve })
   let block = false
   let readStopped = false
   const item = await projectionFixture({ pageSize: 2 }, async signal => {
@@ -336,29 +367,36 @@ it('stops panel requests before disposing and drops the cached prefix after the 
     enter()
     await new Promise<void>((_resolve, reject) => signal.addEventListener('abort', () => {
       readStopped = true
-      reject(signal.reason)
+      observeAbort()
+      void gate.then(() => { reject(signal.reason) })
     }, { once: true }))
   })
   const connection = new PanelConnection(item.ctx)
-  const dispose = installPanelHost(item.ctx)
+  let dispose = installPanelHost(item.ctx)
+  const call = () => connection.handler!(new Request('http://localhost/api/memory/panel', { method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ type: 'client-request', rpcId: 'panel-test', method: 'memory/panel', payload: { action: 'state', sessionId: item.session.id } }) }))
   try {
     for (let index = 0; index < 2; index++) {
       item.session.append('user/message', createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: `Input ${index}` }] }), { surfaceOp: 'append' })
       await item.ctx.memory.appendRaw({ projectId: item.project, header: item.session.header, inheritedEventCount: SessionLogOffset(0), events: item.session.snapshotEvents(SessionLogOffset(index)) })
-      if (index === 0) await item.call()
+      if (index === 0) expect(await (await call()).json()).toMatchObject({ result: { ok: true, value: { action: 'state' } } })
     }
     block = true
-    const request = connection.handler!(new Request('http://localhost/api/memory/panel', { method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ type: 'client-request', rpcId: 'panel-test', method: 'memory/panel', payload: { action: 'state', sessionId: item.session.id } }) }))
-      .catch((error: unknown) => error)
+    const request = call().catch((error: unknown) => error)
     await entered
-    await dispose()
+    let disposed = false
+    const stopping = dispose().then(() => { disposed = true })
+    await aborted
     expect(connection.stopped).toBe(true)
     expect(connection.handler).toBeUndefined()
     expect(readStopped).toBe(true)
+    expect(disposed).toBe(false)
+    release()
+    await stopping
     expect(await request).toBeInstanceOf(Error)
-    await item.call()
+    dispose = installPanelHost(item.ctx)
+    expect(await (await call()).json()).toMatchObject({ result: { ok: true, value: { action: 'state' } } })
     expect(item.reads.map(read => read.offset)).toEqual([0, 1, 0])
     expect(item.opened).not.toHaveBeenCalled()
-  } finally { await dispose(); await item.close() }
+  } finally { release(); await dispose(); await item.close() }
 })

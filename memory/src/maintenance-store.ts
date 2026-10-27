@@ -384,9 +384,7 @@ export class MaintenanceStore {
         for (const row of this.db.prepare(`SELECT id,revision,knowledge FROM knowledge_versions WHERE project=? AND state!='active'`).iterate(projectId)) {
           const key = JSON.stringify([row.id, row.revision])
           if (dead.has(key)) continue
-          const refs = new Map<string, MemoryRef>(); const sessions = new Set<string>()
-          references(storedObject(row.knowledge), refs, sessions)
-          if ([...refs.keys()].some(ref => dead.has(ref)) || [...sessions].some(id => removed.has(id))) { dead.add(key); changed = true }
+          if (dependsOnRemoved(storedObject(row.knowledge))) { dead.add(key); changed = true }
         }
         for (const row of this.db.prepare(`SELECT id,body FROM knowledge_tasks WHERE project=? AND json_extract(body,'$.status')='done'`).iterate(projectId)) {
           if (!dependsOnRemoved(storedObject(row.body))) continue

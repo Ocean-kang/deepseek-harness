@@ -1,5 +1,7 @@
 # Memory 0.1.8 浏览器及真实模型验收
 
+本记录中的已缺失本地材料以原路径标注，仅保留历史验收描述，不作为当前可复核证据。
+
 本记录使用最终 0.1.8 构建，在 Windows 的受支持 DSH Web/headless profile 中验证实际交互及一次真实模型学习。全部数据库、home、日志、缓存和截图均位于 `memory/`。安装包及安装重启证据见[交付验收](delivery-0.1.8-2026-10-04.md)。
 
 ## 浏览器连接与原失败任务
@@ -10,7 +12,7 @@
 
 ## 真实 Web 交互
 
-CUA 在 1280×720 窗口操作受支持的 Web profile；模型为明确标注的 `memory-smoke/keyless` 合成适配器。最终页面使用 `http://127.0.0.1:57168`，不在报告保存认证 URL。持久化核验见[浏览器结果](../.artifacts/workspace-web-AKFYX5/browser-proof.json)。
+CUA 在 1280×720 窗口操作受支持的 Web profile；模型为明确标注的 `memory-smoke/keyless` 合成适配器。最终页面使用 `http://127.0.0.1:57168`，不在报告保存认证 URL。持久化核验见浏览器结果（原路径 `../.artifacts/workspace-web-AKFYX5/browser-proof.json`）。
 
 | 操作 | 实际观察 |
 |---|---|
@@ -21,13 +23,13 @@ CUA 在 1280×720 窗口操作受支持的 Web profile；模型为明确标注�
 | 查询扩展 | 开启自动召回，发送文本无命中的“模块规范”。持久辅助 Session 记录一次 `expand-query`，合成模型返回 `ESM` 搜索词；第 4 轮记录五条自动召回，全部 `selected: false`，没有手选消费。此样例验证回退流程，不衡量真实模型的同义理解质量。 |
 | 短窗口 | 两条待用曾将列表挤到约 6.6 像素；最终构建在同一窗口保留 130 像素正文区，16 像素选择框和描述均可见。整个面板的滚动区域为 805 像素，下方批量按钮可滚达并成功操作。 |
 
-[布局修复后的截图](../.artifacts/workspace-web-AKFYX5/frames/selected-two-memories-fixed.jpg)展示选择框、一句话摘要及待用区；[发送后的截图](../.artifacts/workspace-web-AKFYX5/frames/manual-injection-receipt.jpg)展示已提交的两条记忆收据。原问题截图保留用于比较：[被挤压的列表](../.artifacts/workspace-web-AKFYX5/frames/selected-two-memories.jpg)。
+布局修复后的截图（原路径 `../.artifacts/workspace-web-AKFYX5/frames/selected-two-memories-fixed.jpg`）展示选择框、一句话摘要及待用区；发送后的截图（原路径 `../.artifacts/workspace-web-AKFYX5/frames/manual-injection-receipt.jpg`）展示已提交的两条记忆收据。原问题截图保留用于比较：被挤压的列表（原路径 `../.artifacts/workspace-web-AKFYX5/frames/selected-two-memories.jpg`）。
 
 第 4 轮正常学习成功；同时，一个较旧的自动 L3 重核在目标已换代后记录 `TARGET_CHANGED / calls=0`，未发布过期结果。该历史失败仍可检查，不能将它算作当前版本的预算失败或隐藏为成功。
 
 ## 一次真实 Provider 学习
 
-最终构建通过已有 `deepseek-official/deepseek-flash` 路由和凭据运行 [learning-live profile](../profiles/learning-live.patch.yml)，处理一条明确标注未实施、未运行测试的长期项目约束：使用 strict TypeScript 和 ESM。输出见[真实运行结果](../.artifacts/live-final-2026-10-04.json)，完整受控日志位于 `.artifacts/live-final-2026-10-04.log`。
+最终构建通过已有 `deepseek-official/deepseek-flash` 路由和凭据运行 [learning-live profile](../profiles/learning-live.patch.yml)，处理一条明确标注未实施、未运行测试的长期项目约束：使用 strict TypeScript 和 ESM。输出见真实运行结果（原路径 `../.artifacts/live-final-2026-10-04.json`），完整受控日志位于 `.artifacts/live-final-2026-10-04.log`。
 
 | 检查 | 结果 |
 |---|---|

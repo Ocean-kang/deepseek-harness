@@ -1,4 +1,4 @@
-/** Register this local package as a profile link without installing or copying dependencies. */
+/** Register this local package without installing dependencies; run with node --import tsx/esm. */
 import { lstat, mkdir, realpath, symlink } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { MEMORY_ROOT, memoryPath } from '../src/config.ts'

@@ -37,10 +37,7 @@ export function installMemorySearchTool(ctx: Context): void {
       const browser = ctx.memory.browser
       const limit = args.limit ?? browser.spec.limit
       if (limit < 1 || limit > browser.spec.limit) throw new MemoryError('budget', 'memory_search limit exceeds the configured result budget')
-      const levels = args.levels?.map(level => {
-        if (level !== 'L1' && level !== 'L2' && level !== 'L3') throw new MemoryError('config', 'Invalid memory level')
-        return level
-      }) ?? ['L1', 'L2', 'L3'] as const
+      const levels = args.levels ?? ['L1', 'L2', 'L3'] as const
       const found = await ctx.memory.retrieve({ projectId, text: args.query, levels, limit, maxBytes: browser.spec.maxBytes,
         signal: exec.signal, ...args.scenario === undefined ? {} : { scenario: args.scenario } })
       const current = await ctx.memory.revalidate(projectId, found)

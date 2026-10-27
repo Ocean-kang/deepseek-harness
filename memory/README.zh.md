@@ -9,7 +9,7 @@ kind: "package-bundle"
 
 ## 摘要
 
-将完整的已记录 Session 事件保存在项目所属的 SQLite 中，浏览 L0–L3 并选择 L2/L3 用于下一轮。后台学习复用 DSH 模型和凭据，BM25 检索无需 embedding 密钥。独立 bundle 通过公开扩展点开启带日志的注入。参见[安装说明](distribution/README.zh.md)和[验证范围](evaluation/compatibility-0.2.1-rc.2-2026-10-17.md)。
+将完整的已记录 Session 事件保存在项目所属的 SQLite 中，浏览 L0–L3 并选择 L2/L3 用于下一轮。后台学习复用 DSH 模型和凭据，BM25 检索无需 embedding 密钥。独立 bundle 通过公开扩展点开启带日志的注入。参见[安装说明](distribution/README.zh.md)和[验证范围](evaluation/compatibility-0.2.1-rc.3-2026-10-27.md)。
 
 ## 目录
 
@@ -22,13 +22,13 @@ kind: "package-bundle"
 <a id="use-this-plugin"></a>
 ## 使用插件
 
-当前检出面向 DSH 0.2.1-rc.2。构建 `memory/lib` 后，从仓库根目录运行以下命令，开启采集、L1–L3 学习、召回和右侧栏记忆标签页。bundle 使用当前 DSH home 及已配置的模型凭据；`profiles/web.patch.yml` 仅开启 L0 采集。如果 Web profile 已安装此 bundle，省略 `--patch ./memory/cordis.patch.yml`，避免重复加载。安装构建包及从旧版 memory 升级见[独立插件说明](distribution/README.zh.md)。
+当前检出面向 DSH 0.2.1-rc.3。构建 `memory/lib` 后，从仓库根目录运行以下命令，开启采集、L1–L3 学习、召回和右侧栏记忆标签页。bundle 使用当前 DSH home 及已配置的模型凭据；`profiles/web.patch.yml` 仅开启 L0 采集。如果 Web profile 已安装此 bundle，省略 `--patch ./memory/cordis.patch.yml`，避免重复加载。安装构建包及从旧版 memory 升级见[独立插件说明](distribution/README.zh.md)。
 
 ```powershell
 pnpm dsh web --patch ./memory/cordis.patch.yml --patch ./memory/profiles/chat-view.patch.yml
 ```
 
-[源码 patch](profiles/headless.patch.yml) 在受支持的 headless profile 中加载插件，并使 runner 依赖已就绪的 `memory` 服务。[构建产物 patch](profiles/headless-built.patch.yml) 选择本地构建结果。这些 patch 不安装依赖。必须使用版本匹配、已经准备好的 DSH 检出；本目录的写入限制不允许执行根目录安装或构建。设置环境后，加载本地构建 overlay 前先在 `memory/` 内运行 `node --import tsx/esm scripts/link-development-deps.mjs --runtime`：普通 Node 存储 worker 需要通过 memory 内的只读链接读取已有的 DSH peer 构建产物；缺少 peer 会导致插件无法激活。此脚本不安装依赖、不通过链接写入，并保留已有测试库。在 `memory/` 内运行 `node scripts/link-profile.mjs`，将插件目录注册给 profile 解析器；这项独立链接及其目标均位于 `memory/` 内。
+[源码 patch](profiles/headless.patch.yml) 在受支持的 headless profile 中加载插件，并使 runner 依赖已就绪的 `memory` 服务。[构建产物 patch](profiles/headless-built.patch.yml) 选择本地构建结果。这些 patch 不安装依赖。必须使用版本匹配、已经准备好的 DSH 检出；本目录的写入限制不允许执行根目录安装或构建。设置环境后，加载本地构建 overlay 前先在 `memory/` 内运行 `node --import tsx/esm scripts/link-development-deps.mjs --runtime`：普通 Node 存储 worker 需要通过 memory 内的只读链接读取已有的 DSH peer 构建产物；缺少 peer 会导致插件无法激活。此脚本不安装依赖、不通过链接写入，并保留已有测试库。在 `memory/` 内运行 `node --import tsx/esm scripts/link-profile.mjs`，将插件目录注册给 profile 解析器；这项独立链接及其目标均位于 `memory/` 内。
 
 使用明确、稳定的项目标识点入 [PowerShell 环境配置](scripts/environment.ps1)。它检查输出目录是否为链接，将 Harness home、缓存、临时路径和工作目录设在 `memory/` 内，并禁用遥测。它不启动应用；环境修改保留在当前 PowerShell 会话中。
 
@@ -128,7 +128,7 @@ Web 和面板开发 patch 选择 `ui-chat.transcriptView: detailed`。[Chat 展�
 
 侧栏以带名称和说明的 L0–L3 分类卡片组织记忆资产。“已加载”数量仅统计所选层级已加载的分页，不代表项目总量。面板宽度达到 640 像素时，列表和详情并排展示；较窄面板将打开的详情放在列表上方。打开详情时焦点移到标题，关闭时返回仍存在的发起条目，后台刷新保留焦点。主题颜色适配明暗外观。版本详情显示正在查看的版本号与有效状态。历史记录跨页时可以加载更早版本，切换查看版本会保留已加载的历史页。搜索分页使用已提交的查询词；编辑搜索框不会改变它，提交后才开始新的结果页。已保存的待选项在刷新页面后恢复，取消待选项仍保留知识记录。
 
-已捕获的历史对话在重启后仍可浏览，即使其 Session 尚未加载。面板增量读取 SQLite 中已提交的 L0 事件，展示已接纳正文并核对待用选择；未变化的轮询不读取事件正文。原日志新增事件在采集提交后显示。保存选择不会启动 Agent，也不会追加恢复标记。
+已捕获的历史对话在重启后仍可浏览，即使其 Session 尚未加载。面板增量读取 SQLite 中已提交的 L0 事件，展示已接纳正文并核对待用选择；未变化的轮询不读取事件正文。原日志新增事件在采集提交后显示。每次面板注册持有独立且有界的 Session 缓存；卸载取消请求，等待请求结束后清空缓存。保存选择不会启动 Agent，也不会追加恢复标记。
 
 L0 卡片展示对话和执行。L1 展示任务经历，详情中的 trace 和证据默认折叠。L2 展示以结论为主的场景知识卡，点击场景可限定浏览范围。L3 的知识和偏好筛选在分页前执行。详情保留原因、适用条件、限制、证据来源、来源有效性、不可变历史及折叠 JSON。新摘要在提炼调用中生成；旧版本回退到已有可读字段。搜索高亮字面匹配；侧栏和输入框共用 Session 状态轮询，保留已提交查询、详情和滚动位置。`browser.refreshIntervalMs` 控制轮询间隔。
 
@@ -174,7 +174,7 @@ try {
 
 按需运行真实 Provider 学习 smoke 时，先构建本包并链接本地 profile，再从 `memory/` 执行 `node ../apps/cli/lib/bin.js --profile headless --patch ./profiles/learning-live.patch.yml 'Validate automatic memory learning and text retrieval.'`。这个测试专用 overlay 用[学习夹具](tests/fixtures/learning-live.mjs)替代 headless runner，加载自动学习及文本检索，复用已选择的模型和凭据。YAML 显式限制尝试、调用次数、输出和超时。每次运行在独立的 `data/automatic-live-<uuid>.sqlite` 数据库中处理一条合成的长期约束，输出数据库路径和来源 Session，并请求启动器退出。它不安装生产注入，也不调用 embedding。`passed: true` 要求本次运行产生 L1、L2 和 L3 结果，并有文本检索命中；失败运行仍保留记录，不证明一般质量或检索效果。
 
-设置 `DSH_MEMORY_VERIFY_LEARNING=1`，将 `DSH_MEMORY_VERIFY_LEARNING_SOURCE` 设为本次输出的准确 `sourceSession`，将 `DSH_MEMORY_VERIFY_LEARNING_DB` 设为该次运行的 memory 相对数据库路径，再执行 `node scripts/test.mjs learning-live`。此检查重开数据库，不再调用模型，验证保守的 L1 内容、明确约束、准确来源链及请求和结果记录。缺少运行标识或数据库路径时明确失败。
+设置 `DSH_MEMORY_VERIFY_LEARNING=1`，将 `DSH_MEMORY_VERIFY_LEARNING_SOURCE` 设为本次输出的准确 `sourceSession`，将 `DSH_MEMORY_VERIFY_LEARNING_DB` 设为该次运行的 memory 相对数据库路径，再执行 `node --import tsx/esm scripts/test.mjs learning-live`。此检查重开数据库，不再调用模型，验证保守的 L1 内容、明确约束、准确来源链及请求和结果记录。缺少运行标识或数据库路径时明确失败。
 
 ### 文本检索
 
@@ -221,14 +221,14 @@ try {
 
 内存队列不持久化。SQLite 保存提交位置，原 Session 日志负责重启后的缺失事件。`session/flush` 等待捕获的目标范围，并在必要时补采。监听器调用持久化服务自己的刷新接口，不递归派发 Session 检查点。卸载移除监听、等待已接收工作、尝试最终补采，并在恢复失败时仍关闭 SQLite。诊断不包含事件正文，只报告失败类别和 Session 标识。
 
-独立 Host 和 Client 编译配置对插件和测试启用严格检查，同时引用已有项目自己的编译配置及声明。测试入口直接导入配置，并关闭 Vite 的配置文件加载器，避免在祖先目录生成配置 bundle；缓存及覆盖率路径位于本目录内。完成环境配置后使用以下命令；构建用当前 `lib/index.mjs`、`lib/portable.mjs`、`lib/client.js` 及其导入的模块替换 `lib/`，不会构建 peer 依赖。[打包脚本](scripts/pack.mjs) 在成功或失败后均删除本次临时 staging 目录。
+独立 Host 和 Client 编译配置对插件和测试启用严格检查，同时引用已有项目自己的编译配置及声明。测试入口使用 Vitest 的参数解析器处理文件筛选、`-t` 和快照更新，直接导入配置，并关闭 Vite 的配置文件加载器，避免在祖先目录生成配置 bundle；缓存及覆盖率路径位于本目录内。完成环境配置后使用以下命令；构建用当前 `lib/index.mjs`、`lib/portable.mjs`、`lib/client.js` 及其导入的模块替换 `lib/`，不会构建 peer 依赖。[打包脚本](scripts/pack.mjs) 在成功或失败后均删除本次临时 staging 目录。
 
 ```powershell
 node ../node_modules/typescript/bin/tsc -p tsconfig.host.json --noEmit
 node ../node_modules/typescript/bin/tsc -p tsconfig.client.json --noEmit
 node --import tsx/esm scripts/test.mjs
 node ../node_modules/tsdown/dist/run.mjs --config tsdown.config.ts --config-loader native
-node scripts/link-profile.mjs
+node --import tsx/esm scripts/link-profile.mjs
 node ../apps/cli/lib/bin.js --profile headless --patch ./profiles/headless-built.patch.yml 'Reply with OK without using tools.'
 ```
 
@@ -253,7 +253,7 @@ node ../apps/cli/lib/bin.js --profile headless --patch ./profiles/headless-built
 - [浏览器交互及真实 Provider 验收](evaluation/browser-live-2026-10-04.md)
 - [独立插件 trigram 升级说明](distribution/trigram-upgrade.md)
 - [分层记忆升级说明](distribution/layered-upgrade.md)、[0.1.10 验收与持久化字段](evaluation/layered-memory-2026-10-07.md)
-- [全量 Ponytail 审计及最终包验证](evaluation/ponytail-audit-2026-10-07.md)
+- [Ponytail 审查与清理](evaluation/ponytail-audit-2026-10-27.md)
 - [固定质量实验输入](evaluation/task4-cases.json)；统一设置的固定样本验收通过，较早失败记录继续保留
 - [Session 持久化服务](../packages/session/session-persistence/README.zh.md)
 - [DSH profile 组合](../packages/boot/app-boot/README.zh.md)

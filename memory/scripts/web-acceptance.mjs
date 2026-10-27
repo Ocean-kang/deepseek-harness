@@ -1,30 +1,37 @@
-/** Isolated repository Playwright fallback when browser-control surfaces are unavailable. */
+/** Isolated synthetic or real-provider Web acceptance with the repository's Playwright. */
 import { createRequire } from 'node:module'
 import { appendFile, readFile, readdir, writeFile } from 'node:fs/promises'
-import { join, resolve, sep } from 'node:path'
+import { basename, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createInterface } from 'node:readline'
 import assert from 'node:assert/strict'
 
 const memory = fileURLToPath(new URL('../', import.meta.url))
 const repo = resolve(memory, '..')
-const { chromium } = createRequire(join(repo, 'apps/web/package.json'))('playwright')
+const require = createRequire(join(repo, 'apps/web/package.json'))
+const { chromium } = require('playwright')
+const { expect } = require('playwright/test')
 const stateOption = process.argv.indexOf('--state')
 const statePath = stateOption < 0 ? join(memory, '.artifacts/workspace-web-current.json') : resolve(process.argv[stateOption + 1])
 if (!statePath.startsWith(resolve(memory) + sep)) throw new Error('Acceptance state must remain inside memory/')
 const server = JSON.parse(await readFile(statePath, 'utf8'))
 if (!server.url) throw new Error('Supported Web profile is not ready')
+if (!resolve(server.run).startsWith(resolve(memory, '.artifacts') + sep)) throw new Error('Acceptance run must remain inside memory/.artifacts/')
+const real = !server.keyless
 const browser = await chromium.launch({ channel: 'chrome', headless: true })
-const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } })
+const size = { width: 1440, height: 1000 }
+const context = await browser.newContext({ viewport: size,
+  ...process.argv.includes('--video') ? { recordVideo: { dir: join(server.run, 'videos'), size } } : {} })
 const page = await context.newPage()
+const video = page.video()
 const frames = join(server.run, 'frames')
-let sequence = (await readdir(frames)).filter(name => /^fallback-\d+\.png$/u.test(name)).length
-const evidence = join(server.run, 'fallback-operations.jsonl')
+let sequence = (await readdir(frames)).filter(name => (real ? /^\d+\.png$/u : /^fallback-\d+\.png$/u).test(name)).length
+const evidence = join(server.run, real ? 'real-browser-actions.jsonl' : 'fallback-operations.jsonl')
 let input
 const snapshot = async () => {
   const text = await page.locator('body').innerText()
-  await writeFile(join(server.run, 'fallback-dom.txt'), text)
-  await appendFile(evidence, `${JSON.stringify({ kind: 'snapshot', time: Date.now(), text })}\n`)
+  await writeFile(join(server.run, real ? 'real-dom.txt' : 'fallback-dom.txt'), text)
+  if (!real) await appendFile(evidence, `${JSON.stringify({ kind: 'snapshot', time: Date.now(), text })}\n`)
   console.log(text)
 }
 const showSources = async () => {
@@ -33,8 +40,8 @@ const showSources = async () => {
 }
 try {
   await page.goto(server.url)
-  await page.getByRole('button', { name: '新建会话', exact: true }).first().waitFor()
-  console.log('HEADLESS_FALLBACK_READY')
+  await page.getByRole('button', { name: '新建会话', exact: true }).first().waitFor({ timeout: 60000 })
+  console.log(real ? 'REAL_BROWSER_READY' : 'HEADLESS_FALLBACK_READY')
   await snapshot()
   if (process.argv.includes('--verify-restart')) {
     await page.getByText('Independent memory package test response.', { exact: true }).first().click()
@@ -115,28 +122,48 @@ try {
   for await (const line of input) {
     try {
       const command = JSON.parse(line)
-      await appendFile(evidence, `${JSON.stringify({ kind: 'action', time: Date.now(), command })}\n`)
+      await appendFile(evidence, `${JSON.stringify({ ...real ? {} : { kind: 'action' }, time: Date.now(), command })}\n`)
       const target = command.role ? page.getByRole(command.role, { name: command.name, exact: command.exact ?? true })
         : command.label ? page.getByLabel(command.label, { exact: true })
           : command.text ? page.getByText(command.text, { exact: command.exact ?? true }) : page.locator(command.selector ?? 'body')
       const locator = command.index === undefined ? target : target.nth(command.index)
-      if (command.op === 'click') await locator.click()
+      if (command.op === 'expandTool') {
+        if (!await locator.isVisible()) {
+          const group = page.getByRole('button', { name: '已调用工具', exact: true })
+          if (!await group.isVisible()) await page.getByRole('button', { name: /^已完成，用时/u }).click()
+          await group.waitFor({ state: 'visible' })
+          await group.click()
+        }
+        await locator.waitFor({ state: 'visible' })
+        if (await locator.locator('..').getAttribute('open') === null) await locator.click()
+      } else if (command.op === 'click') await locator.click()
       else if (command.op === 'fill') await locator.fill(command.value)
       else if (command.op === 'check') await locator.check()
+      else if (command.op === 'uncheck') await locator.uncheck()
+      else if (command.op === 'press') await locator.press(command.key)
       else if (command.op === 'wait') await locator.waitFor({ state: 'visible', timeout: command.timeout ?? 60000 })
+      else if (command.op === 'waitHidden') await locator.waitFor({ state: 'hidden', timeout: command.timeout ?? 60000 })
       else if (command.op === 'capture') {
-        const name = `fallback-${String(sequence++).padStart(2, '0')}.png`
-        await page.screenshot({ path: join(frames, name), fullPage: true })
-        console.log(`SCREENSHOT ${name}`)
+        const name = command.file ?? `${real ? '' : 'fallback-'}${String(sequence++).padStart(2, '0')}.png`
+        if (basename(name) !== name || !name.endsWith('.png')) throw new Error('Screenshot filename must be a PNG basename')
+        await page.screenshot({ path: join(frames, name), fullPage: !real })
+        if (!real) console.log(`SCREENSHOT ${name}`)
+      } else if (command.op === 'assertChecked') {
+        await expect(locator).toBeEnabled({ timeout: 10000 })
+        await expect(locator).toHaveAttribute('aria-checked', String(command.checked), { timeout: 10000 })
+        const checked = await locator.getAttribute('aria-checked')
+        await appendFile(join(server.run, 'ui-assertions.jsonl'), `${JSON.stringify({ time: Date.now(), name: command.name, checked })}\n`)
       } else if (command.op === 'controls') {
-        console.log(JSON.stringify(await page.locator('button,input,[role="checkbox"],summary').evaluateAll(elements => elements.map(element => ({
+        console.log(JSON.stringify(await page.locator('button,input,[role="checkbox"],[role="switch"],[contenteditable="true"],summary').evaluateAll(elements => elements.map(element => ({
           tag: element.tagName, role: element.getAttribute('role'), name: element.getAttribute('aria-label'),
-          text: element.textContent, type: element.getAttribute('type'), value: element.getAttribute('value'), disabled: element.hasAttribute('disabled') }))), null, 2))
+          text: element.textContent, type: element.getAttribute('type'), value: element.getAttribute('value'),
+          checked: element.getAttribute('aria-checked'), placeholder: element.getAttribute('placeholder'), disabled: element.hasAttribute('disabled') }))), null, 2))
       } else if (command.op === 'close') break
       else if (command.op === 'refresh') await page.reload()
       else if (command.op !== 'snapshot') throw new Error('Unsupported acceptance operation')
       await snapshot()
     } catch (error) {
+      if (real) throw error
       const message = error.message.replace(/https?:\/\/\S+/gu, '[private URL]')
       await appendFile(evidence, `${JSON.stringify({ kind: 'failure', time: Date.now(), message })}\n`)
       console.log(`ACTION_ERROR ${message}`)
@@ -146,7 +173,17 @@ try {
   }
   }
 } catch (error) {
-  const captures = await Promise.allSettled([snapshot(), page.screenshot({ path: join(frames, 'fallback-failure.png') })])
+  const captures = await Promise.allSettled([snapshot(), page.screenshot({ path: join(server.run, real ? 'browser-failure.png' : 'frames/fallback-failure.png') })])
   for (const captured of captures) if (captured.status === 'rejected') console.error('Failure capture unavailable:', captured.reason.message)
-  throw error
-} finally { input?.close(); process.stdin.pause(); await context.close(); await browser.close() }
+  if (real) {
+    console.error(String(error.message).replace(/https?:\/\/\S+/gu, '[local Web server]'))
+    process.exitCode = 1
+  } else throw error
+} finally {
+  input?.close()
+  process.stdin.pause()
+  try {
+    await context.close()
+    if (video !== null) await video.saveAs(join(server.run, 'demo.webm'))
+  } finally { await browser.close() }
+}

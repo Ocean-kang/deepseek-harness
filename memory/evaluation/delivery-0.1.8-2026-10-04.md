@@ -1,5 +1,7 @@
 # Memory 0.1.8 独立交付验收
 
+本记录中的已缺失本地材料以原路径标注，仅保留历史验收描述，不作为当前可复核证据。
+
 本记录覆盖 Windows 上 memory 0.1.8 的面板操作、构建包、独立安装及重启持久化。运行使用受支持的 DSH 0.2.0-rc.2 Web profile，模型为明确标注的 `memory-smoke/keyless` 合成适配器；没有使用外部真实模型或据此判断一般记忆质量。知识输入及原文核查的详细证据见[知识增长验收](knowledge-growth-2026-10-04.md)，服务端增量轮询及查询扩展见[面板与召回验收](panel-recall-2026-10-04.md)。
 
 ## 面板与共享轮询
@@ -16,19 +18,19 @@
 
 ## 构建、安装与运行
 
-最终包为 [deepseek-ai-dsh-memory-l0-0.1.8.tgz](../.artifacts/packages/deepseek-ai-dsh-memory-l0-0.1.8.tgz)，包含 12 个文件，SHA-256 为 `c7b81971d39f898ea99dc6aa584abc4c5b4bcdef192a4a4aac7ec53dbce85e72`。5 个构建文件分别为 `client.js`、`index.mjs`、`portable.mjs`、`src-aP9P39AD.mjs` 和 `workspace-storage-DWzMNBfH.mjs`，均直接从 tarball 读取并与最终源码构建的 `memory/lib/` 及已安装文件逐字节核对。包内另包含双语安装指南及升级指南；0.1.5、0.1.7 安装包保留，未发布的旧本地 0.1.8 包已由本次最终构建替换。
+最终包为 deepseek-ai-dsh-memory-l0-0.1.8.tgz（原路径 `../.artifacts/packages/deepseek-ai-dsh-memory-l0-0.1.8.tgz`），包含 12 个文件，SHA-256 为 `c7b81971d39f898ea99dc6aa584abc4c5b4bcdef192a4a4aac7ec53dbce85e72`。5 个构建文件分别为 `client.js`、`index.mjs`、`portable.mjs`、`src-aP9P39AD.mjs` 和 `workspace-storage-DWzMNBfH.mjs`，均直接从 tarball 读取并与最终源码构建的 `memory/lib/` 及已安装文件逐字节核对。包内另包含双语安装指南及升级指南；0.1.5、0.1.7 安装包保留，未发布的旧本地 0.1.8 包已由本次最终构建替换。
 
 新隔离 profile 位于 `.artifacts/final-installed-018-l2shrxc1pih/home/profiles/web`。安装通过正式 `dsh plugin --profile web add` 操作，关闭安装生命周期脚本及自动安装 peer，并将 pnpm store、Corepack 缓存、home、临时文件、文档目录和日志限制在本次 memory 验收目录。安装输出有 peer 提示；运行由目标 DSH 提供声明的服务。没有修改根工作区依赖、配置或源码，没有创建提交或推送。
 
-[安装文件核对](../.artifacts/final-installed-018-l2shrxc1pih/installed-files.json)记录版本及 11 个逐字节相同的构建、配置和指南文件。[正式 profile 夹具](../tests/fixtures/installed-delivery.mjs)从已安装 bundle 取得 memory 服务，没有叠加源码入口或本地 `lib` 入口；分别执行 `run` 和重启后的 `verify`，两次进程均正常退出。
+安装文件核对（原路径 `../.artifacts/final-installed-018-l2shrxc1pih/installed-files.json`）记录版本及 11 个逐字节相同的构建、配置和指南文件。[正式 profile 夹具](../tests/fixtures/installed-delivery.mjs)从已安装 bundle 取得 memory 服务，没有叠加源码入口或本地 `lib` 入口；分别执行 `run` 和重启后的 `verify`，两次进程均正常退出。
 
 | 运行阶段 | 已观察结果 |
 |---|---|
 | 新对话学习 | 新 source Session 生成 L1、L2、L3，逐层引用精确父版本。所有三层均保存非空展示描述，L2、L3 使用 `knowledge-v3`。 |
 | 单条记忆的长原文 | L1 引用 9 个原始事件，序列化合计 100,082 字节，最大单事件 60,074 字节。L2、L3 各执行两个完整事件组，再执行 `merge-evidence`；请求均计入 system 与输入 JSON，最大 63,529 字节。夹具将每个模型请求中的原始事件与 source Session 原文逐项核对，两层最终 `examinedEvents` 均精确覆盖这 9 个引用。 |
 | 手选与自动召回 | reader 首轮消费一条手选，下一轮没有再次消费；随后两轮自动召回均进入模型上下文。5 次 Agent 循环模型请求与正式持久化的召回消息逐项核对。 |
-| 日志交付 | [运行报告](../.artifacts/final-installed-018-l2shrxc1pih/delivery.json)保留请求、三条精确记忆版本及两个 Session 日志，并导出通过当前 Session 格式编码的 [source JSONL](../.artifacts/final-installed-018-l2shrxc1pih/delivery.json.memory-installed-source-187bfabf-5d04-4339-8739-99829abdef31.jsonl) 和 [reader JSONL](../.artifacts/final-installed-018-l2shrxc1pih/delivery.json.memory-installed-reader-e78e6b50-7c15-40c4-83c0-803f75f1b6f3.jsonl)。 |
-| 重启 | [重启报告](../.artifacts/final-installed-018-l2shrxc1pih/delivery.json.verified-trigram.json)确认三条历史版本的完整内容、展示描述、`examinedEvents` 及状态保留，旧日志前缀不变，待用为空、自动召回偏好保留；新增模型请求和召回均为零。两个恢复 Session 各追加一个受支持的 `session/end-seed` 标记。 |
+| 日志交付 | 运行报告（原路径 `../.artifacts/final-installed-018-l2shrxc1pih/delivery.json`）保留请求、三条精确记忆版本及两个 Session 日志，并导出通过当前 Session 格式编码的 source JSONL（原路径 `../.artifacts/final-installed-018-l2shrxc1pih/delivery.json.memory-installed-source-187bfabf-5d04-4339-8739-99829abdef31.jsonl`） 和 reader JSONL（原路径 `../.artifacts/final-installed-018-l2shrxc1pih/delivery.json.memory-installed-reader-e78e6b50-7c15-40c4-83c0-803f75f1b6f3.jsonl`）。 |
+| 重启 | 重启报告（原路径 `../.artifacts/final-installed-018-l2shrxc1pih/delivery.json.verified-trigram.json`）确认三条历史版本的完整内容、展示描述、`examinedEvents` 及状态保留，旧日志前缀不变，待用为空、自动召回偏好保留；新增模型请求和召回均为零。两个恢复 Session 各追加一个受支持的 `session/end-seed` 标记。 |
 
 ## 已执行检查
 

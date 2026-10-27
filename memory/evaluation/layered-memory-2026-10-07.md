@@ -1,5 +1,7 @@
 # Memory 0.1.10 分层记忆验收
 
+本记录中的已缺失本地材料以原路径标注，仅保留历史验收描述，不作为当前可复核证据。
+
 本记录覆盖独立 `memory/` 插件在 Windows、Node 24.21.0 和 DSH 0.2.1-alpha.1 上的分层记忆改进。安装、构建、缓存、数据库、Session 日志和浏览器截图均位于本目录。没有修改 DSH 源码、工作区配置、锁文件或用户已有数据。升级操作见[随包指南](../distribution/layered-upgrade.zh.md)。
 
 ## 实现与持久化字段声明
@@ -36,12 +38,12 @@ SQLite `SCHEMA_VERSION` 保持 5，未增加 SQL 格式代次；现有 JSON 读�
 | 文档链接、四组双语结构、行数与配对记录 | 通过。 |
 | `git diff --check` | 无空白错误。 |
 
-本轮安装包留存为 [deepseek-ai-dsh-memory-l0-0.1.10-layered.tgz](../.artifacts/packages/deepseek-ai-dsh-memory-l0-0.1.10-layered.tgz)，SHA-256 为 `17fd032d8efba947f92fa7f1711bb54f1b10594955d38d715bfc111fe0b5c3cb`。[安装文件核对](../.artifacts/dsh-021-memory-0110-release/installed-files.json)确认 14 个文件逐字节一致；[运行](../.artifacts/dsh-021-memory-0110-release/delivery.json)、[重启](../.artifacts/dsh-021-memory-0110-release/delivery.json.verified-trigram.json)与[旧库读取](../.artifacts/dsh-021-memory-0110-release/old-reader.json)报告保留检查结果。验收模型为明确标注的 `memory-smoke/keyless` 合成适配器，原始输入、召回消息及模型请求保留在安装报告及 JSONL 中。精简后的交付包与检查见[全量审计验收](ponytail-audit-2026-10-07.md)。
+本轮安装包留存为 deepseek-ai-dsh-memory-l0-0.1.10-layered.tgz（原路径 `../.artifacts/packages/deepseek-ai-dsh-memory-l0-0.1.10-layered.tgz`），SHA-256 为 `17fd032d8efba947f92fa7f1711bb54f1b10594955d38d715bfc111fe0b5c3cb`。安装文件核对（原路径 `../.artifacts/dsh-021-memory-0110-release/installed-files.json`）确认 14 个文件逐字节一致；运行（原路径 `../.artifacts/dsh-021-memory-0110-release/delivery.json`）、重启（原路径 `../.artifacts/dsh-021-memory-0110-release/delivery.json.verified-trigram.json`）与旧库读取（原路径 `../.artifacts/dsh-021-memory-0110-release/old-reader.json`）报告保留检查结果。验收模型为明确标注的 `memory-smoke/keyless` 合成适配器，原始输入、召回消息及模型请求保留在安装报告及 JSONL 中。精简后的交付包与检查见[全量审计验收](ponytail-audit-2026-10-07.md)。
 
 ## 真实模型与浏览器
 
 真实 `deepseek-official/deepseek-flash` 使用既有 DSH 模型选择和凭据，通过支持的 headless profile 执行一次显式长期约束样本。L1、L2、L3 各 1 次调用、各生成 1 条记忆，无失败；BM25 命中 L3。结果保留“没有实施或测试执行”的限制，证据状态为 `model_supported`。数据库为 `data/automatic-live-3980ff1f-5b3c-4968-b45a-4e4b720ca43f.sqlite`，源 Session 为 `memory-live-source-02262870-fe4b-47ae-84dd-97951f01b4e9`。
 
-实际 Web 使用支持的 `dsh web` profile、合成模型和规定的 in-page directory picker。浏览器验证 L1 详情、默认折叠的 trace/来源/JSON、L2 知识卡字段、跨层场景筛选及 L3 工程知识/交互偏好筛选。1100 像素视口并排展示，460 像素视口将详情排在列表之前；面板 `scrollWidth` 与 `clientWidth` 相等。截图为[宽面板](../.artifacts/workspace-web-3em1xk/layered-wide.jpg)和[窄面板](../.artifacts/workspace-web-3em1xk/layered-narrow.jpg)。
+实际 Web 使用支持的 `dsh web` profile、合成模型和规定的 in-page directory picker。浏览器验证 L1 详情、默认折叠的 trace/来源/JSON、L2 知识卡字段、跨层场景筛选及 L3 工程知识/交互偏好筛选。1100 像素视口并排展示，460 像素视口将详情排在列表之前；面板 `scrollWidth` 与 `clientWidth` 相等。截图为宽面板（原路径 `../.artifacts/workspace-web-3em1xk/layered-wide.jpg`）和窄面板（原路径 `../.artifacts/workspace-web-3em1xk/layered-narrow.jpg`）。
 
 混合检索用确定性合成向量验证排名融合、场景与类型过滤、字节预算和未完成索引拒绝，没有调用真实 embedding Provider。真实模型仅执行一个约束样本，不代表一般提炼质量；固定质量实验、跨平台矩阵、暗色主题视觉和仓库级 doc-sync 未执行。人工/外部确认只有可信存储 API，未新增 UI 确认流程。未创建 PR，因此未录制 PR GIF。

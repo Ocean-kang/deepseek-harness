@@ -92,7 +92,7 @@ it.each(['approve', 'revoke'] as const)('rejects a shared corpus change during s
   expect(await outcome).toMatchObject({ code: 'conflict' })
 })
 
-it('reads current revisions after updates and database reopen without a persistent index', async () => {
+it('reads current revisions after updates and database reopen', async () => {
   const item = await setup()
   const old = commitKnowledge(item, 'L2', [item.source], [knowledgeCandidate(item.source, 'CommonJS')])[0]!
   const oldResult = await item.search.retrieve({ projectId: item.project, text: 'CommonJS' })
